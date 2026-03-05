@@ -448,6 +448,22 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
               .run();
           },
         },
+        {
+          label: '──────────────────',
+          action: () => {},
+          isEnabled: () => false,
+        },
+        {
+          label: ' Comment (editor only)',
+          icon: { name: 'comment', fallback: '💬' },
+          action: () => {
+            editor
+              .chain()
+              .focus()
+              .insertContent(`> [!COMMENT]\n> `, { contentType: 'markdown' })
+              .run();
+          },
+        },
       ],
     },
     {

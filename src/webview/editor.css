@@ -612,6 +612,20 @@
     color: #cf222e;
   }
   
+  /* COMMENT - Yellow (editor only, non-standard) */
+  .markdown-editor .github-alert-comment {
+    border-left-color: #b08000;
+    background-color: rgba(255, 220, 0, 0.15);
+  }
+
+  .markdown-editor .github-alert-comment .github-alert-icon::before {
+    content: '💬';
+  }
+
+  .markdown-editor .github-alert-comment .github-alert-label {
+    color: #b08000;
+  }
+
   /* Dark theme adjustments */
   .vscode-dark .github-alert,
   .vscode-high-contrast .github-alert {
@@ -672,7 +686,18 @@
   .vscode-high-contrast .github-alert-caution .github-alert-label {
     color: #f85149;
   }
-  
+
+  .vscode-dark .github-alert-comment,
+  .vscode-high-contrast .github-alert-comment {
+    background-color: rgba(255, 220, 0, 0.12);
+    border-left-color: #e3b341;
+  }
+
+  .vscode-dark .github-alert-comment .github-alert-label,
+  .vscode-high-contrast .github-alert-comment .github-alert-label {
+    color: #e3b341;
+  }
+
   /* ============================================
      Horizontal Rule
      ============================================ */
