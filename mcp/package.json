@@ -1,0 +1,10 @@
+{
+  "name": "markdown-for-humans-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Markdown for Humans VS Code extension",
+  "main": "server.js",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

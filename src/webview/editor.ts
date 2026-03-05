@@ -36,7 +36,7 @@ import { toggleTocOverlay } from './features/tocOverlay';
 import { toggleSearchOverlay } from './features/searchOverlay';
 import { showLinkDialog } from './features/linkDialog';
 import { processPasteContent, parseFencedCode } from './utils/pasteHandler';
-import { copySelectionAsMarkdown } from './utils/copyMarkdown';
+import { copySelectionAsMarkdown, getSelectionAsMarkdown } from './utils/copyMarkdown';
 import { shouldAutoLink } from './utils/linkValidation';
 import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading } from './utils/scrollToHeading';
@@ -517,8 +517,21 @@ function initializeEditor(initialContent: string) {
       },
       onSelectionUpdate: ({ editor }) => {
         try {
-          const { from } = editor.state.selection;
+          const { from, empty } = editor.state.selection;
           vscode.postMessage({ type: 'selectionChange', pos: from });
+          const selected = empty ? null : getSelectionAsMarkdown(editor);
+          const fullMarkdown = getEditorMarkdownForSync(editor);
+          let context_before: string | null = null;
+          let context_after: string | null = null;
+          if (selected) {
+            const idx = fullMarkdown.indexOf(selected);
+            if (idx !== -1) {
+              context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
+              context_after = fullMarkdown.slice(idx + selected.length, idx + selected.length + 500);
+            }
+          }
+          const headings_before = getHeadingsBeforeSelection(editor);
+          vscode.postMessage({ type: 'selectionPush', selected, context_before, context_after, headings_before });
         } catch (error) {
           console.warn('[MD4H] Selection update failed:', error);
         }
@@ -815,6 +828,24 @@ function initializeEditor(initialContent: string) {
 }
 
 /**
+ * Get the last N headings before the current selection, closest first.
+ */
+function getHeadingsBeforeSelection(editor: Editor, count = 5): string[] {
+  const { from } = editor.state.selection;
+  const headings: string[] = [];
+
+  editor.state.doc.nodesBetween(0, from, node => {
+    if (node.type.name === 'heading') {
+      const prefix = '#'.repeat(node.attrs.level as number);
+      headings.push(`${prefix} ${node.textContent}`);
+    }
+    return true;
+  });
+
+  return headings.slice(-count).reverse();
+}
+
+/**
  * Handle messages from extension
  */
 window.addEventListener('message', (event: MessageEvent) => {
@@ -845,6 +876,27 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
         updateEditorContent(message.content);
         break;
+      case 'getSelection': {
+        if (editor) {
+          const { empty } = editor.state.selection;
+          const selected = empty ? null : getSelectionAsMarkdown(editor);
+          const fullMarkdown = getEditorMarkdownForSync(editor);
+          let context_before: string | null = null;
+          let context_after: string | null = null;
+          if (selected && !empty) {
+            const idx = fullMarkdown.indexOf(selected);
+            if (idx !== -1) {
+              context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
+              context_after = fullMarkdown.slice(idx + selected.length, idx + selected.length + 500);
+            }
+          }
+          const headings_before = getHeadingsBeforeSelection(editor);
+          vscode.postMessage({ type: 'selectionResult', selected, context_before, context_after, headings_before });
+        } else {
+          vscode.postMessage({ type: 'selectionResult', selected: null, context_before: null, context_after: null, headings_before: [] });
+        }
+        break;
+      }
       case 'settingsUpdate':
         // Update skipResizeWarning setting
         if (typeof message.skipResizeWarning === 'boolean') {

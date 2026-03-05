@@ -1,12 +1,11 @@
 {
-  "name": "markdown-for-humans",
-  "displayName": "Markdown for Humans: WYSIWYG Editor",
-  "description": "A full-featured WYSIWYG Markdown editor with visual table editing, drag-and-drop images, Mermaid diagrams, and distraction-free writing—all inside VS Code.",
-  "version": "0.1.3",
-  "publisher": "concretio",
+  "name": "markdown-for-humans-and-ai-agents",
+  "displayName": "Markdown for Humans and AI Agents: WYSIWYG Editor",
+  "description": "A full-featured WYSIWYG Markdown editor with visual table editing, drag-and-drop images, Mermaid diagrams, and distraction-free writing—all inside VS Code. Includes MCP server for AI agent integration.",
+  "version": "1.0.0",
+  "publisher": "dksyks",
   "author": {
-    "name": "Abhinav",
-    "email": "abhinav@concret.io"
+    "name": "dksyks"
   },
   "license": "MIT",
   "icon": "icon.png",
@@ -16,12 +15,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/concretios/markdown-for-humans"
+    "url": "https://github.com/dksyks/markdown-for-humans-and-AI-Agents"
   },
   "bugs": {
-    "url": "https://github.com/concretios/markdown-for-humans/issues"
+    "url": "https://github.com/dksyks/markdown-for-humans-and-AI-Agents/issues"
   },
-  "homepage": "https://github.com/concretios/markdown-for-humans#readme",
+  "homepage": "https://github.com/dksyks/markdown-for-humans-and-AI-Agents#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -107,6 +106,11 @@
         "command": "markdownForHumans.outline.clearFilter",
         "title": "Outline: Clear Filter",
         "icon": "$(close)"
+      },
+      {
+        "command": "markdownForHumans.getSelection",
+        "title": "Get Selection (for AI agents)",
+        "category": "Markdown for Humans"
       }
     ],
     "views": {

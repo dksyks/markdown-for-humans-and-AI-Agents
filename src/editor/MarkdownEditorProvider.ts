@@ -7,9 +7,20 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
 import { outlineViewProvider } from '../features/outlineView';
-import { setActiveWebviewPanel, getActiveWebviewPanel } from '../activeWebview';
+import { setActiveWebviewPanel, getActiveWebviewPanel, getActiveDocument } from '../activeWebview';
 import { buildResizeBackupLocation, resolveBackupPathWithCollisionDetection } from './imageBackups';
+
+export const SELECTION_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Selection.json');
+
+function writeSelectionToTempFile(data: object): void {
+  try {
+    fs.writeFileSync(SELECTION_TEMP_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[MD4H] Failed to write selection temp file:', err);
+  }
+}
 
 /**
  * Parse an image filename to extract source prefix
@@ -140,10 +151,12 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   private pendingEdits = new Map<string, number>();
   // Remember last content sent from the webview so we can skip redundant updates
   private lastWebviewContent = new Map<string, string>();
+  // Pending resolve for getSelection requests
+  private pendingSelectionResolve: ((result: string) => void) | undefined;
 
-  public static register(context: vscode.ExtensionContext): vscode.Disposable {
+  public static register(context: vscode.ExtensionContext): { disposable: vscode.Disposable; provider: MarkdownEditorProvider } {
     const provider = new MarkdownEditorProvider(context);
-    const providerRegistration = vscode.window.registerCustomEditorProvider(
+    const disposable = vscode.window.registerCustomEditorProvider(
       'markdownForHumans.editor',
       provider,
       {
@@ -154,7 +167,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         supportsMultipleEditorsPerDocument: false,
       }
     );
-    return providerRegistration;
+    return { disposable, provider };
   }
 
   constructor(private readonly context: vscode.ExtensionContext) {}
@@ -335,7 +348,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     );
 
     // Track active panel
-    setActiveWebviewPanel(webviewPanel);
+    setActiveWebviewPanel(webviewPanel, document);
 
     // Send initial content to webview
     this.updateWebview(document, webviewPanel.webview);
@@ -365,7 +378,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
 
     webviewPanel.onDidChangeViewState(() => {
       if (webviewPanel.active) {
-        setActiveWebviewPanel(webviewPanel);
+        setActiveWebviewPanel(webviewPanel, document);
       } else if (getActiveWebviewPanel() === webviewPanel) {
         setActiveWebviewPanel(undefined);
       }
@@ -476,6 +489,16 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         outlineViewProvider.setActiveSelection(typeof pos === 'number' ? pos : null);
         break;
       }
+      case 'selectionPush': {
+        writeSelectionToTempFile({
+          file: document.uri.fsPath,
+          selected: message.selected ?? null,
+          context_before: message.context_before ?? null,
+          context_after: message.context_after ?? null,
+          headings_before: message.headings_before ?? [],
+        });
+        break;
+      }
       case 'saveImage':
         this.handleSaveImage(message, document, webview);
         break;
@@ -557,7 +580,38 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       case 'openImage':
         void this.handleOpenImage(message, document);
         break;
+      case 'selectionResult': {
+        if (this.pendingSelectionResolve) {
+          this.pendingSelectionResolve(JSON.stringify({
+            file: document.uri.fsPath,
+            selected: message.selected ?? null,
+            context_before: message.context_before ?? null,
+            context_after: message.context_after ?? null,
+            headings_before: message.headings_before ?? [],
+          }));
+          this.pendingSelectionResolve = undefined;
+        }
+        break;
+      }
     }
+  }
+
+  public async getSelection(): Promise<string> {
+    const panel = getActiveWebviewPanel();
+    const document = getActiveDocument();
+    if (!panel || !document) {
+      return JSON.stringify({ selected: null, error: 'No active Markdown for Humans editor' });
+    }
+    return new Promise(resolve => {
+      this.pendingSelectionResolve = resolve;
+      panel.webview.postMessage({ type: 'getSelection' });
+      setTimeout(() => {
+        if (this.pendingSelectionResolve) {
+          this.pendingSelectionResolve(JSON.stringify({ file: document.uri.fsPath, selected: null }));
+          this.pendingSelectionResolve = undefined;
+        }
+      }, 2000);
+    });
   }
 
   /**

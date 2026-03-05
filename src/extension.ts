@@ -12,8 +12,8 @@ import { outlineViewProvider } from './features/outlineView';
 
 export function activate(context: vscode.ExtensionContext) {
   // Register the custom editor provider
-  const provider = MarkdownEditorProvider.register(context);
-  context.subscriptions.push(provider);
+  const { disposable, provider } = MarkdownEditorProvider.register(context);
+  context.subscriptions.push(disposable);
 
   // Clear active context when switching to non-markdown-for-humans editors
   context.subscriptions.push(
@@ -128,6 +128,16 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('markdownForHumans.outline.clearFilter', () => {
       outlineViewProvider.clearFilter();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('markdownForHumans.getSelection', async () => {
+      const result = await provider.getSelection();
+      // Debug: open result in editor pane
+      // const doc = await vscode.workspace.openTextDocument({ content: result, language: 'json' });
+      // await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+      return result;
     })
   );
 }
