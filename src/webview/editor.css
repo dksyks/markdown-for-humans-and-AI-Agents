@@ -1371,23 +1371,96 @@
     z-index: 100;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 8px;
+    gap: 2px;
+    padding: 6px 8px;
     background-color: var(--vscode-editor-background);
     border-bottom: 1px solid var(--vscode-editorWidget-border);
     backdrop-filter: blur(10px);
     transition: all 0.2s ease;
+  }
+
+  .toolbar-items {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 1;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .toolbar-overflow-dropdown {
+    flex-shrink: 0;
+    margin-left: 2px;
+  }
+
+  .toolbar-overflow-menu {
+    display: none;
+    position: fixed;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 0;
+    min-width: unset;
+    max-height: 60vh;
+    overflow-y: auto;
+    background-color: var(--vscode-dropdown-background);
+    border: 1px solid var(--vscode-dropdown-border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px var(--vscode-widget-shadow);
+    z-index: 1000;
+  }
+
+  .toolbar-overflow-menu.open {
+    display: flex;
+  }
+
+  .toolbar-overflow-row-btn {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 4px 8px;
+    border-radius: 0;
+  }
+
+  .toolbar-overflow-row-label {
+    display: none;
+  }
+
+  .toolbar-overflow-submenu .toolbar-dropdown-item {
+    padding-right: 12px;
+  }
+
+  .toolbar-dropdown-sep,
+  .toolbar-overflow-submenu-sep {
+    border: none;
+    border-top: 1px solid var(--vscode-dropdown-border);
+    opacity: 0.4;
+    margin: 3px 8px;
+  }
+
+  .toolbar-overflow-icon-wrapper {
+    position: relative;
+  }
+
+  .toolbar-overflow-submenu {
+    display: none;
+    position: fixed;
+    background-color: var(--vscode-dropdown-background);
+    border: 1px solid var(--vscode-dropdown-border);
+    border-radius: 6px 0 0 6px;
+    box-shadow: -2px 4px 8px var(--vscode-widget-shadow);
+    min-width: 160px;
+    z-index: 1001;
+    overflow: hidden;
   }
   
   .toolbar-button {
     background: transparent;
     border: 1px solid transparent;
     color: var(--md-foreground);
-    padding: 6px;
-    border-radius: 6px;
+    padding: 3px;
+    border-radius: 5px;
     cursor: pointer;
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    min-width: 24px;
+    min-width: 18px;
     height: 20px;
     display: flex;
     align-items: center;
@@ -1431,10 +1504,7 @@
   
   .toolbar-dropdown-menu {
     display: none;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    margin-top: 4px;
+    position: fixed;
     background-color: var(--vscode-dropdown-background);
     border: 1px solid var(--vscode-dropdown-border);
     border-radius: 6px;

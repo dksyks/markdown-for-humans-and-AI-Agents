@@ -117,6 +117,7 @@ type ToolbarSeparator = { type: 'separator' };
 type ToolbarItem = ToolbarActionButton | ToolbarDropdown | ToolbarSeparator;
 
 let codiconCheckScheduled = false;
+let documentClickListenerRegistered = false;
 
 function ensureCodiconFont() {
   if (codiconCheckScheduled) return;
@@ -174,7 +175,12 @@ function closeAllDropdowns() {
   document.querySelectorAll('.toolbar-dropdown-menu').forEach(menu => {
     (menu as HTMLElement).style.display = 'none';
   });
-
+  document.querySelectorAll('.toolbar-overflow-menu.open').forEach(menu => {
+    (menu as HTMLElement).classList.remove('open');
+  });
+  document.querySelectorAll('.toolbar-overflow-submenu').forEach(s => {
+    (s as HTMLElement).style.display = 'none';
+  });
   document.querySelectorAll('.toolbar-dropdown button[aria-expanded="true"]').forEach(btn => {
     (btn as HTMLElement).setAttribute('aria-expanded', 'false');
   });
@@ -200,6 +206,10 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
 
   const toolbar = document.createElement('div');
   toolbar.className = 'formatting-toolbar';
+
+  // Inner container for all items — enables overflow detection
+  const itemsContainer = document.createElement('div');
+  itemsContainer.className = 'toolbar-items';
 
   const isMac = navigator.platform.toLowerCase().includes('mac');
   const modKeyLabel = isMac ? 'Cmd' : 'Ctrl';
@@ -656,8 +666,8 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     },
     {
       type: 'button',
-      label: 'Export settings',
-      title: 'Export settings',
+      label: 'Settings',
+      title: 'Settings',
       icon: { name: 'gear', fallback: '⚙' },
       action: () => {
         window.dispatchEvent(new CustomEvent('openExtensionSettings'));
@@ -670,6 +680,12 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
   const actionButtons: Array<{ config: ToolbarActionButton; element: HTMLButtonElement }> = [];
   const dropdownButtons: Array<{ config: ToolbarDropdown; element: HTMLButtonElement }> = [];
   const dropdownItems: Array<{ config: ToolbarDropdownItem; element: HTMLButtonElement }> = [];
+  // All fixed-position menus appended to body (to escape sticky/transform stacking contexts)
+  const bodyMenus: HTMLElement[] = [];
+
+  // Overflow item state tracking (populated by buildOverflowMenu)
+  const overflowActionItems: Array<{ config: ToolbarActionButton; element: HTMLButtonElement }> = [];
+  const overflowDropdownItems: Array<{ config: ToolbarDropdownItem; element: HTMLButtonElement }> = [];
 
   const refreshActiveStates = () => {
     // Update action buttons active and enabled states
@@ -718,13 +734,29 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       element.classList.toggle('disabled', !enabled);
       element.setAttribute('aria-disabled', String(!enabled));
     });
+
+    // Sync overflow action button states
+    overflowActionItems.forEach(({ config, element }) => {
+      const active = config.isActive ? config.isActive() : false;
+      element.classList.toggle('active', Boolean(active));
+      const enabled = config.requiresFocus ? isEditorFocused : true;
+      element.disabled = !enabled;
+      element.classList.toggle('disabled', !enabled);
+    });
+
+    // Sync overflow dropdown item states
+    overflowDropdownItems.forEach(({ config, element }) => {
+      const enabled = config.isEnabled ? config.isEnabled() : true;
+      element.disabled = !enabled;
+      element.classList.toggle('disabled', !enabled);
+    });
   };
 
   buttons.forEach(btn => {
     if (btn.type === 'separator') {
       const separator = document.createElement('div');
       separator.className = 'toolbar-separator';
-      toolbar.appendChild(separator);
+      itemsContainer.appendChild(separator);
       return;
     }
 
@@ -746,6 +778,14 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       menu.className = 'toolbar-dropdown-menu';
 
       btn.items.forEach(item => {
+        // Render dashes separator as a thin hr
+        if (/^─+$/.test(item.label.trim())) {
+          const hr = document.createElement('hr');
+          hr.className = 'toolbar-dropdown-sep';
+          menu.appendChild(hr);
+          return;
+        }
+
         const menuItem = document.createElement('button');
         menuItem.type = 'button';
         menuItem.className = 'toolbar-dropdown-item';
@@ -787,30 +827,33 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         e.preventDefault();
         e.stopPropagation();
 
-        // Don't open dropdown if button is disabled
-        if (button.disabled) {
-          return;
-        }
+        if (button.disabled) return;
 
         const isVisible = menu.style.display === 'block';
         closeAllDropdowns();
 
         if (!isVisible) {
-          // Refresh enabled states before showing menu
           refreshActiveStates();
+          const rect = button.getBoundingClientRect();
+          menu.style.top = rect.bottom + 4 + 'px';
+          menu.style.left = rect.left + 'px';
+          menu.style.right = 'auto';
+          menu.style.display = 'block';
+          button.setAttribute('aria-expanded', 'true');
+        } else {
+          button.setAttribute('aria-expanded', 'false');
         }
-
-        menu.style.display = isVisible ? 'none' : 'block';
-        button.setAttribute('aria-expanded', isVisible ? 'false' : 'true');
       };
 
       button.append(icon);
-      container.append(button, menu);
+      container.append(button);
+      document.body.appendChild(menu);
+      bodyMenus.push(menu);
 
       // Store dropdown button for state updates
       dropdownButtons.push({ config: btn, element: button });
 
-      toolbar.appendChild(container);
+      itemsContainer.appendChild(container);
       return;
     }
 
@@ -832,8 +875,275 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     };
 
     actionButtons.push({ config: btn, element: button });
-    toolbar.appendChild(button);
+    itemsContainer.appendChild(button);
   });
+
+  // ── Overflow button (⋯) ──────────────────────────────────────────────────────
+
+  const overflowContainer = document.createElement('div');
+  overflowContainer.className = 'toolbar-dropdown toolbar-overflow-dropdown';
+  overflowContainer.style.display = 'none';
+
+  const overflowTrigger = document.createElement('button');
+  overflowTrigger.type = 'button';
+  overflowTrigger.className = 'toolbar-button toolbar-overflow-trigger';
+  overflowTrigger.title = 'More actions';
+  overflowTrigger.setAttribute('aria-label', 'More actions');
+  overflowTrigger.setAttribute('aria-haspopup', 'true');
+  overflowTrigger.setAttribute('aria-expanded', 'false');
+  overflowTrigger.innerHTML = '<span class="codicon codicon-ellipsis"></span>';
+
+  const overflowMenu = document.createElement('div');
+  overflowMenu.className = 'toolbar-overflow-menu';
+
+  overflowTrigger.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const isOpen = overflowMenu.classList.contains('open');
+    closeAllDropdowns();
+    if (!isOpen) {
+      const rect = overflowTrigger.getBoundingClientRect();
+      overflowMenu.style.top = rect.bottom + 4 + 'px';
+      overflowMenu.style.left = rect.left + 'px';
+      overflowMenu.style.right = 'auto';
+      overflowMenu.classList.add('open');
+      overflowTrigger.setAttribute('aria-expanded', 'true');
+    } else {
+      overflowTrigger.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  overflowContainer.append(overflowTrigger);
+
+  const subMenus: HTMLElement[] = [];
+
+  const buildOverflowMenu = () => {
+    overflowMenu.innerHTML = '';
+    overflowActionItems.length = 0;
+    overflowDropdownItems.length = 0;
+
+    // Remove old sub-menus from body
+    subMenus.forEach(m => m.parentNode?.removeChild(m));
+    subMenus.length = 0;
+
+    // Close any open sub-menus
+    const closeSubMenus = () => {
+      subMenus.forEach(m => { m.style.display = 'none'; });
+    };
+
+    const hiddenItems = Array.from(itemsContainer.children) as HTMLElement[];
+    hiddenItems.forEach(item => {
+      if (item.style.display !== 'none') return;
+      if (item.classList.contains('toolbar-separator')) return;
+
+      if (item.classList.contains('toolbar-dropdown')) {
+        const origButton = item.querySelector('.toolbar-button') as HTMLButtonElement | null;
+        const label = origButton?.title ?? origButton?.getAttribute('aria-label') ?? '';
+        const dropConfig = buttons.find(b => b.type === 'dropdown' && (b.title ?? b.label) === label) as ToolbarDropdown | undefined;
+        if (!dropConfig) return;
+
+        // Row button: icon + label, opens sub-menu on click
+        const rowBtn = document.createElement('button');
+        rowBtn.type = 'button';
+        rowBtn.className = 'toolbar-button toolbar-overflow-row-btn';
+        rowBtn.title = dropConfig.title ?? dropConfig.label;
+        rowBtn.append(createIconElement(dropConfig.icon, 'toolbar-icon'));
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'toolbar-overflow-row-label';
+        labelSpan.textContent = dropConfig.label;
+        rowBtn.append(labelSpan);
+
+        const subMenu = document.createElement('div');
+        subMenu.className = 'toolbar-overflow-submenu';
+        subMenu.style.display = 'none';
+
+        dropConfig.items.forEach(subItem => {
+          // Render dashes separator as a thin hr
+          if (/^─+$/.test(subItem.label.trim())) {
+            const hr = document.createElement('hr');
+            hr.className = 'toolbar-overflow-submenu-sep';
+            subMenu.appendChild(hr);
+            return;
+          }
+          const mi = dropdownItems.find(d => d.config === subItem)?.element;
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'toolbar-dropdown-item';
+          row.textContent = subItem.label;
+          const enabled = subItem.isEnabled ? subItem.isEnabled() : true;
+          row.disabled = !enabled;
+          row.classList.toggle('disabled', !enabled);
+          row.onclick = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!row.disabled) {
+              mi ? mi.click() : subItem.action();
+              overflowMenu.classList.remove('open');
+              overflowTrigger.setAttribute('aria-expanded', 'false');
+            }
+          };
+          if (mi) overflowDropdownItems.push({ config: subItem, element: row });
+          subMenu.appendChild(row);
+        });
+
+        rowBtn.onclick = e => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (rowBtn.disabled) return;
+          const isOpen = subMenu.style.display === 'block';
+          closeSubMenus();
+          if (!isOpen) {
+            const menuRect = overflowMenu.getBoundingClientRect();
+            const r = rowBtn.getBoundingClientRect();
+            subMenu.style.top = r.top + 'px';
+            subMenu.style.left = 'auto';
+            subMenu.style.right = (window.innerWidth - menuRect.left - 8) + 'px';
+            subMenu.style.display = 'block';
+          }
+        };
+
+        document.body.appendChild(subMenu);
+        subMenus.push(subMenu);
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'toolbar-overflow-icon-wrapper';
+        wrapper.append(rowBtn);
+        overflowMenu.appendChild(wrapper);
+
+      } else {
+        const origBtn = item as HTMLButtonElement;
+        const matchedBtn = actionButtons.find(b => b.element === origBtn);
+        if (!matchedBtn) return;
+
+        const rowBtn = document.createElement('button');
+        rowBtn.type = 'button';
+        rowBtn.className = 'toolbar-button toolbar-overflow-row-btn';
+        rowBtn.title = matchedBtn.config.title ?? matchedBtn.config.label;
+        rowBtn.append(createIconElement(matchedBtn.config.icon!, 'toolbar-icon'));
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'toolbar-overflow-row-label';
+        labelSpan.textContent = matchedBtn.config.title ?? matchedBtn.config.label;
+        rowBtn.append(labelSpan);
+
+        const btnEnabled = matchedBtn.config.requiresFocus ? isEditorFocused : true;
+        rowBtn.disabled = !btnEnabled;
+        rowBtn.classList.toggle('disabled', !btnEnabled);
+
+        rowBtn.onclick = e => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!rowBtn.disabled) {
+            origBtn.click();
+            overflowMenu.classList.remove('open');
+            overflowTrigger.setAttribute('aria-expanded', 'false');
+          }
+        };
+
+        overflowActionItems.push({ config: matchedBtn.config, element: rowBtn });
+        overflowMenu.appendChild(rowBtn);
+      }
+    });
+  };
+
+  // Measure the overflow button width once (it's constant)
+  let overflowBtnWidth = 0;
+
+  const updateOverflow = () => {
+    const items = Array.from(itemsContainer.children) as HTMLElement[];
+    const gap = parseFloat(getComputedStyle(itemsContainer).gap) || 4;
+
+    // Measure overflow button width on first call
+    if (overflowBtnWidth === 0) {
+      overflowContainer.style.display = '';
+      void overflowContainer.offsetWidth;
+      overflowBtnWidth = overflowContainer.offsetWidth || 36;
+      overflowContainer.style.display = 'none';
+    }
+
+    // Reset: show all items, hide overflow button
+    items.forEach(item => (item.style.display = ''));
+    overflowContainer.style.display = 'none';
+
+    // Force reflow
+    void toolbar.offsetWidth;
+
+    // Available width = actual rendered toolbar width
+    const toolbarStyle = getComputedStyle(toolbar);
+    const available = toolbar.getBoundingClientRect().width
+      - parseFloat(toolbarStyle.paddingLeft)
+      - parseFloat(toolbarStyle.paddingRight);
+
+    // scrollWidth captures all item widths + gaps + separator margins accurately
+    const totalWidth = itemsContainer.scrollWidth;
+
+    // Per-item right-edge positions relative to itemsContainer left edge
+    // Using getBoundingClientRect for accuracy regardless of flex stretching
+    const containerLeft = itemsContainer.getBoundingClientRect().left;
+    const rightEdges = items.map(item => {
+      const r = item.getBoundingClientRect();
+      return r.right - containerLeft;
+    });
+
+    console.log('[overflow] totalWidth=', Math.round(totalWidth), 'available=', Math.round(available), 'overflowBtnWidth=', overflowBtnWidth, 'gap=', gap);
+    if (totalWidth <= available) {
+      // All items fit — no overflow needed
+      overflowContainer.style.display = 'none';
+      buildOverflowMenu();
+      return;
+    }
+
+    // Overflow needed — show button and find cut-off point
+    overflowContainer.style.display = '';
+    const availableWithBtn = available - overflowBtnWidth - gap;
+    let firstHiddenIndex = -1;
+
+    for (let i = 0; i < items.length; i++) {
+      if (rightEdges[i] > availableWithBtn) {
+        firstHiddenIndex = i;
+        break;
+      }
+    }
+
+    console.log('[overflow] firstHiddenIndex=', firstHiddenIndex, 'of', items.length, 'availableWithBtn=', Math.round(availableWithBtn));
+
+    // If all items still fit within availableWithBtn, hide only the last non-separator
+    if (firstHiddenIndex === -1) {
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (!items[i].classList.contains('toolbar-separator')) {
+          firstHiddenIndex = i;
+          break;
+        }
+      }
+    }
+
+    // Hide items from firstHiddenIndex onwards
+    items.forEach((item, i) => {
+      item.style.display = i >= firstHiddenIndex ? 'none' : '';
+    });
+
+    // Hide trailing separators among visible items
+    for (let i = firstHiddenIndex - 1; i >= 0; i--) {
+      if (items[i].classList.contains('toolbar-separator')) {
+        items[i].style.display = 'none';
+      } else {
+        break;
+      }
+    }
+
+    buildOverflowMenu();
+    refreshActiveStates();
+  };
+
+  toolbar.appendChild(itemsContainer);
+  toolbar.appendChild(overflowContainer);
+  document.body.appendChild(overflowMenu);
+  bodyMenus.push(overflowMenu);
+
+  const resizeObserver = new ResizeObserver(() => updateOverflow());
+  resizeObserver.observe(toolbar);
+
+  // Initial measurement after the toolbar is inserted into the DOM
+  requestAnimationFrame(() => updateOverflow());
 
   toolbarRefreshFunction = refreshActiveStates;
 
@@ -855,21 +1165,29 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
 
   // Clean up listeners when editor is destroyed
   editor.on('destroy', () => {
+    resizeObserver.disconnect();
     if (focusChangeListener) {
       window.removeEventListener('editorFocusChange', focusChangeListener);
       focusChangeListener = null;
     }
-
     if (typeof editor.off === 'function') {
       editor.off('selectionUpdate', refreshActiveStates);
     }
+    // Remove all body-attached menus
+    bodyMenus.forEach(m => m.parentNode?.removeChild(m));
+    subMenus.forEach(m => m.parentNode?.removeChild(m));
   });
 
   refreshActiveStates();
 
-  document.addEventListener('click', () => {
-    closeAllDropdowns();
-  });
+  if (!documentClickListenerRegistered) {
+    documentClickListenerRegistered = true;
+    document.addEventListener('click', e => {
+      if (!(e.target as HTMLElement)?.closest('.toolbar-dropdown')) {
+        closeAllDropdowns();
+      }
+    });
+  }
 
   return toolbar;
 }
