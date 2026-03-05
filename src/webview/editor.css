@@ -2094,16 +2094,75 @@
   
   .search-overlay-panel {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    align-items: flex-start;
+    gap: 6px;
     padding: 8px 12px;
     background-color: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-editorWidget-border);
     border-radius: 8px;
     box-shadow: 0 4px 16px var(--vscode-widget-shadow);
-    min-width: 320px;
-    max-width: 500px;
+    min-width: 380px;
+    max-width: 600px;
   }
+
+  .search-overlay-chevron {
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .search-overlay-rows {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 6px 8px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Each row's children participate directly in the parent grid columns */
+  .search-overlay-find-row {
+    display: contents;
+  }
+
+  .search-overlay-replace-row {
+    display: none;
+  }
+
+  .search-overlay-replace-row.visible {
+    display: contents;
+  }
+
+  .search-overlay-replace-btn {
+    font-size: 12px;
+    padding: 4px 8px;
+    border: 1px solid var(--vscode-button-secondaryBorder, #888);
+    border-radius: 3px;
+    white-space: nowrap;
+    opacity: 0.8;
+  }
+
+  .search-overlay-replace-btn:hover {
+    opacity: 1;
+    background-color: var(--vscode-button-secondaryHoverBackground, var(--md-hover-bg));
+  }
+
+  .search-overlay-find-actions,
+  .search-overlay-replace-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .search-overlay-replace-counter {
+    font-size: 12px;
+    color: var(--md-muted);
+    white-space: nowrap;
+    text-align: right;
+    width: 0;
+    overflow: visible;
+    flex-shrink: 0;
+  }
+
   
   .search-overlay-input-wrapper {
     display: flex;
@@ -2194,7 +2253,95 @@
   .search-overlay-close {
     margin-left: 4px;
   }
-  
+
+  /* Search mode toggle buttons (Aa, *, .*) */
+  .search-overlay-toggles {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .search-mode-toggle {
+    font-size: 11px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-weight: 600;
+    padding: 3px 6px;
+    min-width: 24px;
+    line-height: 1;
+    border-radius: 3px;
+    border: 1.5px solid var(--vscode-button-secondaryBorder, #888);
+    color: var(--vscode-foreground);
+    opacity: 0.45;
+  }
+
+  .search-mode-toggle:hover {
+    opacity: 0.75;
+  }
+
+  .search-mode-toggle.active {
+    opacity: 1;
+    background-color: var(--vscode-inputOption-activeBackground, rgba(0, 120, 212, 0.3));
+    border-color: var(--vscode-inputOption-activeBorder, var(--vscode-button-secondaryBorder, #888));
+    color: var(--vscode-inputOption-activeForeground, inherit);
+  }
+
+  /* Input wrapper tint when a pattern mode is active */
+  .search-overlay-input-wrapper.search-mode-active {
+    border-color: var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder));
+  }
+
+  /* Hover popover for wildcard / regex cheat sheets */
+  .search-mode-popover {
+    position: fixed;
+    z-index: 1100;
+    background-color: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background));
+    border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-editorWidget-border));
+    border-radius: 6px;
+    padding: 10px 12px;
+    box-shadow: 0 4px 16px var(--vscode-widget-shadow);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.12s ease, visibility 0.12s ease;
+    pointer-events: none;
+  }
+
+  .search-mode-popover.visible {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .search-mode-popover-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--md-foreground);
+    margin-bottom: 6px;
+    white-space: nowrap;
+  }
+
+  .search-mode-popover-table {
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  .search-mode-popover-table tr + tr td {
+    padding-top: 3px;
+  }
+
+  .search-mode-popover-pattern {
+    font-family: var(--vscode-editor-font-family, monospace);
+    color: var(--vscode-textPreformat-foreground, var(--md-foreground));
+    white-space: nowrap;
+    padding-right: 12px;
+    font-weight: 600;
+  }
+
+  .search-mode-popover-desc {
+    color: var(--md-muted);
+    white-space: nowrap;
+  }
+
   /* Search match highlighting */
   .search-match {
     background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33));
@@ -2207,9 +2354,56 @@
   }
   
   /* ============================================
+     Search Gutter Minimap
+     ============================================ */
+
+  .search-gutter {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 12px;
+    height: 100%;
+    z-index: 1000;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .search-gutter.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .search-gutter-tick {
+    position: absolute;
+    right: 1px;
+    width: 10px;
+    height: 3px;
+    border-radius: 1px;
+    background-color: #c47000;
+    transform: translateY(-50%);
+    cursor: pointer;
+    transition: height 0.1s ease;
+  }
+
+  .search-gutter-tick:hover {
+    height: 5px;
+    background-color: #e08000;
+  }
+
+  .search-gutter-tick-active {
+    background-color: #5a8a00;
+    height: 4px;
+  }
+
+  .search-gutter-tick-active:hover {
+    background-color: #6ea000;
+  }
+
+  /* ============================================
      Image Resize Icon (Hover)
      ============================================ */
-  
+
   /* Image wrapper for resize icon positioning */
   .image-wrapper {
     position: relative;

@@ -33,7 +33,7 @@ import {
   getPendingImageCount,
 } from './features/imageDragDrop';
 import { toggleTocOverlay } from './features/tocOverlay';
-import { toggleSearchOverlay } from './features/searchOverlay';
+import { toggleSearchOverlay, toggleReplaceOverlay, isSearchVisible, searchNext, searchPrev, replaceAll } from './features/searchOverlay';
 import { showLinkDialog } from './features/linkDialog';
 import { processPasteContent, parseFencedCode } from './utils/pasteHandler';
 import { copySelectionAsMarkdown, getSelectionAsMarkdown } from './utils/copyMarkdown';
@@ -684,9 +684,33 @@ function initializeEditor(initialContent: string) {
       if (isMod && e.key === 'f') {
         e.preventDefault();
         e.stopPropagation();
-        console.log('[MD4H] Search shortcut');
+        if (editor) toggleSearchOverlay(editor);
+        return;
+      }
+
+      // Intercept Cmd/Ctrl+H for find+replace toggle
+      if (isMod && !e.shiftKey && e.key === 'h') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (editor) toggleReplaceOverlay(editor);
+        return;
+      }
+
+      // Ctrl+Shift+H — replace all
+      if (isMod && e.shiftKey && e.key === 'H' && isSearchVisible()) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (editor) replaceAll(editor);
+        return;
+      }
+
+      // Ctrl+Enter / Ctrl+Shift+Enter — next/previous match when search is open
+      if (isMod && e.key === 'Enter' && isSearchVisible()) {
+        e.preventDefault();
+        e.stopPropagation();
         if (editor) {
-          toggleSearchOverlay(editor);
+          if (e.shiftKey) searchPrev(editor);
+          else searchNext(editor);
         }
         return;
       }
@@ -695,7 +719,8 @@ function initializeEditor(initialContent: string) {
     // Register handlers
     document.addEventListener('contextmenu', contextMenuHandler);
     document.addEventListener('click', documentClickHandler);
-    document.addEventListener('keydown', keydownHandler);
+    // Use capture phase so our handler fires before ProseMirror processes keydown events
+    document.addEventListener('keydown', keydownHandler, { capture: true });
 
     // Add link click handler for navigation
     const handleLinkClick = (e: MouseEvent) => {
@@ -807,7 +832,7 @@ function initializeEditor(initialContent: string) {
     editorInstance.on('destroy', () => {
       document.removeEventListener('contextmenu', contextMenuHandler);
       document.removeEventListener('click', documentClickHandler);
-      document.removeEventListener('keydown', keydownHandler);
+      document.removeEventListener('keydown', keydownHandler, { capture: true });
       editorInstance.view.dom.removeEventListener('click', handleLinkClick);
       console.log('[MD4H] Editor destroyed, global listeners cleaned up');
     });
@@ -1383,6 +1408,13 @@ if (document.readyState === 'loading') {
     pendingInitialContent = null;
   }
 }
+
+// Handle find from toolbar button
+window.addEventListener('openFind', () => {
+  if (editor) {
+    toggleSearchOverlay(editor);
+  }
+});
 
 // Handle custom event for TOC toggle from toolbar button
 window.addEventListener('toggleTocOutline', () => {

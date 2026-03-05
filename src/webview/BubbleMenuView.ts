@@ -579,6 +579,17 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     { type: 'separator' },
     {
       type: 'button',
+      label: 'Find',
+      title: `Find in document (${modKeyLabel}+F)`,
+      icon: { name: 'search', fallback: '🔍' },
+      action: () => {
+        window.dispatchEvent(new CustomEvent('openFind'));
+      },
+      isActive: () => false,
+      className: 'find-button',
+    },
+    {
+      type: 'button',
       label: 'Outline',
       title: 'Toggle Document Outline (TOC)',
       icon: { name: 'list-tree', fallback: 'TOC' },
