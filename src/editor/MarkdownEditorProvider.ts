@@ -244,6 +244,25 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   /**
+   * Read all color settings from VS Code configuration.
+   */
+  private getColorSettings(): Record<string, unknown> {
+    const config = vscode.workspace.getConfiguration();
+    return {
+      h1: config.get<string>('markdownForHumans.colors.h1', '#1560c1'),
+      h2: config.get<string>('markdownForHumans.colors.h2', '#1560c1'),
+      h3: config.get<string>('markdownForHumans.colors.h3', '#1560c1'),
+      h4: config.get<string>('markdownForHumans.colors.h4', '#1560c1'),
+      h5: config.get<string>('markdownForHumans.colors.h5', '#1560c1'),
+      h6: config.get<string>('markdownForHumans.colors.h6', '#1560c1'),
+      bold: config.get<string>('markdownForHumans.colors.bold', '#bc0101'),
+      italic: config.get<string>('markdownForHumans.colors.italic', '#248a57'),
+      boldItalic: config.get<string>('markdownForHumans.colors.boldItalic', '#ff7300'),
+      labelOpacity: config.get<number>('markdownForHumans.colors.labelOpacity', 0.10),
+    };
+  }
+
+  /**
    * Get the base directory where new images should be saved.
    *
    * This is separate from `getImageBasePath()` (which is used to resolve
@@ -358,7 +377,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       if (
         e.affectsConfiguration('markdownForHumans.imageResize.skipWarning') ||
         e.affectsConfiguration('markdownForHumans.imagePath') ||
-        e.affectsConfiguration('markdownForHumans.imagePathBase')
+        e.affectsConfiguration('markdownForHumans.imagePathBase') ||
+        e.affectsConfiguration('markdownForHumans.colors')
       ) {
         const config = vscode.workspace.getConfiguration();
         const skipWarning = config.get<boolean>('markdownForHumans.imageResize.skipWarning', false);
@@ -372,6 +392,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           skipResizeWarning: skipWarning,
           imagePath: imagePath,
           imagePathBase: imagePathBase,
+          colors: this.getColorSettings(),
         });
       }
     });
@@ -440,6 +461,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       skipResizeWarning: skipWarning,
       imagePath: imagePath,
       imagePathBase: imagePathBase,
+      colors: this.getColorSettings(),
     });
   }
 
@@ -476,6 +498,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           skipResizeWarning: skipWarning,
           imagePath: imagePath,
           imagePathBase: imagePathBase,
+          colors: this.getColorSettings(),
         });
         break;
       }
@@ -520,7 +543,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       case 'openExtensionSettings':
         vscode.commands.executeCommand(
           'workbench.action.openSettings',
-          '@ext:concretio.markdown-for-humans'
+          'markdownForHumans'
         );
         break;
       case 'exportDocument':
@@ -2463,6 +2486,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         skipResizeWarning: skipWarning,
         imagePath: imagePath,
         imagePathBase: imagePathBase,
+        colors: this.getColorSettings(),
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

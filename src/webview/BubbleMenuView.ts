@@ -16,6 +16,7 @@ import { MERMAID_TEMPLATES } from './mermaidTemplates';
 import { showTableInsertDialog } from './features/tableInsert';
 import { showLinkDialog } from './features/linkDialog';
 import { showImageInsertDialog } from './features/imageInsertDialog';
+import { showColorSettingsPanel } from './features/colorSettings';
 import type { Editor } from '@tiptap/core';
 
 // Store reference to refresh function so it can be called externally
@@ -615,6 +616,17 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       ],
     },
     { type: 'separator' },
+    {
+      type: 'button',
+      label: 'Text Colors',
+      title: 'Text color settings',
+      icon: { name: 'symbol-color', fallback: '🎨' },
+      action: () => {
+        showColorSettingsPanel();
+      },
+      isActive: () => false,
+      className: 'color-settings-button',
+    },
     {
       type: 'button',
       label: 'Export settings',

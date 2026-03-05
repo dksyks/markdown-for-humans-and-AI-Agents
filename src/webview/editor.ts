@@ -41,6 +41,7 @@ import { shouldAutoLink } from './utils/linkValidation';
 import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
+import { applyColors, updateColorSettingsPanel, DEFAULT_COLORS } from './features/colorSettings';
 
 // Helper function for slug generation (same as in linkDialog)
 function generateHeadingSlug(text: string, existingSlugs: Set<string>): string {
@@ -865,6 +866,11 @@ window.addEventListener('message', (event: MessageEvent) => {
         if (typeof message.imagePathBase === 'string') {
           (window as any).imagePathBase = message.imagePathBase;
         }
+        // Apply color settings if present
+        if (message.colors && typeof message.colors === 'object') {
+          (window as any).md4hColors = message.colors;
+          applyColors({ ...DEFAULT_COLORS, ...(message.colors as object) });
+        }
         // Initialize editor with first payload to seed undo history correctly
         if (!editor) {
           if (isDomReady) {
@@ -908,6 +914,12 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
         if (typeof message.imagePathBase === 'string') {
           (window as any).imagePathBase = message.imagePathBase;
+        }
+        // Apply color settings if present
+        if (message.colors && typeof message.colors === 'object') {
+          (window as any).md4hColors = message.colors;
+          applyColors({ ...DEFAULT_COLORS, ...(message.colors as object) });
+          updateColorSettingsPanel(message.colors as object);
         }
         break;
       case 'imageResized': {

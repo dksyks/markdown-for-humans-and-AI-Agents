@@ -28,13 +28,16 @@
   
     /* Typography and layout */
     --md-base-size: var(--vscode-editor-font-size, 14px);
-  
+
+    /* Gutter label opacity (0 = invisible, 1 = fully opaque) */
+    --md4h-label-opacity: 0.10;
+
     line-height: 1.58;
     letter-spacing: -0.003em;
-  
+
     color: var(--md-foreground);
     background-color: var(--md-background);
-  
+
     /* Smooth reading */
     min-height: 100vh;
     outline: none;
@@ -42,6 +45,8 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     margin: 10px 30px;
+    padding-left: 2.5em;
+    position: relative;
   }
   
   .markdown-editor .ProseMirror {
@@ -94,7 +99,35 @@
   
   .markdown-editor :is(h1, h2, h3, h4, h5, h6) {
     margin: 0.75em 0 0.35em;
+    position: relative;
   }
+
+  /* ============================================
+     Gutter Labels
+     Show H1–H6 labels in the left gutter.
+     Color inherits from the element; opacity
+     controlled by --md4h-label-opacity variable.
+     ============================================ */
+
+  .markdown-editor :is(h1, h2, h3, h4, h5, h6)::before {
+    position: absolute;
+    left: -2.5em;
+    width: 2em;
+    text-align: right;
+    opacity: var(--md4h-label-opacity);
+    font-weight: 600;
+    font-style: normal;
+    pointer-events: none;
+    user-select: none;
+    color: inherit;
+  }
+
+  .markdown-editor h1::before { content: 'H1'; font-size: calc(var(--md-base-size) * 2.4); }
+  .markdown-editor h2::before { content: 'H2'; font-size: calc(var(--md-base-size) * 2); }
+  .markdown-editor h3::before { content: 'H3'; font-size: calc(var(--md-base-size) * 1.6); }
+  .markdown-editor h4::before { content: 'H4'; font-size: calc(var(--md-base-size) * 1.35); }
+  .markdown-editor h5::before { content: 'H5'; font-size: calc(var(--md-base-size) * 1.15); }
+  .markdown-editor h6::before { content: 'H6'; font-size: calc(var(--md-base-size) * 1.05); }
   
   /* ============================================
      Paragraphs & Text
@@ -2456,4 +2489,151 @@
     color: rgba(255, 255, 255, 0.7);
     font-style: italic;
   }
-  
+
+/* ============================================
+   Color Settings Panel
+   ============================================ */
+
+.color-settings-panel {
+  position: fixed;
+  bottom: 48px;
+  right: 8px;
+  z-index: 1000;
+  background: var(--vscode-menu-background, #252526);
+  border: 1px solid var(--vscode-menu-border, #454545);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 8px 0;
+  min-width: 260px;
+  font-size: 12px;
+  color: var(--vscode-menu-foreground, #cccccc);
+}
+
+.color-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px 8px;
+  border-bottom: 1px solid var(--vscode-menu-border, #454545);
+  margin-bottom: 4px;
+}
+
+.color-settings-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--vscode-menu-foreground, #cccccc);
+}
+
+.color-settings-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--vscode-menu-foreground, #cccccc);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.color-settings-close:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+.color-settings-rows {
+  padding: 0 4px;
+}
+
+.color-settings-row {
+  display: flex;
+  align-items: center;
+  padding: 3px 8px;
+  gap: 8px;
+}
+
+.color-settings-row:hover {
+  background: var(--vscode-menu-selectionBackground, #094771);
+}
+
+.color-settings-label {
+  flex: 1;
+  font-size: 12px;
+  color: var(--vscode-menu-foreground, #cccccc);
+  white-space: nowrap;
+}
+
+.color-settings-controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.color-settings-swatch {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 1px;
+  cursor: pointer;
+  background: none;
+}
+
+.color-settings-hex {
+  width: 68px;
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, #cccccc);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+
+.color-settings-hex:focus {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.color-settings-apply-all {
+  font-size: 10px;
+  padding: 2px 5px;
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #cccccc);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.color-settings-apply-all:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.color-settings-apply-all-spacer {
+  display: inline-block;
+  width: 32px;
+  flex-shrink: 0;
+}
+
+.color-settings-opacity-row {
+  border-top: 1px solid var(--vscode-widget-border, #3c3c3c);
+  margin-top: 4px;
+  padding-top: 6px;
+}
+
+.color-settings-opacity-slider {
+  width: 90px;
+  accent-color: var(--vscode-button-background, #0e639c);
+  cursor: pointer;
+}
+
+.color-settings-opacity-value {
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  min-width: 32px;
+  text-align: right;
+}
+
