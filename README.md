@@ -188,7 +188,16 @@ Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI
    npm install
    ```
 
-3. Add the server to your AI assistant's MCP configuration. For Claude Code, add to `.mcp.json` in your project or home directory:
+3. Add the server to your AI assistant's MCP configuration. For Claude Code, the `claude mcp add` command works more consistently than editing JSON files manually:
+   ```bash
+   claude mcp add --scope user --transport stdio markdown-for-humans node "/path/to/mcp/server.js"
+   ```
+   The `--scope` argument controls where the configuration is stored:
+   - `--scope user` — stored in `~/.claude.json`, available across all projects (recommended)
+   - `--scope project` — stored in `.mcp.json` in the current project, shared with others via version control
+   - `--scope local` — stored in `.mcp.json` locally, not shared (default if omitted)
+
+   Alternatively, add manually to `.mcp.json` in your project or home directory:
    ```json
    {
      "mcpServers": {
