@@ -170,6 +170,38 @@ Built on TipTap with a **human-first design philosophy**:
 
 *Create beautiful GitHub-style alert boxes for notes, warnings, tips, and important information.*
 
+### AI Agent Integration (MCP)
+
+Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI coding assistants like Claude Code read your current editor selection—so you can ask your AI to rewrite, summarize, or act on whatever you have highlighted.
+
+**Setup** (one-time, requires [Node.js](https://nodejs.org)):
+
+1. Download the `mcp/` folder from this repository:
+   ```
+   https://github.com/dksyks/markdown-for-humans-and-AI-Agents/tree/main/mcp
+   ```
+   or clone the repo and copy the `mcp/` folder anywhere on your machine.
+
+2. Install the MCP server dependencies:
+   ```bash
+   cd /path/to/mcp
+   npm install
+   ```
+
+3. Add the server to your AI assistant's MCP configuration. For Claude Code, add to `.mcp.json` in your project or home directory:
+   ```json
+   {
+     "mcpServers": {
+       "markdown-for-humans": {
+         "command": "node",
+         "args": ["/path/to/mcp/server.js"]
+       }
+     }
+   }
+   ```
+
+Once configured, your AI assistant can call `get_markdown_selection` to read whatever text you have selected in the editor, with surrounding context and heading structure.
+
 ---
 
 ## What's Included
