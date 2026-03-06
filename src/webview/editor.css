@@ -1546,6 +1546,14 @@
     background-color: transparent;
   }
   
+  /* Heading widget — groups Hx/P + arrows + dropdown as one flex row */
+  .toolbar-heading-widget {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
   /* Special toolbar buttons */
   .toolbar-button.toc-button {
     font-weight: 600;

@@ -113,11 +113,13 @@ type ToolbarDropdown = {
 };
 
 type ToolbarSeparator = { type: 'separator' };
+type ToolbarHeadingWidget = { type: 'heading-widget' };
 
-type ToolbarItem = ToolbarActionButton | ToolbarDropdown | ToolbarSeparator;
+type ToolbarItem = ToolbarActionButton | ToolbarDropdown | ToolbarSeparator | ToolbarHeadingWidget;
 
 let codiconCheckScheduled = false;
 let documentClickListenerRegistered = false;
+let headingWidgetUpdater: (() => void) | null = null;
 
 function ensureCodiconFont() {
   if (codiconCheckScheduled) return;
@@ -255,54 +257,8 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       className: 'code-icon',
       requiresFocus: true,
     },
-    {
-      type: 'button',
-      label: 'Heading 1',
-      title: 'Toggle Heading 1',
-      icon: { fallback: 'H1' },
-      action: () => editor.chain().focus().toggleHeading({ level: 1 }).run(),
-      isActive: () => editor.isActive('heading', { level: 1 }),
-      requiresFocus: true,
-    },
-    {
-      type: 'button',
-      label: 'Heading 2',
-      title: 'Toggle Heading 2',
-      icon: { fallback: 'H2' },
-      action: () => editor.chain().focus().toggleHeading({ level: 2 }).run(),
-      isActive: () => editor.isActive('heading', { level: 2 }),
-      requiresFocus: true,
-    },
-    {
-      type: 'button',
-      label: 'Heading 3',
-      title: 'Toggle Heading 3',
-      icon: { fallback: 'H3' },
-      action: () => editor.chain().focus().toggleHeading({ level: 3 }).run(),
-      isActive: () => editor.isActive('heading', { level: 3 }),
-      requiresFocus: true,
-    },
-    {
-      type: 'dropdown',
-      label: 'More headings',
-      title: 'More heading levels',
-      icon: { name: 'text-size', fallback: 'H+' },
-      requiresFocus: true,
-      items: [
-        {
-          label: 'Heading 4 (H4)',
-          action: () => editor.chain().focus().toggleHeading({ level: 4 }).run(),
-        },
-        {
-          label: 'Heading 5 (H5)',
-          action: () => editor.chain().focus().toggleHeading({ level: 5 }).run(),
-        },
-        {
-          label: 'Heading 6 (H6)',
-          action: () => editor.chain().focus().toggleHeading({ level: 6 }).run(),
-        },
-      ],
-    },
+    { type: 'separator' },
+    { type: 'heading-widget' },
     { type: 'separator' },
     {
       type: 'button',
@@ -750,9 +706,192 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       element.disabled = !enabled;
       element.classList.toggle('disabled', !enabled);
     });
+
+    // Update heading widget
+    headingWidgetUpdater?.();
   };
 
   buttons.forEach(btn => {
+    if (btn.type === 'heading-widget') {
+      // Level model: 1-6 = heading level, 7 = paragraph
+      // displayedLevel persists when cursor leaves a heading/paragraph
+      let displayedLevel = 1;
+
+      const getCurrentLevel = (): number => {
+        for (let l = 1; l <= 6; l++) {
+          if (editor.isActive('heading', { level: l as any })) return l;
+        }
+        if (editor.isActive('paragraph')) return 7;
+        return 0; // other node type (code block, etc.)
+      };
+
+      const applyLevel = (level: number) => {
+        if (level === 7) {
+          editor.chain().focus().setParagraph().run();
+        } else {
+          editor.chain().focus().setHeading({ level: level as any }).run();
+        }
+      };
+
+      // Wrapper — single child of itemsContainer
+      const headingWidget = document.createElement('div');
+      headingWidget.className = 'toolbar-heading-widget';
+
+      // Button 1: Hx/P — shows/applies current displayed level
+      const hxBtn = document.createElement('button');
+      hxBtn.type = 'button';
+      hxBtn.className = 'toolbar-button toolbar-heading-hx';
+
+      // Button 2: ↑ promote (smaller number = bigger heading; P→H6)
+      const hUpBtn = document.createElement('button');
+      hUpBtn.type = 'button';
+      hUpBtn.className = 'toolbar-button';
+      hUpBtn.title = 'Larger heading';
+      hUpBtn.setAttribute('aria-label', 'Larger heading');
+      hUpBtn.append(createIconElement({ name: 'arrow-up', fallback: '↑' }, 'toolbar-icon'));
+
+      // Button 3: ↓ demote (larger number or P; H6→P)
+      const hDownBtn = document.createElement('button');
+      hDownBtn.type = 'button';
+      hDownBtn.className = 'toolbar-button';
+      hDownBtn.title = 'Smaller heading';
+      hDownBtn.setAttribute('aria-label', 'Smaller heading');
+      hDownBtn.append(createIconElement({ name: 'arrow-down', fallback: '↓' }, 'toolbar-icon'));
+
+      // Button 4: dropdown H1-H6 + Paragraph
+      const hdropContainer = document.createElement('div');
+      hdropContainer.className = 'toolbar-dropdown';
+      const hdropBtn = document.createElement('button');
+      hdropBtn.type = 'button';
+      hdropBtn.className = 'toolbar-button';
+      hdropBtn.title = 'Heading level';
+      hdropBtn.setAttribute('aria-label', 'Heading level');
+      hdropBtn.setAttribute('aria-haspopup', 'true');
+      hdropBtn.setAttribute('aria-expanded', 'false');
+      hdropBtn.append(createIconElement({ name: 'text-size', fallback: 'H▾' }, 'toolbar-icon'));
+
+      const hdropMenu = document.createElement('div');
+      hdropMenu.className = 'toolbar-dropdown-menu';
+      [1, 2, 3, 4, 5, 6].forEach(level => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'toolbar-dropdown-item';
+        item.textContent = `Heading ${level} (H${level})`;
+        item.onclick = e => {
+          e.preventDefault();
+          e.stopPropagation();
+          applyLevel(level);
+          hdropMenu.style.display = 'none';
+          hdropBtn.setAttribute('aria-expanded', 'false');
+          refreshActiveStates();
+        };
+        hdropMenu.appendChild(item);
+      });
+      // Separator then Paragraph
+      const hdropSep = document.createElement('hr');
+      hdropSep.className = 'toolbar-dropdown-sep';
+      hdropMenu.appendChild(hdropSep);
+      const pItem = document.createElement('button');
+      pItem.type = 'button';
+      pItem.className = 'toolbar-dropdown-item';
+      pItem.textContent = 'Paragraph (P)';
+      pItem.onclick = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        applyLevel(7);
+        hdropMenu.style.display = 'none';
+        hdropBtn.setAttribute('aria-expanded', 'false');
+        refreshActiveStates();
+      };
+      hdropMenu.appendChild(pItem);
+
+      hdropBtn.onclick = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (hdropBtn.disabled) return;
+        const isVisible = hdropMenu.style.display === 'block';
+        closeAllDropdowns();
+        if (!isVisible) {
+          const rect = hdropBtn.getBoundingClientRect();
+          hdropMenu.style.top = rect.bottom + 4 + 'px';
+          hdropMenu.style.left = rect.left + 'px';
+          hdropMenu.style.right = 'auto';
+          hdropMenu.style.display = 'block';
+          hdropBtn.setAttribute('aria-expanded', 'true');
+        } else {
+          hdropBtn.setAttribute('aria-expanded', 'false');
+        }
+      };
+
+      hdropContainer.append(hdropBtn);
+      document.body.appendChild(hdropMenu);
+      bodyMenus.push(hdropMenu);
+
+      // Hx/P click: apply displayed level
+      hxBtn.onclick = e => {
+        e.preventDefault();
+        applyLevel(displayedLevel);
+        refreshActiveStates();
+      };
+
+      // ↑ click: promote (smaller level number, P→H6)
+      hUpBtn.onclick = e => {
+        e.preventDefault();
+        const cur = getCurrentLevel();
+        const base = cur > 0 ? cur : displayedLevel;
+        const next = base === 7 ? 6 : Math.max(1, base - 1);
+        applyLevel(next);
+        refreshActiveStates();
+      };
+
+      // ↓ click: demote (larger level number, H6→P)
+      hDownBtn.onclick = e => {
+        e.preventDefault();
+        const cur = getCurrentLevel();
+        const base = cur > 0 ? cur : displayedLevel;
+        const next = Math.min(7, base + 1);
+        applyLevel(next);
+        refreshActiveStates();
+      };
+
+      headingWidget.append(hxBtn, hUpBtn, hDownBtn, hdropContainer);
+      itemsContainer.appendChild(headingWidget);
+
+      // updateHeadingWidget — called from refreshActiveStates via headingWidgetUpdater
+      const updateHeadingWidget = () => {
+        const currentLevel = getCurrentLevel();
+        const inKnownLevel = currentLevel > 0;
+        if (inKnownLevel) displayedLevel = currentLevel;
+
+        const label = displayedLevel === 7 ? 'P' : `H${displayedLevel}`;
+
+        hxBtn.innerHTML = '';
+        hxBtn.append(createIconElement({ fallback: label }, 'toolbar-icon'));
+        hxBtn.title = displayedLevel === 7 ? 'Paragraph' : `Heading ${displayedLevel}`;
+        hxBtn.setAttribute('aria-label', hxBtn.title);
+        hxBtn.classList.toggle('active', inKnownLevel);
+
+        const focused = isEditorFocused;
+
+        // ↑ disabled at H1 (level 1) or no focus
+        hUpBtn.disabled = !focused || displayedLevel <= 1;
+        hUpBtn.classList.toggle('disabled', hUpBtn.disabled);
+
+        // ↓ disabled at P (level 7) or no focus
+        hDownBtn.disabled = !focused || displayedLevel >= 7;
+        hDownBtn.classList.toggle('disabled', hDownBtn.disabled);
+
+        hxBtn.disabled = !focused;
+        hxBtn.classList.toggle('disabled', !focused);
+
+        hdropBtn.disabled = !focused;
+        hdropBtn.classList.toggle('disabled', !focused);
+      };
+
+      headingWidgetUpdater = updateHeadingWidget;
+      return;
+    }
+
     if (btn.type === 'separator') {
       const separator = document.createElement('div');
       separator.className = 'toolbar-separator';
@@ -896,12 +1035,18 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
   const overflowMenu = document.createElement('div');
   overflowMenu.className = 'toolbar-overflow-menu';
 
+  // Forward ref — assigned after buildOverflowMenu is defined below
+  let buildOverflowMenuRef: (() => void) | null = null;
+
   overflowTrigger.addEventListener('click', e => {
     e.preventDefault();
     e.stopPropagation();
     const isOpen = overflowMenu.classList.contains('open');
     closeAllDropdowns();
     if (!isOpen) {
+      // Rebuild with fresh state before showing
+      refreshActiveStates();
+      buildOverflowMenuRef?.();
       const rect = overflowTrigger.getBoundingClientRect();
       overflowMenu.style.top = rect.bottom + 4 + 'px';
       overflowMenu.style.left = rect.left + 'px';
@@ -935,6 +1080,120 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     hiddenItems.forEach(item => {
       if (item.style.display !== 'none') return;
       if (item.classList.contains('toolbar-separator')) return;
+
+      // Heading widget — render as Hx/P, ↑, ↓, and H1-H6+P submenu rows
+      if (item.classList.contains('toolbar-heading-widget')) {
+        const makeHeadingOverflowBtn = (label: string, title: string, action: () => void, disabled: boolean) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'toolbar-button toolbar-overflow-row-btn';
+          btn.title = title;
+          btn.disabled = disabled;
+          btn.classList.toggle('disabled', disabled);
+          btn.append(createIconElement({ fallback: label }, 'toolbar-icon'));
+          btn.onclick = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!btn.disabled) {
+              action();
+              overflowMenu.classList.remove('open');
+              overflowTrigger.setAttribute('aria-expanded', 'false');
+            }
+          };
+          return btn;
+        };
+
+        // We need access to heading widget internals — call headingWidgetUpdater to get current state
+        // Read displayedLevel from the hxBtn text content
+        const hxBtnEl = item.querySelector('.toolbar-heading-hx') as HTMLButtonElement | null;
+        const hxLabel = hxBtnEl?.textContent?.trim() ?? 'H1';
+        const isP = hxLabel === 'P';
+        const dispLevel = isP ? 7 : parseInt(hxLabel.replace('H', '')) || 1;
+        const focused = isEditorFocused;
+
+        const applyLevelAndClose = (level: number) => {
+          if (level === 7) {
+            editor.chain().focus().setParagraph().run();
+          } else {
+            editor.chain().focus().setHeading({ level: level as any }).run();
+          }
+          refreshActiveStates();
+        };
+
+        // Hx/P row
+        const hxRow = makeHeadingOverflowBtn(hxLabel, isP ? 'Paragraph' : `Heading ${dispLevel}`, () => applyLevelAndClose(dispLevel), !focused);
+        overflowMenu.appendChild(hxRow);
+
+        // ↑ row
+        const upDisabled = !focused || dispLevel <= 1;
+        const upRow = makeHeadingOverflowBtn('↑', 'Larger heading', () => {
+          const cur = dispLevel === 7 ? 7 : dispLevel;
+          applyLevelAndClose(cur === 7 ? 6 : Math.max(1, cur - 1));
+        }, upDisabled);
+        overflowMenu.appendChild(upRow);
+
+        // ↓ row
+        const downDisabled = !focused || dispLevel >= 7;
+        const downRow = makeHeadingOverflowBtn('↓', 'Smaller heading', () => {
+          applyLevelAndClose(Math.min(7, dispLevel + 1));
+        }, downDisabled);
+        overflowMenu.appendChild(downRow);
+
+        // Dropdown row → sub-menu with H1-H6 + P
+        const dropRowBtn = document.createElement('button');
+        dropRowBtn.type = 'button';
+        dropRowBtn.className = 'toolbar-button toolbar-overflow-row-btn';
+        dropRowBtn.title = 'Heading level';
+        dropRowBtn.disabled = !focused;
+        dropRowBtn.classList.toggle('disabled', !focused);
+        dropRowBtn.append(createIconElement({ name: 'text-size', fallback: 'H▾' }, 'toolbar-icon'));
+
+        const hSubMenu = document.createElement('div');
+        hSubMenu.className = 'toolbar-overflow-submenu';
+        hSubMenu.style.display = 'none';
+        [1, 2, 3, 4, 5, 6].forEach(level => {
+          const si = document.createElement('button');
+          si.type = 'button';
+          si.className = 'toolbar-dropdown-item';
+          si.textContent = `Heading ${level} (H${level})`;
+          si.onclick = e => { e.preventDefault(); e.stopPropagation(); applyLevelAndClose(level); };
+          hSubMenu.appendChild(si);
+        });
+        const hSubSep = document.createElement('hr');
+        hSubSep.className = 'toolbar-overflow-submenu-sep';
+        hSubMenu.appendChild(hSubSep);
+        const pSi = document.createElement('button');
+        pSi.type = 'button';
+        pSi.className = 'toolbar-dropdown-item';
+        pSi.textContent = 'Paragraph (P)';
+        pSi.onclick = e => { e.preventDefault(); e.stopPropagation(); applyLevelAndClose(7); };
+        hSubMenu.appendChild(pSi);
+
+        dropRowBtn.onclick = e => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (dropRowBtn.disabled) return;
+          const isOpen = hSubMenu.style.display === 'block';
+          closeSubMenus();
+          if (!isOpen) {
+            const menuRect = overflowMenu.getBoundingClientRect();
+            const r = dropRowBtn.getBoundingClientRect();
+            hSubMenu.style.top = r.top + 'px';
+            hSubMenu.style.left = 'auto';
+            hSubMenu.style.right = (window.innerWidth - menuRect.left - 8) + 'px';
+            hSubMenu.style.display = 'block';
+          }
+        };
+
+        document.body.appendChild(hSubMenu);
+        subMenus.push(hSubMenu);
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'toolbar-overflow-icon-wrapper';
+        wrapper.append(dropRowBtn);
+        overflowMenu.appendChild(wrapper);
+        return;
+      }
 
       if (item.classList.contains('toolbar-dropdown')) {
         const origButton = item.querySelector('.toolbar-button') as HTMLButtonElement | null;
@@ -1045,6 +1304,8 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     });
   };
 
+  buildOverflowMenuRef = buildOverflowMenu;
+
   // Measure the overflow button width once (it's constant)
   let overflowBtnWidth = 0;
 
@@ -1148,6 +1409,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
   toolbarRefreshFunction = refreshActiveStates;
 
   editor.on('selectionUpdate', refreshActiveStates);
+  editor.on('update', refreshActiveStates);
 
   // Listen for editor focus changes
   const handleEditorFocusChange = (e: Event) => {
@@ -1172,6 +1434,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     }
     if (typeof editor.off === 'function') {
       editor.off('selectionUpdate', refreshActiveStates);
+      editor.off('update', refreshActiveStates);
     }
     // Remove all body-attached menus
     bodyMenus.forEach(m => m.parentNode?.removeChild(m));
