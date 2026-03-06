@@ -202,6 +202,29 @@ Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI
 
 Once configured, your AI assistant can call `get_markdown_selection` to read whatever text you have selected in the editor, with surrounding context and heading structure.
 
+**Telling your AI agent when to use `get_markdown_selection`**
+
+The MCP tool is available but your AI assistant won't use it automatically—you need to tell it when and how. Add instructions to your agent's system prompt or configuration file (e.g., `CLAUDE.md` for Claude Code):
+
+```markdown
+## Markdown for Humans Editor (VS Code Extension)
+
+When the user is editing a markdown file in VS Code, their current selection
+is available via the MCP tool `get_markdown_selection` (server: markdown-for-humans).
+
+Call this tool when the user refers to selected text, "this", "here", or similar
+references suggesting they have something highlighted in the editor.
+
+The tool returns a JSON string with:
+- `file`: absolute path to the markdown file
+- `selected`: the selected text as markdown (null if nothing selected)
+- `context_before`: up to 500 characters before the selection
+- `context_after`: up to 500 characters after the selection
+- `headings_before`: up to 5 headings preceding the selection, closest first
+```
+
+For Claude Code, place this in `~/.claude/CLAUDE.md` (applies globally to all projects) or `.claude/CLAUDE.md` in your project root.
+
 ---
 
 ## What's Included
