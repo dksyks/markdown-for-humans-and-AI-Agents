@@ -1345,7 +1345,6 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       return r.right - containerLeft;
     });
 
-    console.log('[overflow] totalWidth=', Math.round(totalWidth), 'available=', Math.round(available), 'overflowBtnWidth=', overflowBtnWidth, 'gap=', gap);
     if (totalWidth <= available) {
       // All items fit — no overflow needed
       overflowContainer.style.display = 'none';
@@ -1364,8 +1363,6 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         break;
       }
     }
-
-    console.log('[overflow] firstHiddenIndex=', firstHiddenIndex, 'of', items.length, 'availableWithBtn=', Math.round(availableWithBtn));
 
     // If all items still fit within availableWithBtn, hide only the last non-separator
     if (firstHiddenIndex === -1) {
