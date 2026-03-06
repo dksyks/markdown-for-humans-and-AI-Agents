@@ -245,8 +245,10 @@ function scrollToMatch(editor: Editor, match: { from: number; to: number }) {
   }
 
   if (shouldRefocusInput) {
-    if (isReplaceVisible) {
-      const replaceInput = searchOverlayElement?.querySelector('.search-overlay-replace-input') as HTMLInputElement | null;
+    const replaceInput = searchOverlayElement?.querySelector('.search-overlay-replace-input') as HTMLInputElement | null;
+    const searchInput = searchOverlayElement?.querySelector('.search-overlay-input') as HTMLInputElement | null;
+    const activeIsReplace = document.activeElement === replaceInput;
+    if (isReplaceVisible && activeIsReplace) {
       replaceInput?.focus();
     } else {
       focusSearchInput(false);
