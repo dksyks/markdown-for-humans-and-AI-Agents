@@ -43,9 +43,8 @@ describe('Reader-friendly epic fixture', () => {
     // With breaks: true, and/or trailing two spaces, newlines should become <br>
     expect(html).toContain('<br');
 
-    expect(html).toContain('<blockquote>');
-    expect(html).toContain('[!IMPORTANT]');
-    expect(html).toContain('[!NOTE]');
+    expect(html).toContain('<blockquote data-alert-type="IMPORTANT">');
+    expect(html).toContain('<blockquote data-alert-type="NOTE">');
     expect(html).toContain('<strong>Narrative</strong>');
   });
 });

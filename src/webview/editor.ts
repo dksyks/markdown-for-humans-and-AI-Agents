@@ -1430,6 +1430,35 @@ window.addEventListener('copyAsMarkdown', () => {
   copySelectionAsMarkdown(editor);
 });
 
+// Intercept copy and cut to put clean markdown on the clipboard.
+// TipTap's default copy puts its internal HTML on the clipboard, which loses
+// alert metadata (data-alert-type). By writing markdown ourselves we ensure
+// round-trip fidelity for alerts and other custom nodes.
+document.addEventListener(
+  'copy',
+  (event: ClipboardEvent) => {
+    if (!editor || editor.state.selection.empty) return;
+    const markdown = getSelectionAsMarkdown(editor);
+    if (!markdown) return;
+    event.preventDefault();
+    event.clipboardData?.setData('text/plain', markdown);
+  },
+  true
+);
+
+document.addEventListener(
+  'cut',
+  (event: ClipboardEvent) => {
+    if (!editor || editor.state.selection.empty) return;
+    const markdown = getSelectionAsMarkdown(editor);
+    if (!markdown) return;
+    event.preventDefault();
+    event.clipboardData?.setData('text/plain', markdown);
+    editor.commands.deleteSelection();
+  },
+  true
+);
+
 // Handle open source view from toolbar button
 window.addEventListener('openSourceView', () => {
   console.log('[MD4H] Opening source view...');
