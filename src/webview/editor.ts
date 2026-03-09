@@ -39,7 +39,7 @@ import { processPasteContent, parseFencedCode } from './utils/pasteHandler';
 import { copySelectionAsMarkdown, getSelectionAsMarkdown } from './utils/copyMarkdown';
 import { shouldAutoLink } from './utils/linkValidation';
 import { buildOutlineFromEditor } from './utils/outline';
-import { scrollToHeading } from './utils/scrollToHeading';
+import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
 import { applyColors, updateColorSettingsPanel, DEFAULT_COLORS } from './features/colorSettings';
 
@@ -1346,7 +1346,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         if (navLastRecorded !== null) navForward.push(navLastRecorded);
         navIsJumping = true;
         navLastRecorded = dest;
-        scrollToHeading(editor, dest);
+        scrollToPos(editor, dest);
         navIsJumping = false;
         break;
       }
@@ -1356,7 +1356,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         if (navLastRecorded !== null) navBack.push(navLastRecorded);
         navIsJumping = true;
         navLastRecorded = dest;
-        scrollToHeading(editor, dest);
+        scrollToPos(editor, dest);
         navIsJumping = false;
         break;
       }
@@ -1486,7 +1486,7 @@ window.addEventListener('navigateBack', () => {
   if (navLastRecorded !== null) navForward.push(navLastRecorded);
   navIsJumping = true;
   navLastRecorded = dest;
-  scrollToHeading(editor, dest);
+  scrollToPos(editor, dest);
   navIsJumping = false;
 });
 
@@ -1496,7 +1496,7 @@ window.addEventListener('navigateForward', () => {
   if (navLastRecorded !== null) navBack.push(navLastRecorded);
   navIsJumping = true;
   navLastRecorded = dest;
-  scrollToHeading(editor, dest);
+  scrollToPos(editor, dest);
   navIsJumping = false;
 });
 
