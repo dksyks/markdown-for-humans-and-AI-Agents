@@ -25,12 +25,16 @@ class OutlineTreeItem extends vscode.TreeItem {
     readonly ancestorState: AncestorState,
     collapsible?: vscode.TreeItemCollapsibleState
   ) {
-    // Use TreeItemLabel for bold effect on active/ancestor items
+    // Add extra indent prefix: 1 extra space per level beyond the first to double the effective indent
+    const extraSpaces = node.level > 1 ? ' '.repeat(node.level - 1) : '';
     const labelText = node.text || '(Untitled)';
+    const displayText = extraSpaces + labelText;
+    // H1 items are always bold; active/ancestor items are also bold via highlights
+    const isBold = node.level === 1 || ancestorState !== 'none';
     super(
-      ancestorState !== 'none'
-        ? { label: labelText, highlights: [[0, labelText.length]] }
-        : labelText,
+      isBold
+        ? { label: displayText, highlights: [[extraSpaces.length, displayText.length]] }
+        : displayText,
       collapsible ??
         (node.children.length
           ? vscode.TreeItemCollapsibleState.Collapsed
