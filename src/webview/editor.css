@@ -61,40 +61,34 @@
      Headers - Clean Style
      ============================================ */
   
-  .markdown-editor h1,
-  .markdown-editor h2,
-  .markdown-editor h3,
-  .markdown-editor h4,
-  .markdown-editor h5,
-  .markdown-editor h6 {
+  .markdown-editor h1 {
+    font-size: calc(var(--md-base-size) * 2);
+    line-height: 1.15;
+  }
+
+  .markdown-editor h2 {
+    font-size: calc(var(--md-base-size) * 1.7);
+    line-height: 1.2;
+  }
+
+  .markdown-editor h3 {
+    font-size: calc(var(--md-base-size) * 1.5);
     line-height: 1.25;
   }
-  
-  .markdown-editor h1 {
-    font-size: calc(var(--md-base-size) * 2.4);
-  }
-  
-  .markdown-editor h2 {
-    font-size: calc(var(--md-base-size) * 2);
-  }
-  
-  .markdown-editor h3 {
-    font-size: calc(var(--md-base-size) * 1.6);
-  }
-  
+
   .markdown-editor h4 {
-    font-size: calc(var(--md-base-size) * 1.35);
-    line-height: 1.2;
+    font-size: calc(var(--md-base-size) * 1.3);
+    line-height: 1.3;
   }
-  
+
   .markdown-editor h5 {
-    font-size: calc(var(--md-base-size) * 1.15);
-    line-height: 1.2;
+    font-size: calc(var(--md-base-size) * 1.2);
+    line-height: 1.35;
   }
-  
+
   .markdown-editor h6 {
-    font-size: calc(var(--md-base-size) * 1.05);
-    line-height: 1.2;
+    font-size: calc(var(--md-base-size) * 1.1);
+    line-height: 1.45;
   }
   
   .markdown-editor :is(h1, h2, h3, h4, h5, h6) {
@@ -122,12 +116,12 @@
     color: inherit;
   }
 
-  .markdown-editor h1::before { content: 'H1'; font-size: calc(var(--md-base-size) * 2.4); }
-  .markdown-editor h2::before { content: 'H2'; font-size: calc(var(--md-base-size) * 2); }
-  .markdown-editor h3::before { content: 'H3'; font-size: calc(var(--md-base-size) * 1.6); }
-  .markdown-editor h4::before { content: 'H4'; font-size: calc(var(--md-base-size) * 1.35); }
-  .markdown-editor h5::before { content: 'H5'; font-size: calc(var(--md-base-size) * 1.15); }
-  .markdown-editor h6::before { content: 'H6'; font-size: calc(var(--md-base-size) * 1.05); }
+  .markdown-editor h1::before { content: 'H1'; font-size: calc(var(--md-base-size) * 2); }
+  .markdown-editor h2::before { content: 'H2'; font-size: calc(var(--md-base-size) * 1.7); }
+  .markdown-editor h3::before { content: 'H3'; font-size: calc(var(--md-base-size) * 1.5); }
+  .markdown-editor h4::before { content: 'H4'; font-size: calc(var(--md-base-size) * 1.3); }
+  .markdown-editor h5::before { content: 'H5'; font-size: calc(var(--md-base-size) * 1.2); }
+  .markdown-editor h6::before { content: 'H6'; font-size: calc(var(--md-base-size) * 1.1); }
   
   /* ============================================
      Paragraphs & Text
@@ -136,9 +130,9 @@
   .markdown-editor p {
     margin: 0 0 0.79em;
     line-height: 1.58;
-    font-size: calc(var(--md-base-size) * 1.2);
+    font-size: var(--md-base-size);
   }
-  
+
   .markdown-editor p:first-child {
     margin-top: 0;
   }
