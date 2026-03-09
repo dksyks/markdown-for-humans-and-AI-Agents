@@ -585,7 +585,13 @@ function initializeEditor(initialContent: string) {
       // Prevent onUpdate from firing during initialization - this was causing
       // documents with frontmatter to be marked dirty even without user edits
       isUpdating = true;
+      // Suppress nav recording during setContent (cursor lands at end of doc)
+      navIsJumping = true;
       editor.commands.setContent(initialContent, { contentType: 'markdown' });
+      // Move cursor to start of document and seed nav history from there
+      editor.commands.focus('start');
+      navIsJumping = false;
+      navLastRecorded = 1;
       isUpdating = false;
     }
 
