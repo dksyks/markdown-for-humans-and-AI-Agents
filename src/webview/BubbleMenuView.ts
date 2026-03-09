@@ -555,6 +555,26 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       className: 'find-button',
     },
     {
+      type: 'dropdown',
+      label: 'Go',
+      title: 'Navigate insertion point history',
+      icon: { name: 'history', fallback: '↺' },
+      items: [
+        {
+          label: 'Go Back (Ctrl+Alt+Left)',
+          action: () => {
+            window.dispatchEvent(new CustomEvent('navigateBack'));
+          },
+        },
+        {
+          label: 'Go Forward (Ctrl+Alt+Right)',
+          action: () => {
+            window.dispatchEvent(new CustomEvent('navigateForward'));
+          },
+        },
+      ],
+    },
+    {
       type: 'button',
       label: 'Outline',
       title: 'Toggle Document Outline (TOC)',

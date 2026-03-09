@@ -111,6 +111,30 @@
         "command": "markdownForHumans.getSelection",
         "title": "Get Selection (for AI agents)",
         "category": "Markdown for Humans"
+      },
+      {
+        "command": "markdownForHumans.navigateBack",
+        "title": "Go Back",
+        "category": "Markdown for Humans",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "markdownForHumans.navigateForward",
+        "title": "Go Forward",
+        "category": "Markdown for Humans",
+        "icon": "$(arrow-right)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "markdownForHumans.navigateBack",
+        "key": "ctrl+alt+left",
+        "when": "markdownForHumans.isActive"
+      },
+      {
+        "command": "markdownForHumans.navigateForward",
+        "key": "ctrl+alt+right",
+        "when": "markdownForHumans.isActive"
       }
     ],
     "views": {

@@ -132,6 +132,24 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('markdownForHumans.navigateBack', () => {
+      const panel = getActiveWebviewPanel();
+      if (panel) {
+        panel.webview.postMessage({ type: 'navigateBack' });
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('markdownForHumans.navigateForward', () => {
+      const panel = getActiveWebviewPanel();
+      if (panel) {
+        panel.webview.postMessage({ type: 'navigateForward' });
+      }
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('markdownForHumans.getSelection', async () => {
       const result = await provider.getSelection();
       // Debug: open result in editor pane

@@ -154,6 +154,36 @@ let outlineUpdateTimeout: number | null = null;
 let lastSentContentHash: string | null = null;
 let lastSentTimestamp = 0;
 
+// Navigation history (back/forward through insertion points)
+const NAV_HISTORY_MAX = 50;
+let navBack: number[] = [];
+let navForward: number[] = [];
+let navLastRecorded: number | null = null;
+let navDebounceTimer: number | null = null;
+let navIsJumping = false; // suppress recording while we're performing a back/forward jump
+
+function navRecordPosition(pos: number, immediate = false): void {
+  if (navIsJumping) return;
+  if (navDebounceTimer !== null) {
+    clearTimeout(navDebounceTimer);
+    navDebounceTimer = null;
+  }
+  const doRecord = () => {
+    if (navLastRecorded !== null && Math.abs(pos - navLastRecorded) < 100) return;
+    if (navLastRecorded !== null) {
+      navBack.push(navLastRecorded);
+      if (navBack.length > NAV_HISTORY_MAX) navBack.shift();
+    }
+    navLastRecorded = pos;
+    navForward = [];
+  };
+  if (immediate) {
+    doRecord();
+  } else {
+    navDebounceTimer = window.setTimeout(doRecord, 1000);
+  }
+}
+
 /**
  * Simple hash function (djb2 algorithm) for content deduplication
  */
@@ -520,6 +550,9 @@ function initializeEditor(initialContent: string) {
         try {
           const { from, empty } = editor.state.selection;
           vscode.postMessage({ type: 'selectionChange', pos: from });
+
+          // Record navigation history: always debounce; record when cursor stops for 1s
+          navRecordPosition(from);
           const selected = empty ? null : getSelectionAsMarkdown(editor);
           const fullMarkdown = getEditorMarkdownForSync(editor);
           let context_before: string | null = null;
@@ -1294,7 +1327,31 @@ window.addEventListener('message', (event: MessageEvent) => {
       case 'navigateToHeading': {
         if (!editor) return;
         const pos = message.pos as number;
+        // Record current position immediately before jumping
+        if (navLastRecorded !== null) {
+          navRecordPosition(navLastRecorded, true);
+        }
         scrollToHeading(editor, pos);
+        break;
+      }
+      case 'navigateBack': {
+        if (!editor || navBack.length === 0) return;
+        const dest = navBack.pop()!;
+        if (navLastRecorded !== null) navForward.push(navLastRecorded);
+        navIsJumping = true;
+        navLastRecorded = dest;
+        scrollToHeading(editor, dest);
+        navIsJumping = false;
+        break;
+      }
+      case 'navigateForward': {
+        if (!editor || navForward.length === 0) return;
+        const dest = navForward.pop()!;
+        if (navLastRecorded !== null) navBack.push(navLastRecorded);
+        navIsJumping = true;
+        navLastRecorded = dest;
+        scrollToHeading(editor, dest);
+        navIsJumping = false;
         break;
       }
       case 'fileSearchResults': {
@@ -1414,6 +1471,27 @@ window.addEventListener('openFind', () => {
   if (editor) {
     toggleSearchOverlay(editor);
   }
+});
+
+// Handle Go Back / Go Forward from toolbar dropdown
+window.addEventListener('navigateBack', () => {
+  if (!editor || navBack.length === 0) return;
+  const dest = navBack.pop()!;
+  if (navLastRecorded !== null) navForward.push(navLastRecorded);
+  navIsJumping = true;
+  navLastRecorded = dest;
+  scrollToHeading(editor, dest);
+  navIsJumping = false;
+});
+
+window.addEventListener('navigateForward', () => {
+  if (!editor || navForward.length === 0) return;
+  const dest = navForward.pop()!;
+  if (navLastRecorded !== null) navBack.push(navLastRecorded);
+  navIsJumping = true;
+  navLastRecorded = dest;
+  scrollToHeading(editor, dest);
+  navIsJumping = false;
 });
 
 // Handle custom event for TOC toggle from toolbar button
