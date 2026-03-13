@@ -8,7 +8,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { PROPOSAL_TEMP_FILE } from '../editor/MarkdownEditorProvider';
-import { ProposalPanel } from './proposalPanel';
+import { Proposal, ProposalPanel } from './proposalPanel';
+
+export function readPendingProposal(proposalFilePath: string = PROPOSAL_TEMP_FILE): Proposal | null {
+  if (!fs.existsSync(proposalFilePath)) return null;
+
+  const data = JSON.parse(fs.readFileSync(proposalFilePath, 'utf8')) as Proposal;
+  if (!data.id) return null;
+
+  try {
+    fs.unlinkSync(proposalFilePath);
+  } catch {
+    // Ignore cleanup failures; the proposal has already been read.
+  }
+
+  return data;
+}
 
 /**
  * Watch for incoming proposals written by the MCP server.
@@ -19,8 +34,8 @@ export function startProposalWatcher(context: vscode.ExtensionContext): vscode.D
 
   const check = () => {
     try {
-      if (!fs.existsSync(PROPOSAL_TEMP_FILE)) return;
-      const data = JSON.parse(fs.readFileSync(PROPOSAL_TEMP_FILE, 'utf8'));
+      const data = readPendingProposal();
+      if (!data) return;
       if (!data.id || data.id === lastId) return;
       lastId = data.id;
       ProposalPanel.show(context, data);

@@ -8,8 +8,12 @@ export interface ResolvedSelectionMatch {
   index: number;
 }
 
+function normalizeForMatching(markdown: string): string {
+  return markdown.replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ');
+}
+
 function collapseParagraphBreaks(markdown: string): string {
-  return markdown.replace(/\r\n/g, '\n').replace(/([^\n])\n\n[ \t]*(?=\S)/g, '$1 ');
+  return normalizeForMatching(markdown).replace(/([^\n])\n\n[ \t]*(?=\S)/g, '$1 ');
 }
 
 function buildCandidates(serializedSelection: string): string[] {
@@ -41,6 +45,15 @@ export function resolveSelectionMatch(
       return {
         selected: fullMarkdown.slice(index, index + candidate.length),
         index,
+      };
+    }
+
+    const normalizedFullMarkdown = normalizeForMatching(fullMarkdown);
+    const normalizedIndex = normalizedFullMarkdown.indexOf(candidate);
+    if (normalizedIndex !== -1) {
+      return {
+        selected: fullMarkdown.slice(normalizedIndex, normalizedIndex + candidate.length),
+        index: normalizedIndex,
       };
     }
   }

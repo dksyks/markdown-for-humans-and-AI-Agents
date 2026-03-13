@@ -29,4 +29,16 @@ describe('resolveSelectionMatch', () => {
     const result = resolveSelectionMatch('Alpha beta gamma', 'Completely different text');
     expect(result).toBeNull();
   });
+
+  it('matches when the document contains non-breaking spaces but the selection uses regular spaces', () => {
+    const fullMarkdown = '**Market Participation.** Disbursement\u00a0Eligible.';
+    const serializedSelection = '**Market Participation.** Disbursement Eligible.';
+
+    const result = resolveSelectionMatch(fullMarkdown, serializedSelection);
+
+    expect(result).toEqual({
+      selected: fullMarkdown,
+      index: 0,
+    });
+  });
 });
