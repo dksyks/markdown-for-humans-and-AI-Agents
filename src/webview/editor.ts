@@ -42,6 +42,7 @@ import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
 import { applyColors, updateColorSettingsPanel, DEFAULT_COLORS } from './features/colorSettings';
+import { resolveSelectionMatch } from './utils/selectionMatching';
 
 // Helper function for slug generation (same as in linkDialog)
 function generateHeadingSlug(text: string, existingSlugs: Set<string>): string {
@@ -553,11 +554,20 @@ function initializeEditor(initialContent: string) {
 
           // Record navigation history: always debounce; record when cursor stops for 1s
           navRecordPosition(from);
-          const selected = empty ? null : getSelectionAsMarkdown(editor);
+          let selected = empty ? null : getSelectionAsMarkdown(editor);
           const fullMarkdown = getEditorMarkdownForSync(editor);
           let context_before: string | null = null;
           let context_after: string | null = null;
           if (selected) {
+            const resolvedMatch = resolveSelectionMatch(fullMarkdown, selected);
+            if (resolvedMatch) {
+              selected = resolvedMatch.selected;
+              const idx = resolvedMatch.index;
+              context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
+              context_after = fullMarkdown.slice(idx + selected.length, idx + selected.length + 500);
+            }
+          }
+          if (selected && context_before === null && context_after === null) {
             const idx = fullMarkdown.indexOf(selected);
             if (idx !== -1) {
               context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
@@ -1006,11 +1016,20 @@ window.addEventListener('message', (event: MessageEvent) => {
       case 'getSelection': {
         if (editor) {
           const { empty } = editor.state.selection;
-          const selected = empty ? null : getSelectionAsMarkdown(editor);
+          let selected = empty ? null : getSelectionAsMarkdown(editor);
           const fullMarkdown = getEditorMarkdownForSync(editor);
           let context_before: string | null = null;
           let context_after: string | null = null;
           if (selected && !empty) {
+            const resolvedMatch = resolveSelectionMatch(fullMarkdown, selected);
+            if (resolvedMatch) {
+              selected = resolvedMatch.selected;
+              const idx = resolvedMatch.index;
+              context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
+              context_after = fullMarkdown.slice(idx + selected.length, idx + selected.length + 500);
+            }
+          }
+          if (selected && !empty && context_before === null && context_after === null) {
             const idx = fullMarkdown.indexOf(selected);
             if (idx !== -1) {
               context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
