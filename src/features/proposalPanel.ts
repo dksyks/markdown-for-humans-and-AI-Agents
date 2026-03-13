@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { RESPONSE_TEMP_FILE } from '../editor/MarkdownEditorProvider';
 import { getActiveWebviewPanel, getActiveDocument } from '../activeWebview';
+import { applyProposalReplacement } from './proposalReplacement';
 
 export interface Proposal {
   id: string;
@@ -100,13 +101,11 @@ export class ProposalPanel {
       this._sourcePanel = sourcePanel;
     }
     this._panel.title = `Proposed Change \u2014 ${filename}`;
-    // Re-send proposal data if webview is already ready
     this._panel.webview.postMessage({
       type: 'proposalInit',
       ...proposal,
       colors: this._getColors(),
     });
-    // Scroll main editor to original
     this._scrollMainEditor();
   }
 
@@ -128,13 +127,11 @@ export class ProposalPanel {
 
   private async _handleMessage(msg: any) {
     if (msg.type === 'proposalReady') {
-      // Webview signals it is initialized; send the proposal data and colors
       this._panel.webview.postMessage({
         type: 'proposalInit',
         ...this._proposal,
         colors: this._getColors(),
       });
-      // Scroll and select in main editor
       this._scrollMainEditor();
       return;
     }
@@ -145,24 +142,29 @@ export class ProposalPanel {
       let appliedStatus = status;
 
       if (status === 'accept' && replacement) {
-        // Apply the replacement directly to the file so Claude Code doesn't need to
         const applied = await this._applyReplacement(replacement);
         appliedStatus = applied ? 'applied' : 'accept';
-        // Also copy to clipboard as backup
         await vscode.env.clipboard.writeText(replacement);
       } else if (status === 'timeout' && replacement) {
         await vscode.env.clipboard.writeText(replacement);
       }
 
-      // Write response file for MCP server to read
       try {
         fs.writeFileSync(
           RESPONSE_TEMP_FILE,
-          JSON.stringify({
-            id: this._proposal.id,
-            status: appliedStatus,
-            replacement: replacement ?? null,
-          }),
+          JSON.stringify(
+            {
+              id: this._proposal.id,
+              file: this._sourceDocument?.uri.fsPath ?? null,
+              original: this._proposal.original,
+              context_before: this._proposal.context_before,
+              context_after: this._proposal.context_after,
+              status: appliedStatus,
+              replacement: replacement ?? null,
+            },
+            null,
+            2
+          ),
           'utf8'
         );
       } catch (err) {
@@ -173,11 +175,6 @@ export class ProposalPanel {
     }
   }
 
-  /**
-   * Apply the replacement to the active document directly, replacing the original text.
-   * Normalizes non-breaking spaces so the match works even if the file contains \u00a0.
-   * Returns true if the edit was applied successfully.
-   */
   private async _applyReplacement(replacement: string): Promise<boolean> {
     const doc = this._sourceDocument;
     if (!doc) {
@@ -185,73 +182,30 @@ export class ProposalPanel {
       return false;
     }
 
-    const original = this._proposal.original;
     const rawContent = doc.getText();
+    const appliedReplacement = applyProposalReplacement(rawContent, {
+      original: this._proposal.original,
+      replacement,
+      context_before: this._proposal.context_before,
+      context_after: this._proposal.context_after,
+    });
 
-    // Try exact match first, then with \u00a0 normalized
-    let matchIndex = rawContent.indexOf(original);
-    let contentToSearch = rawContent;
-
-    if (matchIndex === -1) {
-      contentToSearch = rawContent.replace(/\u00a0/g, ' ');
-      matchIndex = contentToSearch.indexOf(original);
-    }
-
-    if (matchIndex === -1) {
-      // If there are multiple candidates with context scoring, use context
-      const { context_before, context_after } = this._proposal;
-      if (context_before || context_after) {
-        let bestIdx = -1;
-        let bestScore = -1;
-        let searchFrom = 0;
-        while (true) {
-          const idx = contentToSearch.indexOf(original, searchFrom);
-          if (idx === -1) break;
-          let score = 0;
-          if (context_before) {
-            const before = contentToSearch.slice(Math.max(0, idx - context_before.length), idx);
-            score += commonSuffixLength(before, context_before);
-          }
-          if (context_after) {
-            const after = contentToSearch.slice(
-              idx + original.length,
-              idx + original.length + context_after.length
-            );
-            score += commonPrefixLength(after, context_after);
-          }
-          if (score > bestScore) {
-            bestScore = score;
-            bestIdx = idx;
-          }
-          searchFrom = idx + 1;
-        }
-        matchIndex = bestIdx;
-      }
-    }
-
-    if (matchIndex === -1) {
+    if (!appliedReplacement) {
       vscode.window.showWarningMessage(
-        '[MD4H] Could not locate original text in file — replacement not applied. Text was copied to clipboard.'
+        '[MD4H] Could not locate original text in file â€” replacement not applied. Text was copied to clipboard.'
       );
       return false;
     }
 
-    // Build new content by splicing replacement in place of original
-    // Use rawContent offsets (matchIndex came from normalized copy but length is same for \u00a0 → space)
-    const newContent =
-      rawContent.slice(0, matchIndex) +
-      replacement +
-      rawContent.slice(matchIndex + original.length);
-
     const edit = new vscode.WorkspaceEdit();
     const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(rawContent.length));
-    edit.replace(doc.uri, fullRange, newContent);
+    edit.replace(doc.uri, fullRange, appliedReplacement.newContent);
 
     try {
       const success = await vscode.workspace.applyEdit(edit);
       if (!success) {
         vscode.window.showWarningMessage(
-          '[MD4H] Failed to apply replacement — text was copied to clipboard.'
+          '[MD4H] Failed to apply replacement â€” text was copied to clipboard.'
         );
       }
       return success;
@@ -305,18 +259,6 @@ export class ProposalPanel {
       </html>
     `;
   }
-}
-
-function commonSuffixLength(a: string, b: string): number {
-  let i = 0;
-  while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i++;
-  return i;
-}
-
-function commonPrefixLength(a: string, b: string): number {
-  let i = 0;
-  while (i < a.length && i < b.length && a[i] === b[i]) i++;
-  return i;
 }
 
 function getNonce() {

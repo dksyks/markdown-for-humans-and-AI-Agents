@@ -16,11 +16,18 @@ function collapseParagraphBreaks(markdown: string): string {
   return normalizeForMatching(markdown).replace(/([^\n])\n\n[ \t]*(?=\S)/g, '$1 ');
 }
 
+function collapseInlineParagraphBreaks(markdown: string): string {
+  return normalizeForMatching(markdown)
+    .replace(/\s*\n\n\s*/g, ' ')
+    .replace(/ {2,}/g, ' ');
+}
+
 function buildCandidates(serializedSelection: string): string[] {
   const normalizedSpaces = serializedSelection.replace(/\u00a0/g, ' ');
   const collapsed = collapseParagraphBreaks(normalizedSpaces);
+  const inlineCollapsed = collapseInlineParagraphBreaks(normalizedSpaces);
 
-  return [...new Set([serializedSelection, normalizedSpaces, collapsed])].filter(
+  return [...new Set([serializedSelection, normalizedSpaces, collapsed, inlineCollapsed])].filter(
     candidate => candidate.length > 0
   );
 }

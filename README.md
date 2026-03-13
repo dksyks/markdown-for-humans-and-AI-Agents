@@ -172,7 +172,7 @@ Built on TipTap with a **human-first design philosophy**:
 
 ### AI Agent Integration (MCP)
 
-Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI coding assistants like Claude Code read your current editor selection—so you can ask your AI to rewrite, summarize, or act on whatever you have highlighted.
+Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI coding assistants like Claude Code read your current editor selection and propose in-editor replacements—so you can ask your AI to rewrite, summarize, or act on whatever you have highlighted.
 
 **Setup** (one-time, requires [Node.js](https://nodejs.org)):
 
@@ -209,9 +209,12 @@ Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI
    }
    ```
 
-Once configured, your AI assistant can call `get_markdown_selection` to read whatever text you have selected in the editor, with surrounding context and heading structure.
+Once configured, your AI assistant can call:
 
-**Telling your AI agent when to use `get_markdown_selection`**
+- `get_markdown_selection` to read whatever text you have selected in the editor, with surrounding context and heading structure
+- `propose_selection_replacement` to show a side-by-side WYSIWYG proposal panel and, when accepted, apply the replacement back to the markdown file
+
+**Telling your AI agent when to use the MCP tools**
 
 The MCP tool is available but your AI assistant won't use it automatically—you need to tell it when and how. Add instructions to your agent's system prompt or configuration file (e.g., `CLAUDE.md` for Claude Code):
 
@@ -224,12 +227,21 @@ is available via the MCP tool `get_markdown_selection` (server: markdown-for-hum
 Call this tool when the user refers to selected text, "this", "here", or similar
 references suggesting they have something highlighted in the editor.
 
+When the user wants to rewrite, polish, or transform selected markdown in-place,
+first call `get_markdown_selection`, then call
+`propose_selection_replacement` with the original selected text, a proposed
+replacement, and any available `context_before` / `context_after` values.
+
 The tool returns a JSON string with:
 - `file`: absolute path to the markdown file
 - `selected`: the selected text as markdown (null if nothing selected)
 - `context_before`: up to 500 characters before the selection
 - `context_after`: up to 500 characters after the selection
 - `headings_before`: up to 5 headings preceding the selection, closest first
+
+`propose_selection_replacement` opens a review panel in VS Code. If the user
+accepts the proposal, Markdown for Humans attempts to apply the change directly
+to the source file and returns the final status to the AI assistant.
 ```
 
 For Claude Code, place this in `~/.claude/CLAUDE.md` (applies globally to all projects) or `.claude/CLAUDE.md` in your project root.

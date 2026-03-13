@@ -83,7 +83,13 @@ Use context_before and context_after to locate the correct occurrence if the tex
       );
 
       const result = await waitForResponse(id, TIMEOUT_MS);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      const finalResult = await applyServerFallbackIfNeeded(result, {
+        original,
+        replacement,
+        context_before: context_before ?? null,
+        context_after: context_after ?? null,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
     } catch (err) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
@@ -91,6 +97,143 @@ Use context_before and context_after to locate the correct occurrence if the tex
     }
   }
 );
+
+function normalizeForMatching(markdown) {
+  return markdown.replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ');
+}
+
+function collapseParagraphBreaks(markdown) {
+  return normalizeForMatching(markdown).replace(/([^\n])\n\n[ \t]*(?=\S)/g, '$1 ');
+}
+
+function buildCandidates(serializedSelection) {
+  const normalized = normalizeForMatching(serializedSelection);
+  const collapsed = collapseParagraphBreaks(serializedSelection);
+  return [...new Set([serializedSelection, normalized, collapsed])].filter(
+    candidate => candidate.length > 0
+  );
+}
+
+function commonSuffixLength(a, b) {
+  let i = 0;
+  while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) {
+    i += 1;
+  }
+  return i;
+}
+
+function commonPrefixLength(a, b) {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) {
+    i += 1;
+  }
+  return i;
+}
+
+function findProposalMatch(fullMarkdown, proposal) {
+  const normalizedFullMarkdown = normalizeForMatching(fullMarkdown);
+  const normalizedContextBefore = proposal.context_before
+    ? normalizeForMatching(proposal.context_before)
+    : null;
+  const normalizedContextAfter = proposal.context_after
+    ? normalizeForMatching(proposal.context_after)
+    : null;
+
+  let bestMatch = null;
+
+  for (const candidate of buildCandidates(proposal.original)) {
+    for (const searchContent of [fullMarkdown, normalizedFullMarkdown]) {
+      let searchFrom = 0;
+
+      while (true) {
+        const index = searchContent.indexOf(candidate, searchFrom);
+        if (index === -1) {
+          break;
+        }
+
+        const matchedText = fullMarkdown.slice(index, index + candidate.length);
+        let score = candidate.length;
+
+        if (normalizedContextBefore) {
+          const before = normalizeForMatching(
+            fullMarkdown.slice(Math.max(0, index - normalizedContextBefore.length), index)
+          );
+          score += commonSuffixLength(before, normalizedContextBefore);
+        }
+
+        if (normalizedContextAfter) {
+          const after = normalizeForMatching(
+            fullMarkdown.slice(
+              index + candidate.length,
+              index + candidate.length + normalizedContextAfter.length
+            )
+          );
+          score += commonPrefixLength(after, normalizedContextAfter);
+        }
+
+        if (!bestMatch || score > bestMatch.score) {
+          bestMatch = { index, matchedText, score };
+        }
+
+        searchFrom = index + 1;
+      }
+    }
+  }
+
+  return bestMatch ? { index: bestMatch.index, matchedText: bestMatch.matchedText } : null;
+}
+
+function applyProposalReplacement(fullMarkdown, proposal) {
+  const match = findProposalMatch(fullMarkdown, proposal);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    ...match,
+    newContent:
+      fullMarkdown.slice(0, match.index) +
+      proposal.replacement +
+      fullMarkdown.slice(match.index + match.matchedText.length),
+  };
+}
+
+async function applyServerFallbackIfNeeded(result, proposal) {
+  if (!result || result.status !== 'accept' || !result.replacement) {
+    return result;
+  }
+
+  const targetFile = result.file;
+  if (!targetFile || !fs.existsSync(targetFile)) {
+    return result;
+  }
+
+  try {
+    const rawContent = fs.readFileSync(targetFile, 'utf8');
+    const applied = applyProposalReplacement(rawContent, {
+      original: result.original || proposal.original,
+      replacement: result.replacement,
+      context_before: result.context_before ?? proposal.context_before ?? null,
+      context_after: result.context_after ?? proposal.context_after ?? null,
+    });
+
+    if (!applied) {
+      return result;
+    }
+
+    fs.writeFileSync(targetFile, applied.newContent, 'utf8');
+    return {
+      ...result,
+      status: 'applied',
+      applied_by: 'mcp-server',
+    };
+  } catch (error) {
+    return {
+      ...result,
+      fallback_error: String(error),
+    };
+  }
+}
 
 /**
  * Wait for the extension to write a response to RESPONSE_TEMP_FILE with matching id.
