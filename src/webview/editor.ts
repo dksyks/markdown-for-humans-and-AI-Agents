@@ -893,6 +893,63 @@ function initializeEditor(initialContent: string) {
 }
 
 /**
+ * Count the length of the common suffix between two strings.
+ * Used to score context matches when locating a selection in the document.
+ */
+function commonSuffixLength(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i++;
+  return i;
+}
+
+/**
+ * Count the length of the common prefix between two strings.
+ */
+function commonPrefixLength(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+}
+
+/**
+ * Convert markdown character indices (startChar, endChar) to ProseMirror positions.
+ * Walks the document text nodes accumulating character counts.
+ * Returns { from, to } as ProseMirror positions, or { from: 1, to: 1 } if not found.
+ */
+function markdownIndexToPos(
+  editor: Editor,
+  startChar: number,
+  endChar: number
+): { from: number; to: number } {
+  // Rebuild the markdown text from the document, tracking cumulative char offset
+  // and the corresponding ProseMirror position for each character.
+  let charCount = 0;
+  let fromPos: number | null = null;
+  let toPos: number | null = null;
+
+  editor.state.doc.descendants((node, pos) => {
+    if (fromPos !== null && toPos !== null) return false;
+
+    if (node.isText && node.text) {
+      const textLen = node.text.length;
+      // Check if startChar falls within this text node
+      if (fromPos === null && charCount + textLen > startChar) {
+        fromPos = pos + (startChar - charCount);
+      }
+      // Check if endChar falls within or at end of this text node
+      if (fromPos !== null && toPos === null && charCount + textLen >= endChar) {
+        toPos = pos + (endChar - charCount);
+      }
+      charCount += textLen;
+    }
+    return true;
+  });
+
+  if (fromPos === null) return { from: 1, to: 1 };
+  return { from: fromPos, to: toPos ?? fromPos };
+}
+
+/**
  * Get the last N headings before the current selection, closest first.
  */
 function getHeadingsBeforeSelection(editor: Editor, count = 5): string[] {
@@ -1340,6 +1397,68 @@ window.addEventListener('message', (event: MessageEvent) => {
         scrollToHeading(editor, pos);
         break;
       }
+      case 'scrollAndSelect': {
+        if (!editor) break;
+        const { original, context_before: ctxBefore, context_after: ctxAfter } = message as {
+          original: string;
+          context_before: string | null;
+          context_after: string | null;
+        };
+
+        const fullMarkdown = getEditorMarkdownForSync(editor);
+
+        // Find all occurrences of original in the full markdown
+        const occurrences: number[] = [];
+        let searchIdx = 0;
+        while (true) {
+          const idx = fullMarkdown.indexOf(original, searchIdx);
+          if (idx === -1) break;
+          occurrences.push(idx);
+          searchIdx = idx + 1;
+        }
+
+        if (occurrences.length === 0) break; // text not found, skip
+
+        // Choose best occurrence using context scoring
+        let bestMarkdownIdx = occurrences[0];
+        if (occurrences.length > 1 && (ctxBefore || ctxAfter)) {
+          let bestScore = -1;
+          for (const idx of occurrences) {
+            let score = 0;
+            if (ctxBefore) {
+              const before = fullMarkdown.slice(Math.max(0, idx - ctxBefore.length), idx);
+              score += commonSuffixLength(before, ctxBefore);
+            }
+            if (ctxAfter) {
+              const after = fullMarkdown.slice(
+                idx + original.length,
+                idx + original.length + ctxAfter.length
+              );
+              score += commonPrefixLength(after, ctxAfter);
+            }
+            if (score > bestScore) {
+              bestScore = score;
+              bestMarkdownIdx = idx;
+            }
+          }
+        }
+
+        // Convert markdown character indices to ProseMirror positions
+        const { from: selFrom, to: selTo } = markdownIndexToPos(
+          editor,
+          bestMarkdownIdx,
+          bestMarkdownIdx + original.length
+        );
+
+        // Record current position in nav history before jumping
+        if (navLastRecorded !== null) navRecordPosition(navLastRecorded, true);
+        navIsJumping = true;
+        navLastRecorded = selFrom;
+        editor.commands.setTextSelection({ from: selFrom, to: selTo });
+        scrollToPos(editor, selFrom);
+        navIsJumping = false;
+        break;
+      }
       case 'navigateBack': {
         if (!editor || navBack.length === 0) return;
         const dest = navBack.pop()!;
@@ -1456,19 +1575,26 @@ function updateEditorContent(markdown: string) {
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     isDomReady = true;
-    signalReady();
-
-    if (!editor && pendingInitialContent !== null) {
-      initializeEditor(pendingInitialContent);
-      pendingInitialContent = null;
+    if (document.getElementById('proposal-root')) {
+      initializeProposalMode();
+    } else {
+      signalReady();
+      if (!editor && pendingInitialContent !== null) {
+        initializeEditor(pendingInitialContent);
+        pendingInitialContent = null;
+      }
     }
   });
 } else {
   isDomReady = true;
-  signalReady();
-  if (!editor && pendingInitialContent !== null) {
-    initializeEditor(pendingInitialContent);
-    pendingInitialContent = null;
+  if (document.getElementById('proposal-root')) {
+    initializeProposalMode();
+  } else {
+    signalReady();
+    if (!editor && pendingInitialContent !== null) {
+      initializeEditor(pendingInitialContent);
+      pendingInitialContent = null;
+    }
   }
 }
 
@@ -1658,3 +1784,192 @@ export const __testing = {
     lastSentTimestamp = 0;
   },
 };
+
+// ---------------------------------------------------------------------------
+// Proposal mode
+// Activated when the webview HTML contains #proposal-root instead of #editor.
+// Renders two TipTap instances (original read-only, proposed editable) plus
+// Accept / Edit / Cancel buttons and a countdown timer.
+// ---------------------------------------------------------------------------
+
+const PROPOSAL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes, must match MCP server
+
+function initializeProposalMode() {
+  const root = document.getElementById('proposal-root');
+  if (!root) return;
+
+  // --- Build layout ---
+  root.innerHTML = `
+    <div class="proposal-layout">
+      <div class="proposal-section">
+        <div class="proposal-section-label">Original</div>
+        <div class="proposal-pane-wrap proposal-pane-wrap-original">
+          <div id="proposal-original" class="proposal-pane proposal-pane-original markdown-editor"></div>
+        </div>
+      </div>
+      <div class="proposal-section">
+        <div id="proposal-toolbar-mount"></div>
+        <div class="proposal-section-label">Proposed</div>
+        <div class="proposal-pane-wrap">
+          <div id="proposal-proposed" class="proposal-pane proposal-pane-proposed markdown-editor"></div>
+        </div>
+      </div>
+      <div class="proposal-actions">
+        <button id="proposal-accept" class="proposal-btn proposal-btn-primary">Accept</button>
+        <button id="proposal-cancel" class="proposal-btn">Cancel</button>
+        <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Click to reset timer">10:00 ↺</button>
+      </div>
+    </div>
+  `;
+
+  // Inline styles for proposal layout (VS Code theme variables)
+  const styleEl = document.createElement('style');
+  styleEl.textContent = `
+    body { margin: 0; padding: 0; overflow: auto; }
+    .proposal-layout { display: flex; flex-direction: column; height: 100vh; padding: 8px; box-sizing: border-box; gap: 6px; }
+    .proposal-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .proposal-section-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin-bottom: 4px; }
+    /* Wrap provides the border/scroll container; extra left padding for heading ::before labels */
+    .proposal-pane-wrap { flex: 1; overflow: auto; border: 1px solid var(--vscode-widget-border, #444); border-radius: 3px; min-height: 0; padding-left: 2.5em; }
+    .proposal-pane-wrap-original { opacity: 0.65; }
+    .proposal-pane-wrap-original .ProseMirror { cursor: default; }
+    /* Override .markdown-editor defaults that don't fit inside the wrap */
+    .proposal-pane.markdown-editor { margin: 6px 16px 6px 0; padding-left: 0; min-height: 2em; }
+    .proposal-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0; flex-shrink: 0; }
+    .proposal-btn { padding: 4px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; font-size: 13px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); }
+    .proposal-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+    .proposal-btn-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .proposal-btn-primary:hover { background: var(--vscode-button-hoverBackground); }
+    .proposal-btn-timer { margin-left: auto; font-variant-numeric: tabular-nums; min-width: 72px; }
+    .proposal-btn-timer.expiring { color: var(--vscode-errorForeground, #f44); border-color: var(--vscode-errorForeground, #f44); }
+  `;
+  document.head.appendChild(styleEl);
+
+  // --- Create TipTap instances ---
+  const originalEl = document.getElementById('proposal-original')!;
+  const proposedEl = document.getElementById('proposal-proposed')!;
+  const toolbarMount = document.getElementById('proposal-toolbar-mount')!;
+
+  // Shared extensions (same as main editor minus persistence-related ones)
+  const sharedExtensions = [
+    StarterKit,
+    Markdown,
+    TableKit,
+    ListKit,
+    Link,
+    TabIndentation,
+    GitHubAlerts,
+    MarkdownParagraph,
+    OrderedListMarkdownFix,
+  ];
+
+  const originalEditor = new Editor({
+    element: originalEl,
+    extensions: sharedExtensions,
+    editable: false,
+    content: '',
+  });
+
+  const proposedEditor = new Editor({
+    element: proposedEl,
+    extensions: sharedExtensions,
+    editable: true,
+    content: '',
+    onFocus: () => {
+      window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
+    },
+    onBlur: () => {
+      window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: false } }));
+    },
+  });
+
+  // Attach toolbar to proposed pane
+  const toolbar = createFormattingToolbar(proposedEditor);
+  toolbarMount.appendChild(toolbar);
+  // Prevent toolbar mousedown from stealing focus away from the proposed editor,
+  // which would disable the toolbar buttons before the click handler runs.
+  toolbar.addEventListener('mousedown', e => {
+    e.preventDefault();
+    // Ensure the proposed editor stays focused
+    proposedEditor.commands.focus();
+    window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
+  });
+
+  // --- Timer ---
+  let remainingMs = PROPOSAL_TIMEOUT_MS;
+  let timerInterval: ReturnType<typeof setInterval> | null = null;
+  const timerBtn = document.getElementById('proposal-timer') as HTMLButtonElement;
+
+  const formatTime = (ms: number): string => {
+    const totalSec = Math.ceil(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${s.toString().padStart(2, '0')} ↺`;
+  };
+
+  const startTimer = () => {
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+      remainingMs -= 1000;
+      timerBtn.textContent = formatTime(remainingMs);
+      timerBtn.classList.toggle('expiring', remainingMs <= 60_000);
+      if (remainingMs <= 0) {
+        clearInterval(timerInterval!);
+        timerInterval = null;
+        handleProposalResponse('timeout');
+      }
+    }, 1000);
+  };
+
+  timerBtn.addEventListener('click', () => {
+    remainingMs = PROPOSAL_TIMEOUT_MS;
+    timerBtn.textContent = formatTime(remainingMs);
+    timerBtn.classList.remove('expiring');
+    startTimer();
+  });
+
+  // --- Button handlers ---
+  const acceptBtn = document.getElementById('proposal-accept') as HTMLButtonElement;
+  const cancelBtn = document.getElementById('proposal-cancel') as HTMLButtonElement;
+
+  const handleProposalResponse = (status: 'accept' | 'cancel' | 'timeout' | 'cancelled') => {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    const normalizedStatus = status === 'cancel' ? 'cancelled' : status;
+    const replacementMd = normalizedStatus === 'cancelled'
+      ? null
+      : getEditorMarkdownForSync(proposedEditor);
+    vscode.postMessage({ type: 'proposalResponse', status: normalizedStatus, replacement: replacementMd });
+  };
+
+  acceptBtn.addEventListener('click', () => handleProposalResponse('accept'));
+  cancelBtn.addEventListener('click', () => handleProposalResponse('cancel'));
+
+  // --- Handle proposalInit from extension ---
+  window.addEventListener('message', (event: MessageEvent) => {
+    const msg = event.data;
+    if (msg.type !== 'proposalInit') return;
+    // Apply color settings if provided (same as main editor settingsUpdate)
+    if (msg.colors && typeof msg.colors === 'object') {
+      (window as any).md4hColors = msg.colors;
+      applyColors({ ...DEFAULT_COLORS, ...(msg.colors as object) });
+    }
+    // Load content into both editors
+    originalEditor.commands.setContent(msg.original ?? '', { contentType: 'markdown' });
+    proposedEditor.commands.setContent(msg.replacement ?? '', { contentType: 'markdown' });
+    // Focus proposed editor so toolbar buttons activate (deferred to let DOM settle)
+    requestAnimationFrame(() => {
+      proposedEditor.commands.focus('start');
+      // Manually signal focus since the onFocus hook may not fire on programmatic focus
+      window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
+      updateToolbarStates();
+    });
+    // Reset timer
+    remainingMs = PROPOSAL_TIMEOUT_MS;
+    timerBtn.textContent = formatTime(remainingMs);
+    timerBtn.classList.remove('expiring');
+    startTimer();
+  });
+
+  // Signal ready to extension host
+  vscode.postMessage({ type: 'proposalReady' });
+}

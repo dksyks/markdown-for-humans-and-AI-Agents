@@ -9,6 +9,7 @@ import { MarkdownEditorProvider } from './editor/MarkdownEditorProvider';
 import { WordCountFeature } from './features/wordCount';
 import { getActiveWebviewPanel } from './activeWebview';
 import { outlineViewProvider } from './features/outlineView';
+import { startProposalWatcher } from './features/proposalWatcher';
 
 export function activate(context: vscode.ExtensionContext) {
   // Register the custom editor provider
@@ -38,6 +39,9 @@ export function activate(context: vscode.ExtensionContext) {
   // Initialize Word Count feature
   const wordCount = new WordCountFeature();
   wordCount.activate(context);
+
+  // Watch for incoming AI proposals (Plan Selection feature)
+  context.subscriptions.push(startProposalWatcher(context));
 
   // Register commands
   context.subscriptions.push(

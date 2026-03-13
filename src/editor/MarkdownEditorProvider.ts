@@ -13,6 +13,8 @@ import { setActiveWebviewPanel, getActiveWebviewPanel, getActiveDocument } from 
 import { buildResizeBackupLocation, resolveBackupPathWithCollisionDetection } from './imageBackups';
 
 export const SELECTION_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Selection.json');
+export const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.json');
+export const RESPONSE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Response.json');
 
 function writeSelectionToTempFile(data: object): void {
   try {
