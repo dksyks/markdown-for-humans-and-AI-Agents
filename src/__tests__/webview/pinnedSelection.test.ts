@@ -311,6 +311,21 @@ describe('pinned selection ranges', () => {
     ]);
   });
 
+  it('splits markdown list selections into one normalized block per list item', async () => {
+    const { getNormalizedSelectionBlocks } = await import('../../webview/utils/pinnedSelection');
+
+    expect(
+      getNormalizedSelectionBlocks(
+        '### Examples of Unacceptable Behavior\n\n- First item\n- Second item\n- Third item'
+      )
+    ).toEqual([
+      'Examples of Unacceptable Behavior',
+      'First item',
+      'Second item',
+      'Third item',
+    ]);
+  });
+
   it('finds a contiguous rendered block sequence for a markdown selection', async () => {
     const { findRenderedBlockSequence } = await import('../../webview/utils/pinnedSelection');
 

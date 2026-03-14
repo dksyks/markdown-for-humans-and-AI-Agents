@@ -408,7 +408,25 @@ export function resolveTextRangeWithinTextBlock(
 export function getNormalizedSelectionBlocks(markdown: string): string[] {
   return markdown
     .split(/\n{2,}/)
-    .map(part => normalizeBlockMarkdown(part))
+    .flatMap(part => {
+      const lines = part.split('\n').map(line => line.trim()).filter(Boolean);
+      const listItemLines = lines.filter(line =>
+        /^([-*+]|\d+\.)\s+/.test(line) || /^-\s+\[[ xX]\]\s+/.test(line)
+      );
+
+      if (listItemLines.length === lines.length && listItemLines.length > 0) {
+        return listItemLines.map(line =>
+          normalizeBlockMarkdown(
+            line
+              .replace(/^-\s+\[[ xX]\]\s+/, '')
+              .replace(/^[-*+]\s+/, '')
+              .replace(/^\d+\.\s+/, '')
+          )
+        );
+      }
+
+      return [normalizeBlockMarkdown(part)];
+    })
     .filter(Boolean);
 }
 
