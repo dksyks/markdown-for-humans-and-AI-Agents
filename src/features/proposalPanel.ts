@@ -16,13 +16,32 @@ import {
 import { applyProposalReplacement } from './proposalReplacement';
 
 export interface Proposal {
-  id: string;
-  file?: string | null;
-  source_instance_id?: string | null;
   original: string;
   replacement: string;
   context_before: string | null;
   context_after: string | null;
+}
+
+export interface ProposalBatchRequest {
+  id: string;
+  file?: string | null;
+  source_instance_id?: string | null;
+  proposals: Proposal[];
+}
+
+export interface ProposalRequest extends Proposal {
+  id: string;
+  file?: string | null;
+  source_instance_id?: string | null;
+  proposals?: Proposal[];
+}
+
+interface ProposalResult {
+  original: string;
+  context_before: string | null;
+  context_after: string | null;
+  status: string;
+  replacement: string | null;
 }
 
 /**
@@ -32,39 +51,47 @@ export interface Proposal {
 export class ProposalPanel {
   static currentPanel: ProposalPanel | undefined;
 
-  static show(context: vscode.ExtensionContext, proposal: Proposal) {
-    const sourceContext = resolveProposalSourceContext(proposal);
+  static show(context: vscode.ExtensionContext, request: ProposalRequest) {
+    const sourceContext = resolveProposalSourceContext(request);
     const doc = sourceContext.document;
     const sourcePanel = sourceContext.panel;
     const filename = doc?.uri.fsPath
       ? path.basename(doc.uri.fsPath)
-      : proposal.file
-        ? path.basename(proposal.file)
+      : request.file
+        ? path.basename(request.file)
         : 'document';
 
     if (ProposalPanel.currentPanel) {
-      ProposalPanel.currentPanel._update(proposal, filename, doc, sourcePanel);
+      ProposalPanel.currentPanel._update(request, filename, doc, sourcePanel);
       ProposalPanel.currentPanel._panel.reveal(vscode.ViewColumn.Beside, true);
       return;
     }
-    new ProposalPanel(context, proposal, filename, doc, sourcePanel);
+    new ProposalPanel(context, request, filename, doc, sourcePanel);
   }
 
   private _panel: vscode.WebviewPanel;
   private _proposal: Proposal;
+  private _requestId: string;
+  private _proposalQueue: Proposal[];
+  private _proposalIndex: number;
+  private _proposalResults: ProposalResult[];
   private _context: vscode.ExtensionContext;
   private _sourceDocument: vscode.TextDocument | undefined;
   private _sourcePanel: vscode.WebviewPanel | undefined;
 
   private constructor(
     context: vscode.ExtensionContext,
-    proposal: Proposal,
+    request: ProposalRequest,
     filename: string,
     sourceDocument?: vscode.TextDocument,
     sourcePanel?: vscode.WebviewPanel
   ) {
     this._context = context;
-    this._proposal = proposal;
+    this._requestId = request.id;
+    this._proposalQueue = normalizeProposalQueue(request);
+    this._proposalIndex = 0;
+    this._proposalResults = [];
+    this._proposal = this._proposalQueue[0];
     this._sourceDocument = sourceDocument;
     this._sourcePanel = sourcePanel;
 
@@ -103,12 +130,16 @@ export class ProposalPanel {
   }
 
   private _update(
-    proposal: Proposal,
+    request: ProposalRequest,
     filename: string,
     sourceDocument?: vscode.TextDocument,
     sourcePanel?: vscode.WebviewPanel
   ) {
-    this._proposal = proposal;
+    this._requestId = request.id;
+    this._proposalQueue = normalizeProposalQueue(request);
+    this._proposalIndex = 0;
+    this._proposalResults = [];
+    this._proposal = this._proposalQueue[0];
     if (sourceDocument) {
       this._sourceDocument = sourceDocument;
     }
@@ -118,7 +149,7 @@ export class ProposalPanel {
     this._panel.title = `Proposed Change \u2014 ${filename}`;
     this._panel.webview.postMessage({
       type: 'proposalInit',
-      ...proposal,
+      ...this._proposal,
       colors: this._getColors(),
     });
     this._scrollMainEditorWithRetries();
@@ -164,22 +195,28 @@ export class ProposalPanel {
         await vscode.env.clipboard.writeText(replacement);
       }
 
+      this._proposalResults.push({
+        ...this._proposal,
+        status: appliedStatus,
+        replacement: replacement ?? null,
+      });
+
+      if (this._shouldAdvanceToNextProposal(appliedStatus)) {
+        this._proposalIndex += 1;
+        this._proposal = this._proposalQueue[this._proposalIndex];
+        this._panel.webview.postMessage({
+          type: 'proposalInit',
+          ...this._proposal,
+          colors: this._getColors(),
+        });
+        this._scrollMainEditorWithRetries();
+        return;
+      }
+
       try {
         fs.writeFileSync(
           RESPONSE_TEMP_FILE,
-          JSON.stringify(
-            {
-              id: this._proposal.id,
-              file: this._sourceDocument?.uri.fsPath ?? null,
-              original: this._proposal.original,
-              context_before: this._proposal.context_before,
-              context_after: this._proposal.context_after,
-              status: appliedStatus,
-              replacement: replacement ?? null,
-            },
-            null,
-            2
-          ),
+          JSON.stringify(this._buildResponsePayload(appliedStatus), null, 2),
           'utf8'
         );
       } catch (err) {
@@ -188,6 +225,37 @@ export class ProposalPanel {
 
       this._panel.dispose();
     }
+  }
+
+  private _shouldAdvanceToNextProposal(status: string): boolean {
+    return status !== 'timeout' && this._proposalIndex < this._proposalQueue.length - 1;
+  }
+
+  private _buildResponsePayload(finalStatus: string) {
+    if (this._proposalQueue.length === 1) {
+      return {
+        id: this._requestId,
+        file: this._sourceDocument?.uri.fsPath ?? null,
+        original: this._proposal.original,
+        context_before: this._proposal.context_before,
+        context_after: this._proposal.context_after,
+        status: finalStatus,
+        replacement: this._proposalResults[0]?.replacement ?? null,
+      };
+    }
+
+    return {
+      id: this._requestId,
+      file: this._sourceDocument?.uri.fsPath ?? null,
+      status: finalStatus === 'timeout' ? 'timeout' : 'completed',
+      results: this._proposalResults.map(result => ({
+        status: result.status,
+        original: result.original,
+        context_before: result.context_before,
+        context_after: result.context_after,
+        replacement: result.replacement,
+      })),
+    };
   }
 
   private async _applyReplacement(replacement: string): Promise<boolean> {
@@ -302,7 +370,7 @@ export class ProposalPanel {
   }
 }
 
-function resolveProposalSourceContext(proposal: Proposal): {
+function resolveProposalSourceContext(proposal: ProposalRequest): {
   document: vscode.TextDocument | undefined;
   panel: vscode.WebviewPanel | undefined;
 } {
@@ -317,6 +385,21 @@ function resolveProposalSourceContext(proposal: Proposal): {
     document: getActiveDocument(),
     panel: getActiveWebviewPanel(),
   };
+}
+
+function normalizeProposalQueue(request: ProposalRequest): Proposal[] {
+  if (Array.isArray(request.proposals) && request.proposals.length > 0) {
+    return request.proposals;
+  }
+
+  return [
+    {
+      original: request.original,
+      replacement: request.replacement,
+      context_before: request.context_before,
+      context_after: request.context_after,
+    },
+  ];
 }
 
 function getNonce() {

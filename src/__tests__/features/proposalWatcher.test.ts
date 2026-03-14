@@ -7,7 +7,7 @@ import {
   resetActiveWebviewStateForTests,
 } from '../../activeWebview';
 import { readPendingProposal, shouldHandleProposal } from '../../features/proposalWatcher';
-import type { Proposal } from '../../features/proposalPanel';
+import type { ProposalRequest } from '../../features/proposalPanel';
 
 describe('readPendingProposal', () => {
   beforeEach(() => {
@@ -76,6 +76,60 @@ describe('readPendingProposal', () => {
       context_after: 'After',
     });
   });
+
+  it('returns a queued proposal batch and deletes the temp file after reading it', () => {
+    const proposalFilePath = path.join(
+      os.tmpdir(),
+      `md4h-proposal-batch-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+    );
+
+    fs.writeFileSync(
+      proposalFilePath,
+      JSON.stringify({
+        id: 'batch-1',
+        file: '/workspace/docs/target.md',
+        source_instance_id: 'window-2',
+        proposals: [
+          {
+            original: 'Old text',
+            replacement: 'New text',
+            context_before: 'Before',
+            context_after: 'After',
+          },
+          {
+            original: 'Second old text',
+            replacement: 'Second new text',
+            context_before: null,
+            context_after: null,
+          },
+        ],
+      }),
+      'utf8'
+    );
+
+    const proposal = readPendingProposal(proposalFilePath);
+
+    expect(proposal).toEqual({
+      id: 'batch-1',
+      file: '/workspace/docs/target.md',
+      source_instance_id: 'window-2',
+      proposals: [
+        {
+          original: 'Old text',
+          replacement: 'New text',
+          context_before: 'Before',
+          context_after: 'After',
+        },
+        {
+          original: 'Second old text',
+          replacement: 'Second new text',
+          context_before: null,
+          context_after: null,
+        },
+      ],
+    });
+    expect(fs.existsSync(proposalFilePath)).toBe(false);
+  });
 });
 
 describe('shouldHandleProposal', () => {
@@ -94,7 +148,7 @@ describe('shouldHandleProposal', () => {
     registerWebviewPanel(panel as never, document as never);
   }
 
-  function buildProposal(overrides: Partial<Proposal> = {}): Proposal {
+  function buildProposal(overrides: Partial<ProposalRequest> = {}): ProposalRequest {
     return {
       id: 'proposal-1',
       file: '/workspace/docs/target.md',
@@ -129,5 +183,24 @@ describe('shouldHandleProposal', () => {
     registerDocument('/workspace/docs/target.md');
 
     expect(shouldHandleProposal(buildProposal())).toBe(true);
+  });
+
+  it('accepts proposal batches for the matching open file from this extension host instance', () => {
+    registerDocument('/workspace/docs/target.md');
+
+    expect(
+      shouldHandleProposal(
+        buildProposal({
+          proposals: [
+            {
+              original: 'Old text',
+              replacement: 'New text',
+              context_before: null,
+              context_after: null,
+            },
+          ],
+        })
+      )
+    ).toBe(true);
   });
 });

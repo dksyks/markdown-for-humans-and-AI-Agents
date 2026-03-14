@@ -9,13 +9,21 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { getEditorHostInstanceId, hasOpenWebviewForDocument } from '../activeWebview';
 import { PROPOSAL_TEMP_FILE } from '../editor/MarkdownEditorProvider';
-import { Proposal, ProposalPanel } from './proposalPanel';
+import { ProposalPanel, ProposalRequest } from './proposalPanel';
 
-export function readPendingProposal(proposalFilePath: string = PROPOSAL_TEMP_FILE): Proposal | null {
+export function readPendingProposal(
+  proposalFilePath: string = PROPOSAL_TEMP_FILE
+): ProposalRequest | null {
   if (!fs.existsSync(proposalFilePath)) return null;
 
-  const data = JSON.parse(fs.readFileSync(proposalFilePath, 'utf8')) as Proposal;
+  const data = JSON.parse(fs.readFileSync(proposalFilePath, 'utf8')) as ProposalRequest;
   if (!data.id) return null;
+  if (!Array.isArray(data.proposals) && (!data.original || typeof data.replacement !== 'string')) {
+    return null;
+  }
+  if (Array.isArray(data.proposals) && data.proposals.length === 0) {
+    return null;
+  }
 
   try {
     fs.unlinkSync(proposalFilePath);
@@ -26,7 +34,7 @@ export function readPendingProposal(proposalFilePath: string = PROPOSAL_TEMP_FIL
   return data;
 }
 
-export function shouldHandleProposal(proposal: Proposal): boolean {
+export function shouldHandleProposal(proposal: ProposalRequest): boolean {
   const instanceMatch =
     !proposal.source_instance_id || proposal.source_instance_id === getEditorHostInstanceId();
   const fileMatch = !proposal.file || hasOpenWebviewForDocument(proposal.file);

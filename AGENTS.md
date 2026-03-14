@@ -187,6 +187,11 @@ Use the MCP tools based on how the task starts:
   Pass the `selected`, `context_before`, and `context_after` values returned by `get_markdown_selection`.
   Treat the edit as confirmed only when the tool returns status `"applied"`.
 
+- `propose_sequential_selection_replacements`
+  Use when the user wants to review multiple proposed replacements for the same markdown file in one uninterrupted pass.
+  Pass the file path when available plus an ordered `changes` array of `{ original, replacement, context_before, context_after }`.
+  Treat each edit as confirmed only when its entry in the returned `results` array has status `"applied"`.
+
 - `scroll_to_markdown_selection`
   Use when the agent is working from raw markdown or file context and the user wants to see a known passage in the WYSIWYG editor.
   Pass the exact markdown span plus known `context_before` / `context_after` values when available.
@@ -196,6 +201,9 @@ Typical patterns:
 
 - User-driven editor selection:
   Call `get_markdown_selection`, then use that result for analysis or for `propose_selection_replacement`.
+
+- User-driven batch review:
+  Call `get_markdown_selection` to capture the file path and any needed context, then call `propose_sequential_selection_replacements` with the ordered change list for that file.
 
 - Agent-driven file context:
   If the agent identifies a passage from raw file edits and the user wants to see it in the editor, call `scroll_to_markdown_selection`.

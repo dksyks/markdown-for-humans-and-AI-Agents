@@ -214,6 +214,7 @@ Once configured, your AI assistant can call:
 - `get_markdown_selection` to read whatever text you have selected in the editor, with surrounding context and heading structure
 - `scroll_to_markdown_selection` to reselect a previously captured markdown span and scroll it into view in the editor
 - `propose_selection_replacement` to show a side-by-side WYSIWYG proposal panel and, when accepted, apply the replacement back to the markdown file
+- `propose_sequential_selection_replacements` to review multiple proposed replacements for the same markdown file in one queued session and return a single aggregated result
 
 **Telling your AI agent when to use the MCP tools**
 
@@ -240,6 +241,9 @@ Use the tools based on how the task starts:
 - If the user wants an in-editor suggested rewrite for the current selection,
   call `propose_selection_replacement` with the selected text and context from
   `get_markdown_selection`.
+- If the user wants to review several rewrites for the same markdown file in one
+  uninterrupted pass, call `propose_sequential_selection_replacements` with the
+  file path from `get_markdown_selection` and an ordered `changes` array.
 
 The tool returns a JSON string with:
 - `file`: absolute path to the markdown file
@@ -251,6 +255,11 @@ The tool returns a JSON string with:
 `propose_selection_replacement` opens a review panel in VS Code. If the user
 accepts the proposal, Markdown for Humans attempts to apply the change directly
 to the source file and returns the final status to the AI assistant.
+
+`propose_sequential_selection_replacements` reuses that same review panel, but
+queues each proposal and advances to the next one without returning control to
+the MCP client between steps. It returns one JSON result containing the per-step
+statuses after the queue completes or times out.
 
 `scroll_to_markdown_selection` is meant for revealing a known passage to the
 user when the agent is working from file context. It is not intended as a
@@ -268,6 +277,12 @@ Examples:
   The agent should call `get_markdown_selection`, then call
   `propose_selection_replacement` with the returned `selected`,
   `context_before`, and `context_after` values.
+
+- Batched review workflow:
+  The agent has identified several edits for the same markdown file and the user
+  wants to review them in one pass. The agent should call
+  `propose_sequential_selection_replacements` with the file path and an ordered
+  list of `{ original, replacement, context_before, context_after }` objects.
 
 - Agent-driven raw file workflow:
   The agent is reviewing markdown from the file directly, identifies a specific

@@ -120,6 +120,86 @@ Use context_before and context_after to locate the correct occurrence if the tex
 );
 
 server.tool(
+  'propose_sequential_selection_replacements',
+  `Show a queued series of proposed replacements for the same markdown file in the Markdown for Humans editor.
+Opens the same review panel and advances through each proposal without returning control to the MCP client between steps.
+Returns one aggregated result after the sequence completes or times out.
+Pass file when available so the extension can target the correct open markdown document.`,
+  {
+    file: z
+      .string()
+      .optional()
+      .describe('Absolute path to the markdown file being reviewed (recommended when available)'),
+    changes: z
+      .array(
+        z.object({
+          original: z
+            .string()
+            .describe('The exact original text to replace for this step'),
+          replacement: z.string().describe('The proposed replacement markdown text for this step'),
+          context_before: z
+            .string()
+            .optional()
+            .describe('Text immediately before this selection'),
+          context_after: z
+            .string()
+            .optional()
+            .describe('Text immediately after this selection'),
+        })
+      )
+      .min(1)
+      .describe('Ordered list of replacements to review sequentially'),
+  },
+  async ({ file, changes }) => {
+    try {
+      const id = Date.now().toString();
+      const selectionMetadata = readSelectionMetadata();
+      const routingMetadata = buildBatchRoutingMetadata(selectionMetadata, file ?? null);
+      clearFileIfExists(RESPONSE_TEMP_FILE);
+
+      fs.writeFileSync(
+        PROPOSAL_TEMP_FILE,
+        JSON.stringify({
+          id,
+          ...routingMetadata,
+          proposals: changes.map(change => ({
+            original: change.original,
+            replacement: change.replacement,
+            context_before: change.context_before ?? null,
+            context_after: change.context_after ?? null,
+          })),
+        }),
+        'utf8'
+      );
+
+      const result = await waitForResponse(id, TIMEOUT_MS, {
+        responseFilePath: RESPONSE_TEMP_FILE,
+        timeoutResult: {
+          id,
+          file: routingMetadata.file ?? null,
+          status: 'timeout',
+          results: [],
+        },
+      });
+      const finalResult = await applyServerBatchFallbackIfNeeded(result, {
+        file: routingMetadata.file ?? null,
+        changes: changes.map(change => ({
+          original: change.original,
+          replacement: change.replacement,
+          context_before: change.context_before ?? null,
+          context_after: change.context_after ?? null,
+        })),
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
+      };
+    }
+  }
+);
+
+server.tool(
   'scroll_to_markdown_selection',
   `Select and scroll to a markdown selection in the Markdown for Humans editor.
 Use the exact selected markdown from get_markdown_selection, plus context_before/context_after when available, so the editor can locate the correct occurrence if the text appears multiple times.
@@ -215,6 +295,26 @@ function buildSelectionRoutingMetadata(selectionMetadata, selection) {
         source_instance_id: selectionMetadata.instance_id ?? null,
       }
     : {};
+}
+
+function buildBatchRoutingMetadata(selectionMetadata, file) {
+  if (file) {
+    return {
+      file,
+      ...(selectionMetadata?.file === file
+        ? { source_instance_id: selectionMetadata.instance_id ?? null }
+        : {}),
+    };
+  }
+
+  if (!selectionMetadata?.file) {
+    return {};
+  }
+
+  return {
+    file: selectionMetadata.file,
+    source_instance_id: selectionMetadata.instance_id ?? null,
+  };
 }
 
 function collapseParagraphBreaks(markdown) {
@@ -351,6 +451,66 @@ async function applyServerFallbackIfNeeded(result, proposal) {
       ...result,
       status: 'applied',
       applied_by: 'mcp-server',
+    };
+  } catch (error) {
+    return {
+      ...result,
+      fallback_error: String(error),
+    };
+  }
+}
+
+async function applyServerBatchFallbackIfNeeded(result, batch) {
+  if (!result || !Array.isArray(result.results) || result.results.length === 0) {
+    return result;
+  }
+
+  const targetFile = result.file || batch.file;
+  if (!targetFile || !fs.existsSync(targetFile)) {
+    return result;
+  }
+
+  const updatedResults = [];
+
+  try {
+    let workingContent = fs.readFileSync(targetFile, 'utf8');
+
+    for (let i = 0; i < result.results.length; i += 1) {
+      const currentResult = result.results[i];
+      const originalChange = batch.changes[i];
+
+      if (!currentResult || currentResult.status !== 'accept' || !currentResult.replacement) {
+        updatedResults.push(currentResult);
+        continue;
+      }
+
+      const applied = applyProposalReplacement(workingContent, {
+        original: currentResult.original || originalChange?.original,
+        replacement: currentResult.replacement,
+        context_before: currentResult.context_before ?? originalChange?.context_before ?? null,
+        context_after: currentResult.context_after ?? originalChange?.context_after ?? null,
+      });
+
+      if (!applied) {
+        updatedResults.push(currentResult);
+        continue;
+      }
+
+      workingContent = applied.newContent;
+      updatedResults.push({
+        ...currentResult,
+        status: 'applied',
+        applied_by: 'mcp-server',
+      });
+    }
+
+    if (updatedResults.some(entry => entry?.status === 'applied' && entry?.applied_by === 'mcp-server')) {
+      fs.writeFileSync(targetFile, workingContent, 'utf8');
+    }
+
+    return {
+      ...result,
+      results: updatedResults,
     };
   } catch (error) {
     return {
