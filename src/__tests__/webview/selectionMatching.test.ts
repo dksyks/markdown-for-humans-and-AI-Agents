@@ -41,4 +41,84 @@ describe('resolveSelectionMatch', () => {
       index: 0,
     });
   });
+
+  it('collapses serializer-introduced paragraph breaks before punctuation in inline content', () => {
+    const fullMarkdown =
+      '**Community Impact**: A serious violation of community standards, including sustained inappropriate behavior.';
+    const serializedSelection =
+      '**Community Impact**\n\n: A serious violation of community standards, including sustained inappropriate behavior.';
+
+    const result = resolveSelectionMatch(fullMarkdown, serializedSelection);
+
+    expect(result).toEqual({
+      selected: fullMarkdown,
+      index: 0,
+    });
+  });
+
+  it('collapses serializer-introduced paragraph breaks around inline links', () => {
+    const fullMarkdown =
+      'This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org), version 2.1.';
+    const serializedSelection =
+      'This Code of Conduct is adapted from the \n\n[Contributor Covenant](https://www.contributor-covenant.org)\n\n, version 2.1.';
+
+    const result = resolveSelectionMatch(fullMarkdown, serializedSelection);
+
+    expect(result).toEqual({
+      selected: fullMarkdown,
+      index: 0,
+    });
+  });
+
+  it('collapses serializer-introduced paragraph breaks around inline links followed by another link', () => {
+    const fullMarkdown =
+      'This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org), version 2.1, available at [https://www.contributor-covenant.org/version/2/1/code_of_conduct.html](https://www.contributor-covenant.org/version/2/1/code_of_conduct.html).';
+    const serializedSelection =
+      'This Code of Conduct is adapted from the \n\n[Contributor Covenant](https://www.contributor-covenant.org)\n\n, version 2.1, available at \n\n[https://www.contributor-covenant.org/version/2/1/code_of_conduct.html](https://www.contributor-covenant.org/version/2/1/code_of_conduct.html).';
+
+    const result = resolveSelectionMatch(fullMarkdown, serializedSelection);
+
+    expect(result).toEqual({
+      selected: fullMarkdown,
+      index: 0,
+    });
+  });
+
+  it('expands truncated link labels back to the full source link when the href matches', () => {
+    const fullMarkdown =
+      'This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org), version 2.1, available at [https://www.contributor-covenant.org/version/2/1/code_of_conduct.html](https://www.contributor-covenant.org/version/2/1/code_of_conduct.html)';
+    const serializedSelection =
+      'This Code of Conduct is adapted from the \n\n[Contributor Covenant](https://www.contributor-covenant.org)\n\n, version 2.1, available at \n\n[https://www.con](https://www.contributor-covenant.org/version/2/1/code_of_conduct.html)';
+
+    const result = resolveSelectionMatch(fullMarkdown, serializedSelection);
+
+    expect(result).toEqual({
+      selected: fullMarkdown,
+      index: 0,
+    });
+  });
+
+  it('prefers the repeated occurrence whose surrounding context matches the live selection', () => {
+    const fullMarkdown = [
+      '# Contributor Covenant Code of Conduct',
+      '',
+      '## Scope',
+      '',
+      'This Code of Conduct applies within all community spaces.',
+      '',
+      '## Attribution',
+      '',
+      'This Code of Conduct is adapted from the Contributor Covenant.',
+    ].join('\n');
+
+    const result = resolveSelectionMatch(fullMarkdown, 'Code of Conduct', {
+      contextBefore: 'This ',
+      contextAfter: ' applies within all community spaces.',
+    });
+
+    expect(result).toEqual({
+      selected: 'Code of Conduct',
+      index: fullMarkdown.indexOf('Code of Conduct', fullMarkdown.indexOf('## Scope')),
+    });
+  });
 });

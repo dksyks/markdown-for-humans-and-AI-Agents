@@ -1318,7 +1318,16 @@
   .markdown-editor ::selection {
     background-color: var(--md-selection);
   }
-  
+
+  .markdown-editor .md4h-proposal-target-block {
+    background: color-mix(in srgb, var(--md-selection) 30%, transparent);
+    box-shadow:
+      inset 3px 0 0 color-mix(in srgb, var(--md-selection) 92%, white 8%),
+      inset 0 0 0 1px color-mix(in srgb, var(--md-selection) 72%, transparent);
+    border-radius: 4px;
+    scroll-margin-top: var(--md4h-proposal-scroll-margin-top, 12px);
+  }
+
   .markdown-editor .ProseMirror p.is-editor-empty:first-child::before {
     content: 'Start writing...';
     color: var(--md-muted);
@@ -2927,4 +2936,3 @@
   min-width: 32px;
   text-align: right;
 }
-

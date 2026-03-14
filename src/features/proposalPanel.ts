@@ -33,7 +33,7 @@ export class ProposalPanel {
 
     if (ProposalPanel.currentPanel) {
       ProposalPanel.currentPanel._update(proposal, filename, doc, sourcePanel);
-      ProposalPanel.currentPanel._panel.reveal(vscode.ViewColumn.Beside);
+      ProposalPanel.currentPanel._panel.reveal(vscode.ViewColumn.Beside, true);
       return;
     }
     new ProposalPanel(context, proposal, filename, doc, sourcePanel);
@@ -60,7 +60,10 @@ export class ProposalPanel {
     this._panel = vscode.window.createWebviewPanel(
       'markdownForHumansProposal',
       `Proposed Change \u2014 ${filename}`,
-      vscode.ViewColumn.Beside,
+      {
+        viewColumn: vscode.ViewColumn.Beside,
+        preserveFocus: true,
+      },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -72,6 +75,7 @@ export class ProposalPanel {
 
     this._panel.onDidDispose(
       () => {
+        this._clearMainEditorHighlight();
         ProposalPanel.currentPanel = undefined;
       },
       null,
@@ -106,7 +110,7 @@ export class ProposalPanel {
       ...proposal,
       colors: this._getColors(),
     });
-    this._scrollMainEditor();
+    this._scrollMainEditorWithRetries();
   }
 
   private _getColors(): object {
@@ -132,7 +136,7 @@ export class ProposalPanel {
         ...this._proposal,
         colors: this._getColors(),
       });
-      this._scrollMainEditor();
+      this._scrollMainEditorWithRetries();
       return;
     }
 
@@ -219,11 +223,37 @@ export class ProposalPanel {
     const mainPanel = this._sourcePanel;
     if (mainPanel) {
       mainPanel.webview.postMessage({
-        type: 'scrollAndSelect',
+        type: 'selectProposalSelection',
         original: this._proposal.original,
         context_before: this._proposal.context_before,
         context_after: this._proposal.context_after,
       });
+    }
+  }
+
+  private _revealMainEditorSelection() {
+    const mainPanel = this._sourcePanel;
+    if (mainPanel) {
+      mainPanel.webview.postMessage({
+        type: 'revealCurrentProposalSelection',
+      });
+    }
+  }
+
+  private _clearMainEditorHighlight() {
+    const mainPanel = this._sourcePanel;
+    if (mainPanel) {
+      mainPanel.webview.postMessage({ type: 'clearProposalTargetHighlight' });
+    }
+  }
+
+  private _scrollMainEditorWithRetries() {
+    this._scrollMainEditor();
+
+    // Opening the proposal panel beside the editor resizes the main webview.
+    // Apply the reveal only after layout settles; do not re-apply the selection.
+    for (const delay of [100, 250, 500]) {
+      setTimeout(() => this._revealMainEditorSelection(), delay);
     }
   }
 

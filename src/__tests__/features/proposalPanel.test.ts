@@ -2,6 +2,10 @@ import * as vscode from 'vscode';
 import { ProposalPanel } from '../../features/proposalPanel';
 
 describe('ProposalPanel', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('applies the replacement using the captured source document even after active focus changes', async () => {
     const original = '**Fixed Auto-Linking Bug**';
     const replacement = '**Fixed Auto-Linking Behavior**';
@@ -35,5 +39,43 @@ describe('ProposalPanel', () => {
     };
     expect(edit.replaces).toHaveLength(1);
     expect(edit.replaces[0].text).toBe(`Before\n${replacement}\nAfter`);
+  });
+
+  it('reposts scroll and selection after the proposal panel opens beside the editor', () => {
+    jest.useFakeTimers();
+
+    const postMessage = jest.fn();
+    const panel = Object.create(ProposalPanel.prototype) as Record<string, unknown>;
+
+    panel._proposal = {
+      original: '**Note:** Test',
+      context_before: 'Before',
+      context_after: 'After',
+    };
+    panel._sourcePanel = {
+      webview: {
+        postMessage,
+      },
+    };
+
+    (panel._scrollMainEditorWithRetries as () => void)();
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(600);
+
+    expect(postMessage).toHaveBeenCalledTimes(4);
+    expect(postMessage).toHaveBeenNthCalledWith(1, {
+      type: 'selectProposalSelection',
+      original: '**Note:** Test',
+      context_before: 'Before',
+      context_after: 'After',
+    });
+    expect(postMessage).toHaveBeenNthCalledWith(2, {
+      type: 'revealCurrentProposalSelection',
+    });
+    expect(postMessage).toHaveBeenNthCalledWith(4, {
+      type: 'revealCurrentProposalSelection',
+    });
   });
 });

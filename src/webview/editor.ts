@@ -9,6 +9,8 @@ import './editor.css';
 import './codicon.css';
 
 import { Editor } from '@tiptap/core';
+import { Extension } from '@tiptap/core';
+import { Plugin, PluginKey } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
 import { TableKit } from '@tiptap/extension-table';
@@ -43,6 +45,19 @@ import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
 import { applyColors, updateColorSettingsPanel, DEFAULT_COLORS } from './features/colorSettings';
 import { resolveSelectionMatch } from './utils/selectionMatching';
+import {
+  calculateProposalRevealScrollTop,
+  calculateProposalRevealBottomPadding,
+  findRenderedBlockSequence,
+  findTextBlockSequence,
+  getNormalizedSelectionBlocks,
+  getProposalRevealTopPadding,
+  buildPinnedBlockRanges,
+  resolvePinnedTextRange,
+  resolvePinnedBlockElementAtPos,
+  resolvePinnedBlockElements,
+  resolveTextRangeWithinTextBlock,
+} from './utils/pinnedSelection';
 
 // Helper function for slug generation (same as in linkDialog)
 function generateHeadingSlug(text: string, existingSlugs: Set<string>): string {
@@ -114,7 +129,6 @@ type VsCodeApi = {
 };
 
 declare const acquireVsCodeApi: () => VsCodeApi;
-
 // Extended window interface for MD4H globals
 declare global {
   interface Window {
@@ -150,6 +164,18 @@ let pendingInitialContent: string | null = null; // Content from host before edi
 let hasSentReadySignal = false;
 let isDomReady = document.readyState !== 'loading';
 let outlineUpdateTimeout: number | null = null;
+let lastProposalSelectionTarget:
+  | {
+      key: string;
+      selFrom: number;
+      selTo: number;
+    }
+  | null = null;
+const pinnedSelectionPluginKey = new PluginKey<{ from: number; to: number } | null>(
+  'md4hPinnedSelection'
+);
+const PROPOSAL_TARGET_BLOCK_CLASS = 'md4h-proposal-target-block';
+const PROPOSAL_TARGET_SPACER_ID = 'md4h-proposal-target-spacer';
 
 // Hash-based sync deduplication (replaces unreliable ignoreNextUpdate boolean)
 let lastSentContentHash: string | null = null;
@@ -194,6 +220,353 @@ function hashString(str: string): string {
     hash = (hash << 5) + hash + str.charCodeAt(i);
   }
   return hash.toString(36);
+}
+
+function createPinnedSelectionPlugin() {
+  return new Plugin<{ from: number; to: number } | null>({
+    key: pinnedSelectionPluginKey,
+    state: {
+      init: () => null,
+      apply(tr, value) {
+        const nextValue = tr.getMeta(pinnedSelectionPluginKey);
+        if (nextValue !== undefined) {
+          return nextValue;
+        }
+        if (value && tr.docChanged) {
+          const mappedFrom = tr.mapping.map(value.from);
+          const mappedTo = tr.mapping.map(value.to);
+          return mappedFrom < mappedTo ? { from: mappedFrom, to: mappedTo } : null;
+        }
+        return value;
+      },
+    },
+  });
+}
+
+const PinnedSelectionExtension = Extension.create({
+  name: 'md4hPinnedSelection',
+  addProseMirrorPlugins() {
+    return [createPinnedSelectionPlugin()];
+  },
+});
+
+function clearProposalTargetHighlight() {
+  document
+    .querySelectorAll(`.${PROPOSAL_TARGET_BLOCK_CLASS}`)
+    .forEach(element => element.classList.remove(PROPOSAL_TARGET_BLOCK_CLASS));
+  document.getElementById(PROPOSAL_TARGET_SPACER_ID)?.remove();
+  document.documentElement.style.removeProperty('--md4h-proposal-scroll-margin-top');
+}
+
+function getScrollContainer(): HTMLElement {
+  const scrollingElement = document.scrollingElement;
+  if (scrollingElement instanceof HTMLElement) {
+    return scrollingElement;
+  }
+
+  return document.documentElement;
+}
+
+function setProposalTargetSpacer(height: number) {
+  const existingSpacer = document.getElementById(PROPOSAL_TARGET_SPACER_ID);
+  if (height <= 0) {
+    existingSpacer?.remove();
+    return;
+  }
+
+  const spacer = existingSpacer ?? document.createElement('div');
+  spacer.id = PROPOSAL_TARGET_SPACER_ID;
+  spacer.setAttribute('aria-hidden', 'true');
+  spacer.style.pointerEvents = 'none';
+  spacer.style.width = '100%';
+  spacer.style.height = `${Math.ceil(height)}px`;
+
+  if (!existingSpacer) {
+    document.body.appendChild(spacer);
+  }
+}
+
+function getRenderedEditorBlocks(): Array<{ element: HTMLElement; text: string }> {
+  return Array.from(
+    document.querySelectorAll(
+      '.markdown-editor .ProseMirror :is(h1, h2, h3, h4, h5, h6, p, li, blockquote, pre)'
+    )
+  )
+    .filter((node): node is HTMLElement => node instanceof HTMLElement)
+    .map(element => ({
+      element,
+      text: (element.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    }))
+    .filter(block => block.text.length > 0);
+}
+
+function resolveSelectionRangeFromRenderedBlocks(
+  editor: Editor,
+  selectedMarkdown: string,
+  options?: {
+    contextBefore?: string | null;
+    contextAfter?: string | null;
+  }
+): { from: number; to: number; targetBlocks: HTMLElement[] } | null {
+  const selectionBlocks = getNormalizedSelectionBlocks(selectedMarkdown);
+  const renderedBlocks = getRenderedEditorBlocks();
+  const matchedBlocks = findRenderedBlockSequence(renderedBlocks, selectionBlocks, {
+    selectedText: selectedMarkdown,
+    contextBefore: options?.contextBefore ?? null,
+    contextAfter: options?.contextAfter ?? null,
+  });
+
+  if (matchedBlocks.length === 0) {
+    return null;
+  }
+
+  const firstBlock = matchedBlocks[0].element;
+  const lastBlock = matchedBlocks[matchedBlocks.length - 1].element;
+  const from = editor.view.posAtDOM(firstBlock, 0);
+  const to = editor.view.posAtDOM(lastBlock, lastBlock.childNodes.length);
+
+  if (typeof from !== 'number' || typeof to !== 'number') {
+    return null;
+  }
+
+  return {
+    from,
+    to,
+    targetBlocks: matchedBlocks.map(block => block.element),
+  };
+}
+
+function resolveSelectionRangeFromTextBlocks(
+  editor: Editor,
+  selectedMarkdown: string,
+  options?: {
+    contextBefore?: string | null;
+    contextAfter?: string | null;
+  }
+): { from: number; to: number } | null {
+  const selectionBlocks = getNormalizedSelectionBlocks(selectedMarkdown);
+  const textBlocks: Array<{ text: string; from: number; to: number }> = [];
+
+  editor.state.doc.descendants((node, pos) => {
+    if (!node.isTextblock) {
+      return true;
+    }
+
+    const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (!text) {
+      return true;
+    }
+
+    textBlocks.push({
+      text,
+      from: pos,
+      to: pos + node.nodeSize,
+    });
+
+    return true;
+  });
+
+  const matchedBlocks = findTextBlockSequence(textBlocks, selectionBlocks, {
+    selectedText: selectedMarkdown,
+    contextBefore: options?.contextBefore ?? null,
+    contextAfter: options?.contextAfter ?? null,
+  });
+  if (matchedBlocks.length === 0) {
+  return null;
+}
+
+function resolveProposalSelectionTarget(
+  editor: Editor,
+  original: string,
+  ctxBefore: string | null,
+  ctxAfter: string | null
+) {
+  const fullMarkdown = getEditorMarkdownForSync(editor);
+
+  const occurrences: number[] = [];
+  let searchIdx = 0;
+  while (true) {
+    const idx = fullMarkdown.indexOf(original, searchIdx);
+    if (idx === -1) break;
+    occurrences.push(idx);
+    searchIdx = idx + 1;
+  }
+
+  if (occurrences.length === 0) {
+    return null;
+  }
+
+  let bestMarkdownIdx = occurrences[0];
+  if (occurrences.length > 1 && (ctxBefore || ctxAfter)) {
+    let bestScore = -1;
+    for (const idx of occurrences) {
+      let score = 0;
+      if (ctxBefore) {
+        const before = fullMarkdown.slice(Math.max(0, idx - ctxBefore.length), idx);
+        score += commonSuffixLength(before, ctxBefore);
+      }
+      if (ctxAfter) {
+        const after = fullMarkdown.slice(
+          idx + original.length,
+          idx + original.length + ctxAfter.length
+        );
+        score += commonPrefixLength(after, ctxAfter);
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestMarkdownIdx = idx;
+      }
+    }
+  }
+
+  const renderedRange = resolveSelectionRangeFromRenderedBlocks(editor, original, {
+    contextBefore: ctxBefore,
+    contextAfter: ctxAfter,
+  });
+  const textBlockRange = renderedRange
+    ? null
+    : resolveSelectionRangeFromTextBlocks(editor, original, {
+        contextBefore: ctxBefore,
+        contextAfter: ctxAfter,
+      });
+  const { from: selFrom, to: selTo } = renderedRange
+    ? renderedRange
+    : textBlockRange
+      ? textBlockRange
+      : markdownIndexToPos(editor, bestMarkdownIdx, bestMarkdownIdx + original.length);
+
+  return {
+    occurrences,
+    bestMarkdownIdx,
+    renderedRange,
+    textBlockRange,
+    selFrom,
+    selTo,
+  };
+}
+
+function getProposalSelectionKey(
+  original: string,
+  ctxBefore: string | null,
+  ctxAfter: string | null
+): string {
+  return JSON.stringify([original, ctxBefore ?? '', ctxAfter ?? '']);
+}
+
+  if (matchedBlocks.length === 1) {
+    const inlineRange = resolveTextRangeWithinTextBlock(
+      editor.state.doc,
+      matchedBlocks[0].from,
+      matchedBlocks[0].to,
+      selectedMarkdown,
+      {
+        selectedText: selectedMarkdown,
+        contextBefore: options?.contextBefore ?? null,
+        contextAfter: options?.contextAfter ?? null,
+      }
+    );
+
+    if (inlineRange) {
+      return inlineRange;
+    }
+  }
+
+  return {
+    from: matchedBlocks[0].from,
+    to: matchedBlocks[matchedBlocks.length - 1].to,
+  };
+}
+
+function revealProposalTarget(editor: Editor, from: number, to: number) {
+  requestAnimationFrame(() => {
+    try {
+      const blockRanges = buildPinnedBlockRanges(editor.state.doc, from, to);
+      const resolveLiveTargetBlocks = () => {
+        const blockMatches = resolvePinnedBlockElements(editor.view, blockRanges);
+        if (blockMatches.length > 0) {
+          return blockMatches;
+        }
+
+        const directMatch = resolvePinnedBlockElementAtPos(editor.view, from, to);
+        return directMatch ? [directMatch] : [];
+      };
+      const initialTargetBlocks = resolveLiveTargetBlocks();
+
+      if (initialTargetBlocks.length === 0) {
+        scrollToPos(editor, from);
+        return;
+      }
+
+      clearProposalTargetHighlight();
+
+      requestAnimationFrame(() => {
+        try {
+          const targetBlocks = resolveLiveTargetBlocks();
+          if (targetBlocks.length === 0) {
+            scrollToPos(editor, from);
+            return;
+          }
+
+          const firstTarget = targetBlocks[0];
+          const lastTarget = targetBlocks[targetBlocks.length - 1];
+          const toolbar = document.querySelector('.formatting-toolbar');
+          const toolbarHeight = toolbar ? toolbar.getBoundingClientRect().height : 0;
+          const proposalRevealTopPadding = getProposalRevealTopPadding(firstTarget.tagName);
+          const topOffset = toolbarHeight + proposalRevealTopPadding;
+          const bottomMargin = 12;
+
+          targetBlocks.forEach(block => block.classList.add(PROPOSAL_TARGET_BLOCK_CLASS));
+          document.documentElement.style.setProperty(
+            '--md4h-proposal-scroll-margin-top',
+            `${Math.ceil(topOffset)}px`
+          );
+
+          const scrollContainer = getScrollContainer();
+          const firstBlockRect = firstTarget.getBoundingClientRect();
+          const lastBlockRect = lastTarget.getBoundingClientRect();
+          const desiredScrollTop = calculateProposalRevealScrollTop({
+            currentScrollTop: scrollContainer.scrollTop,
+            viewportHeight: window.innerHeight,
+            firstTop: firstBlockRect.top,
+            lastBottom: lastBlockRect.bottom,
+            topOffset,
+            bottomMargin,
+          });
+          const currentMaxScrollTop = Math.max(0, scrollContainer.scrollHeight - window.innerHeight);
+          const bottomPadding = calculateProposalRevealBottomPadding({
+            desiredScrollTop,
+            currentMaxScrollTop,
+            extraMargin: 24,
+          });
+
+          setProposalTargetSpacer(bottomPadding);
+          scrollContainer.scrollTop = desiredScrollTop;
+        } catch (error) {
+          scrollToPos(editor, from);
+        }
+      });
+    } catch (error) {
+      scrollToPos(editor, from);
+    }
+  });
+}
+
+function applyProposalSelection(editor: Editor, from: number, to: number) {
+  editor.commands.setTextSelection({ from, to });
+  editor.view.dispatch(
+    editor.state.tr.setMeta(pinnedSelectionPluginKey, {
+      from,
+      to,
+    })
+  );
+}
+
+function focusEditorPreservingScroll(editor: Editor) {
+  try {
+    editor.view.focus();
+  } catch (error) {
+    console.warn('[MD4H] Failed to focus editor during proposal reveal:', error);
+  }
 }
 const signalReady = () => {
   if (hasSentReadySignal) return;
@@ -421,7 +794,6 @@ function initializeEditor(initialContent: string) {
     }
 
     console.log('[MD4H] Initializing editor...');
-
     const editorInstance = new Editor({
       element: editorElement,
       extensions: [
@@ -498,6 +870,7 @@ function initializeEditor(initialContent: string) {
             class: 'markdown-image',
           },
         }),
+        PinnedSelectionExtension,
       ],
       // Don't pass content here - we'll set it after init with contentType: 'markdown'
       editorProps: {
@@ -559,7 +932,8 @@ function initializeEditor(initialContent: string) {
           let context_before: string | null = null;
           let context_after: string | null = null;
           if (selected) {
-            const resolvedMatch = resolveSelectionMatch(fullMarkdown, selected);
+            const selectionContext = getPlainTextSelectionContext(editor);
+            const resolvedMatch = resolveSelectionMatch(fullMarkdown, selected, selectionContext);
             if (resolvedMatch) {
               selected = resolvedMatch.selected;
               const idx = resolvedMatch.index;
@@ -634,6 +1008,15 @@ function initializeEditor(initialContent: string) {
         window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: false } }));
       }, 0);
     });
+
+    const clearPinnedSelection = () => {
+      editorInstance.view.dispatch(
+        editorInstance.state.tr.setMeta(pinnedSelectionPluginKey, null)
+      );
+      clearProposalTargetHighlight();
+    };
+    editorDom.addEventListener('mousedown', clearPinnedSelection, true);
+    editorDom.addEventListener('keydown', clearPinnedSelection, true);
 
     // Create table menu
     tableMenu = createTableMenu(editorInstance);
@@ -977,6 +1360,17 @@ function getHeadingsBeforeSelection(editor: Editor, count = 5): string[] {
   return headings.slice(-count).reverse();
 }
 
+function getPlainTextSelectionContext(
+  editor: Editor,
+  maxChars = 200
+): { contextBefore: string; contextAfter: string } {
+  const { from, to } = editor.state.selection;
+  return {
+    contextBefore: editor.state.doc.textBetween(Math.max(0, from - maxChars), from, '\n', '\n'),
+    contextAfter: editor.state.doc.textBetween(to, to + maxChars, '\n', '\n'),
+  };
+}
+
 /**
  * Handle messages from extension
  */
@@ -1021,7 +1415,8 @@ window.addEventListener('message', (event: MessageEvent) => {
           let context_before: string | null = null;
           let context_after: string | null = null;
           if (selected && !empty) {
-            const resolvedMatch = resolveSelectionMatch(fullMarkdown, selected);
+            const selectionContext = getPlainTextSelectionContext(editor);
+            const resolvedMatch = resolveSelectionMatch(fullMarkdown, selected, selectionContext);
             if (resolvedMatch) {
               selected = resolvedMatch.selected;
               const idx = resolvedMatch.index;
@@ -1416,6 +1811,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         scrollToHeading(editor, pos);
         break;
       }
+      case 'selectProposalSelection':
       case 'scrollAndSelect': {
         if (!editor) break;
         const { original, context_before: ctxBefore, context_after: ctxAfter } = message as {
@@ -1423,59 +1819,65 @@ window.addEventListener('message', (event: MessageEvent) => {
           context_before: string | null;
           context_after: string | null;
         };
+        const selectionKey = getProposalSelectionKey(original, ctxBefore, ctxAfter);
+        const target = resolveProposalSelectionTarget(editor, original, ctxBefore, ctxAfter);
+        if (!target) break;
+        const { occurrences, bestMarkdownIdx, renderedRange, textBlockRange, selFrom, selTo } =
+          target;
+        lastProposalSelectionTarget = {
+          key: selectionKey,
+          selFrom,
+          selTo,
+        };
 
-        const fullMarkdown = getEditorMarkdownForSync(editor);
-
-        // Find all occurrences of original in the full markdown
-        const occurrences: number[] = [];
-        let searchIdx = 0;
-        while (true) {
-          const idx = fullMarkdown.indexOf(original, searchIdx);
-          if (idx === -1) break;
-          occurrences.push(idx);
-          searchIdx = idx + 1;
-        }
-
-        if (occurrences.length === 0) break; // text not found, skip
-
-        // Choose best occurrence using context scoring
-        let bestMarkdownIdx = occurrences[0];
-        if (occurrences.length > 1 && (ctxBefore || ctxAfter)) {
-          let bestScore = -1;
-          for (const idx of occurrences) {
-            let score = 0;
-            if (ctxBefore) {
-              const before = fullMarkdown.slice(Math.max(0, idx - ctxBefore.length), idx);
-              score += commonSuffixLength(before, ctxBefore);
-            }
-            if (ctxAfter) {
-              const after = fullMarkdown.slice(
-                idx + original.length,
-                idx + original.length + ctxAfter.length
-              );
-              score += commonPrefixLength(after, ctxAfter);
-            }
-            if (score > bestScore) {
-              bestScore = score;
-              bestMarkdownIdx = idx;
-            }
-          }
-        }
-
-        // Convert markdown character indices to ProseMirror positions
-        const { from: selFrom, to: selTo } = markdownIndexToPos(
-          editor,
-          bestMarkdownIdx,
-          bestMarkdownIdx + original.length
-        );
+        const visibleSelectionRange = resolvePinnedTextRange(editor.state.doc, selFrom, selTo) ?? {
+          from: selFrom,
+          to: selTo,
+        };
 
         // Record current position in nav history before jumping
         if (navLastRecorded !== null) navRecordPosition(navLastRecorded, true);
         navIsJumping = true;
-        navLastRecorded = selFrom;
-        editor.commands.setTextSelection({ from: selFrom, to: selTo });
-        scrollToPos(editor, selFrom);
+        navLastRecorded = visibleSelectionRange.from;
+        applyProposalSelection(
+          editor,
+          visibleSelectionRange.from,
+          visibleSelectionRange.to
+        );
+        if (message.type === 'scrollAndSelect') {
+          revealProposalTarget(editor, selFrom, selTo);
+        }
         navIsJumping = false;
+        break;
+      }
+      case 'revealCurrentProposalSelection': {
+        if (!editor) break;
+        const pinnedRange = pinnedSelectionPluginKey.getState(editor.state);
+        const activeRange =
+          pinnedRange && pinnedRange.from < pinnedRange.to
+            ? { selFrom: pinnedRange.from, selTo: pinnedRange.to }
+            : !editor.state.selection.empty
+              ? { selFrom: editor.state.selection.from, selTo: editor.state.selection.to }
+              : null;
+        const target = lastProposalSelectionTarget ?? activeRange;
+        if (!target) break;
+        applyProposalSelection(editor, target.selFrom, target.selTo);
+        revealProposalTarget(editor, target.selFrom, target.selTo);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (!editor) return;
+            focusEditorPreservingScroll(editor);
+            applyProposalSelection(editor, target.selFrom, target.selTo);
+          });
+        });
+        break;
+      }
+      case 'clearProposalTargetHighlight': {
+        clearProposalTargetHighlight();
+        lastProposalSelectionTarget = null;
+        if (editor) {
+          editor.view.dispatch(editor.state.tr.setMeta(pinnedSelectionPluginKey, null));
+        }
         break;
       }
       case 'navigateBack': {
@@ -1975,13 +2377,7 @@ function initializeProposalMode() {
     // Load content into both editors
     originalEditor.commands.setContent(msg.original ?? '', { contentType: 'markdown' });
     proposedEditor.commands.setContent(msg.replacement ?? '', { contentType: 'markdown' });
-    // Focus proposed editor so toolbar buttons activate (deferred to let DOM settle)
-    requestAnimationFrame(() => {
-      proposedEditor.commands.focus('start');
-      // Manually signal focus since the onFocus hook may not fire on programmatic focus
-      window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
-      updateToolbarStates();
-    });
+    updateToolbarStates();
     // Reset timer
     remainingMs = PROPOSAL_TIMEOUT_MS;
     timerBtn.textContent = formatTime(remainingMs);
