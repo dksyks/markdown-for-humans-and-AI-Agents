@@ -13,6 +13,10 @@ import {
   type SelectionRevealRequest,
 } from '../../features/selectionRevealWatcher';
 
+function waitForTimerTick(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 200));
+}
+
 describe('readPendingSelectionRevealRequest', () => {
   beforeEach(() => {
     resetActiveWebviewStateForTests();
@@ -105,7 +109,7 @@ describe('processSelectionRevealRequest', () => {
     resetActiveWebviewStateForTests();
   });
 
-  it('posts a scroll-and-select message to the matching webview and writes a revealed response', () => {
+  it('posts a scroll-and-select message to the matching webview and writes a revealed response', async () => {
     const responseFilePath = path.join(
       os.tmpdir(),
       `md4h-selection-reveal-response-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
@@ -135,22 +139,18 @@ describe('processSelectionRevealRequest', () => {
 
     expect(handled).toBe(true);
     expect(panel.reveal).toHaveBeenCalled();
+    await waitForTimerTick();
     expect(postMessage).toHaveBeenCalledWith({
       type: 'scrollAndSelect',
+      request_id: 'reveal-2',
       original: 'Selected text',
       context_before: 'Before',
       context_after: 'After',
     });
-
-    const response = JSON.parse(fs.readFileSync(responseFilePath, 'utf8'));
-    expect(response).toEqual({
-      id: 'reveal-2',
-      status: 'revealed',
-      file: '/workspace/docs/target.md',
-    });
+    expect(fs.existsSync(responseFilePath)).toBe(false);
   });
 
-  it('matches the correct open document by markdown content when no file is supplied', () => {
+  it('matches the correct open document by markdown content when no file is supplied', async () => {
     const responseFilePath = path.join(
       os.tmpdir(),
       `md4h-selection-reveal-response-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
@@ -195,20 +195,102 @@ describe('processSelectionRevealRequest', () => {
     expect(handled).toBe(true);
     expect(alphaPanel.webview.postMessage).not.toHaveBeenCalled();
     expect(betaPanel.reveal).toHaveBeenCalled();
+    await waitForTimerTick();
     expect(betaPanel.webview.postMessage).toHaveBeenCalledWith({
       type: 'scrollAndSelect',
+      request_id: 'reveal-3',
       original: '## Our Responsibilities',
       context_before:
         '- Other conduct which could reasonably be considered inappropriate in a professional setting\n\n',
       context_after:
         '\n\nProject maintainers are responsible for clarifying and enforcing our standards of acceptable behavior and will take appropriate and fair corrective action in response to any behavior that they deem inappropriate, threatening, offensive, or harmful.\n',
     });
+    expect(fs.existsSync(responseFilePath)).toBe(false);
+  });
+
+  it('writes an error response when posting the reveal request to the webview throws', async () => {
+    const responseFilePath = path.join(
+      os.tmpdir(),
+      `md4h-selection-reveal-response-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+    );
+    const panel = {
+      webview: {
+        postMessage: jest.fn(() => {
+          throw new Error('webview unavailable');
+        }),
+      },
+      reveal: jest.fn(),
+    } as const;
+    const document = {
+      uri: { fsPath: '/workspace/docs/target.md' },
+    } as const;
+
+    registerWebviewPanel(panel as never, document as never);
+
+    const handled = processSelectionRevealRequest(
+      {
+        id: 'reveal-4',
+        file: '/workspace/docs/target.md',
+        source_instance_id: getEditorHostInstanceId(),
+        original: 'Selected text',
+        context_before: null,
+        context_after: null,
+      },
+      responseFilePath
+    );
+
+    expect(handled).toBe(true);
+    expect(panel.reveal).toHaveBeenCalled();
+    await waitForTimerTick();
 
     const response = JSON.parse(fs.readFileSync(responseFilePath, 'utf8'));
     expect(response).toEqual({
-      id: 'reveal-3',
-      status: 'revealed',
-      file: '/workspace/docs/CODE_OF_CONDUCT.md',
+      id: 'reveal-4',
+      status: 'error',
+      error: 'Failed to deliver reveal request to the Markdown for Humans webview: Error: webview unavailable',
+      file: '/workspace/docs/target.md',
+    });
+  });
+
+  it('writes an error response when the webview rejects the reveal request message asynchronously', async () => {
+    const responseFilePath = path.join(
+      os.tmpdir(),
+      `md4h-selection-reveal-response-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+    );
+    const panel = {
+      webview: {
+        postMessage: jest.fn(() => Promise.resolve(false)),
+      },
+      reveal: jest.fn(),
+    } as const;
+    const document = {
+      uri: { fsPath: '/workspace/docs/target.md' },
+    } as const;
+
+    registerWebviewPanel(panel as never, document as never);
+
+    const handled = processSelectionRevealRequest(
+      {
+        id: 'reveal-5',
+        file: '/workspace/docs/target.md',
+        source_instance_id: getEditorHostInstanceId(),
+        original: 'Selected text',
+        context_before: null,
+        context_after: null,
+      },
+      responseFilePath
+    );
+
+    expect(handled).toBe(true);
+
+    await waitForTimerTick();
+
+    const response = JSON.parse(fs.readFileSync(responseFilePath, 'utf8'));
+    expect(response).toEqual({
+      id: 'reveal-5',
+      status: 'error',
+      error: 'Markdown for Humans did not accept the reveal request message.',
+      file: '/workspace/docs/target.md',
     });
   });
 });

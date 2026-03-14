@@ -41,6 +41,14 @@ function writeSelectionToTempFile(data: object): void {
   }
 }
 
+function writeSelectionRevealResponse(data: object): void {
+  try {
+    fs.writeFileSync(SELECTION_REVEAL_RESPONSE_TEMP_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[MD4H] Failed to write selection reveal response temp file:', err);
+  }
+}
+
 /**
  * Parse an image filename to extract source prefix
  * Returns the source prefix (dropped_ or pasted_) if present, or null
@@ -636,6 +644,16 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           this.pendingSelectionResolve(JSON.stringify(selectionResult));
           this.pendingSelectionResolve = undefined;
         }
+        break;
+      }
+      case 'selectionRevealResult': {
+        writeSelectionRevealResponse({
+          id: message.id,
+          status: message.status === 'revealed' ? 'revealed' : 'error',
+          file: document.uri.fsPath,
+          ...(message.error ? { error: message.error } : {}),
+          ...(message.debug ? { debug: message.debug } : {}),
+        });
         break;
       }
     }

@@ -56,6 +56,25 @@
   .markdown-editor:focus {
     outline: none;
   }
+
+  .md4h-build-stamp {
+    position: fixed;
+    top: 8px;
+    right: 10px;
+    z-index: 10000;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 1;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--vscode-badge-foreground, var(--vscode-editor-foreground));
+    background: var(--vscode-badge-background, rgba(90, 93, 94, 0.31));
+    border: 1px solid color-mix(in srgb, var(--vscode-focusBorder, currentColor) 28%, transparent);
+    pointer-events: none;
+    user-select: none;
+    opacity: 0.92;
+  }
   
   /* ============================================
      Headers - Clean Style
@@ -502,7 +521,19 @@
     line-height: 1.58;
     position: relative;
   }
-  
+
+.markdown-editor .github-alert.ProseMirror-selectednode,
+.markdown-editor .github-alert.md4h-forced-selectednode {
+  outline: 2px solid var(--vscode-focusBorder, #0969da);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder, #0969da) 18%, transparent);
+}
+
+.markdown-editor .github-alert-content.md4h-forced-selectednode,
+.markdown-editor p.md4h-forced-selectednode {
+  background: var(--vscode-editor-selectionBackground, rgba(173, 214, 255, 0.35));
+}
+
   .markdown-editor .github-alert-header {
     display: flex;
     align-items: center;

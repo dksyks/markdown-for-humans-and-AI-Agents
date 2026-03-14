@@ -36,7 +36,7 @@ Object.defineProperty(global, 'document', {
   writable: true,
 });
 
-import { copyToClipboard } from '../../webview/utils/copyMarkdown';
+import { copyToClipboard, getSelectionAsMarkdown } from '../../webview/utils/copyMarkdown';
 
 describe('copyMarkdown', () => {
   beforeEach(() => {
@@ -134,6 +134,46 @@ const x = 1;
   // The following tests document expected behavior:
 
   describe('getSelectionAsMarkdown (behavior expectations)', () => {
+    it('serializes a githubAlert node selection as the full alert block markdown', () => {
+      const selectedNode = {
+        type: { name: 'githubAlert' },
+        attrs: { alertType: 'COMMENT' },
+        textContent: 'test comment',
+        nodeSize: 12,
+        toJSON: jest.fn(() => ({
+          type: 'githubAlert',
+          attrs: { alertType: 'COMMENT' },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'test comment' }] }],
+        })),
+      };
+
+      const editor = {
+        state: {
+          selection: {
+            from: 10,
+            to: 22,
+            empty: false,
+            node: selectedNode,
+          },
+        },
+        schema: {
+          topNodeType: {
+            create: jest.fn((_attrs: unknown, content: unknown[]) => ({
+              toJSON: () => ({
+                type: 'doc',
+                content: content.map(node => (node as any).toJSON()),
+              }),
+            })),
+          },
+        },
+        markdown: {
+          serialize: jest.fn(() => '> [!COMMENT]\n> test comment'),
+        },
+      } as any;
+
+      expect(getSelectionAsMarkdown(editor)).toBe('> [!COMMENT]\n> test comment');
+    });
+
     it.todo('should return null when selection is empty');
     it.todo('should serialize heading to markdown with # prefix');
     it.todo('should serialize bullet list to markdown');

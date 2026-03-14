@@ -7,9 +7,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { getEditorHostInstanceId, hasOpenWebviewForDocument } from '../activeWebview';
+import {
+  getEditorHostInstanceId,
+  getOpenWebviews,
+  hasOpenWebviewForDocument,
+} from '../activeWebview';
 import { PROPOSAL_TEMP_FILE } from '../editor/MarkdownEditorProvider';
 import { ProposalPanel, ProposalRequest } from './proposalPanel';
+import { findProposalMatch } from './proposalReplacement';
 
 export function readPendingProposal(
   proposalFilePath: string = PROPOSAL_TEMP_FILE
@@ -47,7 +52,25 @@ export function shouldHandleProposal(proposal: ProposalRequest): boolean {
     return fileMatch;
   }
 
-  return true;
+  return getOpenWebviews().some(({ document }) =>
+    doesDocumentMatchProposal(document.getText(), proposal)
+  );
+}
+
+function doesDocumentMatchProposal(fullMarkdown: string, proposal: ProposalRequest): boolean {
+  const primaryProposal = Array.isArray(proposal.proposals) && proposal.proposals.length > 0
+    ? proposal.proposals[0]
+    : proposal;
+
+  return (
+    !!primaryProposal.original &&
+    findProposalMatch(fullMarkdown, {
+      original: primaryProposal.original,
+      replacement: primaryProposal.replacement,
+      context_before: primaryProposal.context_before,
+      context_after: primaryProposal.context_after,
+    }) !== null
+  );
 }
 
 /**

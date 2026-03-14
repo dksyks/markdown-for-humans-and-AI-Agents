@@ -21,6 +21,7 @@ const SELECTION_REVEAL_RESPONSE_TEMP_FILE = path.join(
   'MarkdownForHumans-SelectionRevealResponse.json'
 );
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const SELECTION_REVEAL_TIMEOUT_MS = 8000;
 
 const server = new McpServer({
   name: 'markdown-for-humans',
@@ -314,11 +315,12 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
         'utf8'
       );
 
-      const result = await waitForResponse(id, TIMEOUT_MS, {
+      const result = await waitForResponse(id, SELECTION_REVEAL_TIMEOUT_MS, {
         responseFilePath: SELECTION_REVEAL_RESPONSE_TEMP_FILE,
         timeoutResult: {
           id,
-          status: 'timeout',
+          status: 'error',
+          error: 'Timed out waiting for Markdown for Humans to acknowledge the reveal request.',
           file: routingMetadata.file ?? null,
         },
       });

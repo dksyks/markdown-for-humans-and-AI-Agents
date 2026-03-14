@@ -10,7 +10,7 @@ import './codicon.css';
 
 import { Editor } from '@tiptap/core';
 import { Extension } from '@tiptap/core';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { NodeSelection, Plugin, PluginKey } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
 import { TableKit } from '@tiptap/extension-table';
@@ -38,7 +38,7 @@ import { toggleTocOverlay } from './features/tocOverlay';
 import { toggleSearchOverlay, toggleReplaceOverlay, isSearchVisible, searchNext, searchPrev, replaceAll } from './features/searchOverlay';
 import { showLinkDialog } from './features/linkDialog';
 import { processPasteContent, parseFencedCode } from './utils/pasteHandler';
-import { copySelectionAsMarkdown, getSelectionAsMarkdown } from './utils/copyMarkdown';
+import { copySelectionAsMarkdown, getRangeAsMarkdown, getSelectionAsMarkdown } from './utils/copyMarkdown';
 import { shouldAutoLink } from './utils/linkValidation';
 import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
@@ -130,6 +130,7 @@ type VsCodeApi = {
 };
 
 declare const acquireVsCodeApi: () => VsCodeApi;
+declare const __MD4H_BUILD_STAMP__: string;
 // Extended window interface for MD4H globals
 declare global {
   interface Window {
@@ -155,6 +156,18 @@ const vscode = acquireVsCodeApi();
 // Make vscode API available globally for toolbar buttons
 window.vscode = vscode;
 
+function ensureBuildStampBadge() {
+  if (document.getElementById('md4h-build-stamp')) {
+    return;
+  }
+
+  const badge = document.createElement('div');
+  badge.id = 'md4h-build-stamp';
+  badge.className = 'md4h-build-stamp';
+  badge.textContent = __MD4H_BUILD_STAMP__;
+  document.body.appendChild(badge);
+}
+
 let editor: Editor | null = null;
 let isUpdating = false; // Prevent feedback loops
 let formattingToolbar: HTMLElement;
@@ -168,6 +181,7 @@ let outlineUpdateTimeout: number | null = null;
 let pendingSelectionRevealMessage:
   | {
       type: 'scrollAndSelect' | 'selectProposalSelection' | 'revealCurrentProposalSelection';
+      request_id?: string;
       original?: string;
       context_before?: string | null;
       context_after?: string | null;
@@ -178,6 +192,7 @@ let lastProposalSelectionTarget:
       key: string;
       selFrom: number;
       selTo: number;
+      selectionKind?: 'text' | 'node';
     }
   | null = null;
 const pinnedSelectionPluginKey = new PluginKey<{ from: number; to: number } | null>(
@@ -185,6 +200,7 @@ const pinnedSelectionPluginKey = new PluginKey<{ from: number; to: number } | nu
 );
 const PROPOSAL_TARGET_BLOCK_CLASS = 'md4h-proposal-target-block';
 const PROPOSAL_TARGET_SPACER_ID = 'md4h-proposal-target-spacer';
+const FORCED_SELECTED_NODE_CLASS = 'md4h-forced-selectednode';
 
 // Hash-based sync deduplication (replaces unreliable ignoreNextUpdate boolean)
 let lastSentContentHash: string | null = null;
@@ -263,8 +279,40 @@ function clearProposalTargetHighlight() {
   document
     .querySelectorAll(`.${PROPOSAL_TARGET_BLOCK_CLASS}`)
     .forEach(element => element.classList.remove(PROPOSAL_TARGET_BLOCK_CLASS));
+  document
+    .querySelectorAll(`.${FORCED_SELECTED_NODE_CLASS}`)
+    .forEach(element => element.classList.remove(FORCED_SELECTED_NODE_CLASS));
   document.getElementById(PROPOSAL_TARGET_SPACER_ID)?.remove();
   document.documentElement.style.removeProperty('--md4h-proposal-scroll-margin-top');
+}
+
+function syncForcedSelectedAlertClass(editor: Editor, from: number, to: number, enabled: boolean) {
+  document
+    .querySelectorAll(`.${FORCED_SELECTED_NODE_CLASS}`)
+    .forEach(element => element.classList.remove(FORCED_SELECTED_NODE_CLASS));
+
+  if (!enabled) {
+    return;
+  }
+
+  const nodeDom = editor.view.nodeDOM(from);
+  const startElement =
+    nodeDom instanceof HTMLElement
+      ? nodeDom
+      : nodeDom instanceof Text
+        ? nodeDom.parentElement
+        : null;
+  const contentElement =
+    (startElement?.closest('.github-alert-content') as HTMLElement | null) ??
+    (startElement?.closest('blockquote.github-alert')?.querySelector(
+      '.github-alert-content'
+    ) as HTMLElement | null) ??
+    (resolvePinnedBlockElementAtPos(editor.view, from, to)?.closest(
+      'blockquote.github-alert'
+    )?.querySelector('.github-alert-content') as HTMLElement | null);
+  if (contentElement instanceof HTMLElement) {
+    contentElement.classList.add(FORCED_SELECTED_NODE_CLASS);
+  }
 }
 
 function getScrollContainer(): HTMLElement {
@@ -304,7 +352,16 @@ function getRenderedEditorBlocks(): Array<{ element: HTMLElement; text: string }
     .filter((node): node is HTMLElement => node instanceof HTMLElement)
     .map(element => ({
       element,
-      text: (element.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      text: element.matches('blockquote.github-alert')
+        ? [
+            (element.querySelector('.github-alert-label')?.textContent ?? '').trim(),
+            (element.querySelector('.github-alert-content')?.textContent ?? '').trim(),
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        : (element.textContent ?? '').replace(/\s+/g, ' ').trim(),
     }))
     .filter(block => block.text.length > 0);
 }
@@ -342,6 +399,58 @@ function resolveSelectionRangeFromRenderedBlocks(
     from,
     to,
     targetBlocks: matchedBlocks.map(block => block.element),
+  };
+}
+
+function resolveSelectionRangeFromGitHubAlerts(
+  editor: Editor,
+  selectedMarkdown: string,
+  options?: {
+    contextBefore?: string | null;
+    contextAfter?: string | null;
+  }
+): { from: number; to: number } | null {
+  const alertMatch = selectedMarkdown.match(/^\s*>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION|COMMENT)\]/im);
+  if (!alertMatch) {
+    return null;
+  }
+
+  const selectionBlocks = getNormalizedSelectionBlocks(selectedMarkdown);
+  const alertBlocks: Array<{ text: string; from: number; to: number }> = [];
+
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type?.name !== 'githubAlert') {
+      return true;
+    }
+
+    const alertType = String(node.attrs?.alertType ?? '').trim();
+    const content = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const text = [alertType, content].filter(Boolean).join(' ').trim();
+    if (!text) {
+      return true;
+    }
+
+    alertBlocks.push({
+      text,
+      from: pos,
+      to: pos + node.nodeSize,
+    });
+
+    return true;
+  });
+
+  const matchedBlocks = findTextBlockSequence(alertBlocks, selectionBlocks, {
+    selectedText: selectedMarkdown,
+    contextBefore: options?.contextBefore ?? null,
+    contextAfter: options?.contextAfter ?? null,
+  });
+  if (matchedBlocks.length === 0) {
+    return null;
+  }
+
+  return {
+    from: matchedBlocks[0].from,
+    to: matchedBlocks[matchedBlocks.length - 1].to,
   };
 }
 
@@ -415,21 +524,57 @@ function resolveProposalSelectionTarget(
   ctxAfter: string | null
 ) {
   const fullMarkdown = getEditorMarkdownForSync(editor);
+  const gitHubAlertRange = resolveSelectionRangeFromGitHubAlerts(editor, original, {
+    contextBefore: ctxBefore,
+    contextAfter: ctxAfter,
+  });
+  const prefersRenderedRange = /^\s*>/m.test(original);
+  const renderedRange = gitHubAlertRange
+    ? null
+    : prefersRenderedRange
+    ? resolveSelectionRangeFromRenderedBlocks(editor, original, {
+        contextBefore: ctxBefore,
+        contextAfter: ctxAfter,
+      })
+    : null;
+  const textBlockRange = gitHubAlertRange || renderedRange
+    ? null
+    : resolveSelectionRangeFromTextBlocks(editor, original, {
+        contextBefore: ctxBefore,
+        contextAfter: ctxAfter,
+      });
+  const fallbackRenderedRange =
+    !renderedRange && !textBlockRange
+      ? resolveSelectionRangeFromRenderedBlocks(editor, original, {
+          contextBefore: ctxBefore,
+          contextAfter: ctxAfter,
+        })
+      : null;
+  const fallbackCandidates = Array.from(
+    new Set([
+      original,
+      ...getNormalizedSelectionBlocks(original),
+    ])
+  ).filter(candidate => candidate.length > 0);
 
   const occurrences: number[] = [];
-  let searchIdx = 0;
-  while (true) {
-    const idx = fullMarkdown.indexOf(original, searchIdx);
-    if (idx === -1) break;
-    occurrences.push(idx);
-    searchIdx = idx + 1;
+  for (const candidate of fallbackCandidates) {
+    let searchIdx = 0;
+    while (true) {
+      const idx = fullMarkdown.indexOf(candidate, searchIdx);
+      if (idx === -1) break;
+      occurrences.push(idx);
+      searchIdx = idx + 1;
+    }
   }
 
-  if (occurrences.length === 0) {
+  const effectiveRenderedRange = renderedRange ?? fallbackRenderedRange;
+
+  if (!gitHubAlertRange && !textBlockRange && !effectiveRenderedRange && occurrences.length === 0) {
     return null;
   }
 
-  let bestMarkdownIdx = occurrences[0];
+  let bestMarkdownIdx = occurrences[0] ?? 0;
   if (occurrences.length > 1 && (ctxBefore || ctxAfter)) {
     let bestScore = -1;
     for (const idx of occurrences) {
@@ -451,30 +596,32 @@ function resolveProposalSelectionTarget(
       }
     }
   }
-
-  const renderedRange = resolveSelectionRangeFromRenderedBlocks(editor, original, {
-    contextBefore: ctxBefore,
-    contextAfter: ctxAfter,
-  });
-  const textBlockRange = renderedRange
-    ? null
-    : resolveSelectionRangeFromTextBlocks(editor, original, {
-        contextBefore: ctxBefore,
-        contextAfter: ctxAfter,
-      });
-  const { from: selFrom, to: selTo } = renderedRange
-    ? renderedRange
+  const { from: selFrom, to: selTo } = gitHubAlertRange
+    ? gitHubAlertRange
     : textBlockRange
-      ? textBlockRange
-      : markdownIndexToPos(editor, bestMarkdownIdx, bestMarkdownIdx + original.length);
+    ? textBlockRange
+    : effectiveRenderedRange
+      ? effectiveRenderedRange
+      : markdownIndexToPos(
+          editor,
+          bestMarkdownIdx,
+          bestMarkdownIdx + fallbackCandidates[0].length
+        );
 
   return {
     occurrences,
     bestMarkdownIdx,
-    renderedRange,
+    renderedRange: effectiveRenderedRange,
     textBlockRange,
     selFrom,
     selTo,
+    resolutionMethod: gitHubAlertRange
+      ? 'githubAlert'
+      : textBlockRange
+      ? 'textBlock'
+      : effectiveRenderedRange
+        ? 'renderedBlock'
+        : 'markdownFallback',
   };
 }
 
@@ -561,13 +708,43 @@ function revealProposalTarget(editor: Editor, from: number, to: number) {
 }
 
 function applyProposalSelection(editor: Editor, from: number, to: number) {
-  editor.commands.setTextSelection({ from, to });
+  const node = editor.state.doc.nodeAt(from);
+  const canUseNodeSelection = node && from + node.nodeSize === to;
+
+  if (canUseNodeSelection) {
+    editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, from)));
+  } else {
+    editor.commands.setTextSelection({ from, to });
+  }
   editor.view.dispatch(
     editor.state.tr.setMeta(pinnedSelectionPluginKey, {
       from,
       to,
     })
   );
+}
+
+function applyProposalSelectionByKind(
+  editor: Editor,
+  from: number,
+  to: number,
+  kind: 'text' | 'node' = 'text'
+) {
+  if (kind === 'node') {
+    const node = editor.state.doc.nodeAt(from);
+    if (node && from + node.nodeSize === to) {
+      editor.view.dispatch(
+        editor.state.tr
+          .setSelection(NodeSelection.create(editor.state.doc, from))
+          .setMeta(pinnedSelectionPluginKey, null)
+      );
+      syncForcedSelectedAlertClass(editor, from, to, node.type?.name === 'githubAlert');
+      return;
+    }
+  }
+
+  syncForcedSelectedAlertClass(editor, from, to, false);
+  applyProposalSelection(editor, from, to);
 }
 
 function focusEditorPreservingScroll(editor: Editor) {
@@ -583,6 +760,7 @@ function handleSelectionRevealMessage(
   message:
     | {
         type: 'scrollAndSelect' | 'selectProposalSelection';
+        request_id?: string;
         original: string;
         context_before: string | null;
         context_after: string | null;
@@ -601,52 +779,121 @@ function handleSelectionRevealMessage(
           : null;
     const target = lastProposalSelectionTarget ?? activeRange;
     if (!target) return;
-    applyProposalSelection(editor, target.selFrom, target.selTo);
+    if ((target.selectionKind ?? 'text') !== 'node') {
+      applyProposalSelectionByKind(
+        editor,
+        target.selFrom,
+        target.selTo,
+        target.selectionKind ?? 'text'
+      );
+    }
     revealProposalTarget(editor, target.selFrom, target.selTo);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!editor) return;
         focusEditorPreservingScroll(editor);
-        applyProposalSelection(editor, target.selFrom, target.selTo);
+        applyProposalSelectionByKind(
+          editor,
+          target.selFrom,
+          target.selTo,
+          target.selectionKind ?? 'text'
+        );
       });
     });
     return;
   }
 
-  const { original, context_before: ctxBefore, context_after: ctxAfter } = message;
-  const selectionKey = getProposalSelectionKey(original, ctxBefore, ctxAfter);
-  const target = resolveProposalSelectionTarget(editor, original, ctxBefore, ctxAfter);
-  if (!target) return;
-  const { selFrom, selTo } = target;
-  lastProposalSelectionTarget = {
-    key: selectionKey,
-    selFrom,
-    selTo,
-  };
+  try {
+    const { original, context_before: ctxBefore, context_after: ctxAfter, request_id: requestId } = message;
+    const selectionKey = getProposalSelectionKey(original, ctxBefore, ctxAfter);
+    const normalizedBlocks = getNormalizedSelectionBlocks(original);
+    const target = resolveProposalSelectionTarget(editor, original, ctxBefore, ctxAfter);
+    if (!target) {
+      if (message.type === 'scrollAndSelect' && requestId) {
+        vscode.postMessage({
+          type: 'selectionRevealResult',
+          id: requestId,
+          status: 'error',
+          error: 'Could not resolve the requested selection in the active editor.',
+          debug: {
+            phase: 'resolveProposalSelectionTarget',
+            original_length: original.length,
+            normalized_blocks: normalizedBlocks,
+          },
+        });
+      }
+      return;
+    }
+    const { selFrom, selTo, resolutionMethod, occurrences, bestMarkdownIdx } = target;
+    lastProposalSelectionTarget = {
+      key: selectionKey,
+      selFrom,
+      selTo,
+      selectionKind: resolutionMethod === 'githubAlert' ? 'node' : 'text',
+    };
 
-  const visibleSelectionRange = resolvePinnedTextRange(editor.state.doc, selFrom, selTo) ?? {
-    from: selFrom,
-    to: selTo,
-  };
+    const visibleSelectionRange = resolvePinnedTextRange(editor.state.doc, selFrom, selTo) ?? {
+      from: selFrom,
+      to: selTo,
+    };
 
-  if (navLastRecorded !== null) navRecordPosition(navLastRecorded, true);
-  navIsJumping = true;
-  navLastRecorded = visibleSelectionRange.from;
-  applyProposalSelection(editor, visibleSelectionRange.from, visibleSelectionRange.to);
-  if (message.type === 'scrollAndSelect') {
-    revealProposalTarget(editor, selFrom, selTo);
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        focusEditorPreservingScroll(editor);
-        applyProposalSelection(
-          editor,
-          visibleSelectionRange.from,
-          visibleSelectionRange.to
-        );
+    if (navLastRecorded !== null) navRecordPosition(navLastRecorded, true);
+    navIsJumping = true;
+    navLastRecorded = visibleSelectionRange.from;
+    if (resolutionMethod !== 'githubAlert') {
+      applyProposalSelectionByKind(
+        editor,
+        visibleSelectionRange.from,
+        visibleSelectionRange.to,
+        'text'
+      );
+    }
+    if (message.type === 'scrollAndSelect') {
+      revealProposalTarget(editor, selFrom, selTo);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            focusEditorPreservingScroll(editor);
+            applyProposalSelectionByKind(
+              editor,
+            visibleSelectionRange.from,
+              visibleSelectionRange.to,
+              resolutionMethod === 'githubAlert' ? 'node' : 'text'
+            );
+          });
+        });
+    }
+    if (message.type === 'scrollAndSelect' && requestId) {
+      vscode.postMessage({
+        type: 'selectionRevealResult',
+        id: requestId,
+        status: 'revealed',
+        debug: {
+          phase: 'completed',
+          resolution_method: resolutionMethod,
+          occurrences: occurrences.length,
+          best_markdown_index: bestMarkdownIdx,
+          selection_from: visibleSelectionRange.from,
+          selection_to: visibleSelectionRange.to,
+          normalized_blocks: normalizedBlocks,
+        },
       });
-    });
+    }
+    navIsJumping = false;
+  } catch (error) {
+    if (message.type === 'scrollAndSelect' && message.request_id) {
+      vscode.postMessage({
+        type: 'selectionRevealResult',
+        id: message.request_id,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+        debug: {
+          phase: 'exception',
+          original_length: message.original.length,
+          normalized_blocks: getNormalizedSelectionBlocks(message.original),
+        },
+      });
+    }
   }
-  navIsJumping = false;
 }
 const signalReady = () => {
   if (hasSentReadySignal) return;
@@ -1916,6 +2163,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         if (!editor) {
           pendingSelectionRevealMessage = message as {
             type: 'scrollAndSelect' | 'selectProposalSelection';
+            request_id?: string;
             original: string;
             context_before: string | null;
             context_after: string | null;
@@ -1924,6 +2172,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
         handleSelectionRevealMessage(editor, message as {
           type: 'scrollAndSelect' | 'selectProposalSelection';
+          request_id?: string;
           original: string;
           context_before: string | null;
           context_after: string | null;
@@ -2062,6 +2311,7 @@ function updateEditorContent(markdown: string) {
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     isDomReady = true;
+    ensureBuildStampBadge();
     if (document.getElementById('proposal-root')) {
       initializeProposalMode();
     } else {
@@ -2074,6 +2324,7 @@ if (document.readyState === 'loading') {
   });
 } else {
   isDomReady = true;
+  ensureBuildStampBadge();
   if (document.getElementById('proposal-root')) {
     initializeProposalMode();
   } else {
@@ -2135,7 +2386,13 @@ document.addEventListener(
   'copy',
   (event: ClipboardEvent) => {
     if (!editor || editor.state.selection.empty) return;
-    const markdown = getSelectionAsMarkdown(editor);
+    const proposalNodeRange =
+      lastProposalSelectionTarget?.selectionKind === 'node'
+        ? lastProposalSelectionTarget
+        : null;
+    const markdown = proposalNodeRange
+      ? getRangeAsMarkdown(editor, proposalNodeRange.selFrom, proposalNodeRange.selTo)
+      : getSelectionAsMarkdown(editor);
     if (!markdown) return;
     event.preventDefault();
     event.clipboardData?.setData('text/plain', markdown);
@@ -2147,11 +2404,26 @@ document.addEventListener(
   'cut',
   (event: ClipboardEvent) => {
     if (!editor || editor.state.selection.empty) return;
-    const markdown = getSelectionAsMarkdown(editor);
+    const proposalNodeRange =
+      lastProposalSelectionTarget?.selectionKind === 'node'
+        ? lastProposalSelectionTarget
+        : null;
+    const markdown = proposalNodeRange
+      ? getRangeAsMarkdown(editor, proposalNodeRange.selFrom, proposalNodeRange.selTo)
+      : getSelectionAsMarkdown(editor);
     if (!markdown) return;
     event.preventDefault();
     event.clipboardData?.setData('text/plain', markdown);
-    editor.commands.deleteSelection();
+    if (proposalNodeRange) {
+      editor.view.dispatch(
+        editor.state.tr
+          .delete(proposalNodeRange.selFrom, proposalNodeRange.selTo)
+          .setMeta(pinnedSelectionPluginKey, null)
+      );
+      lastProposalSelectionTarget = null;
+    } else {
+      editor.commands.deleteSelection();
+    }
   },
   true
 );

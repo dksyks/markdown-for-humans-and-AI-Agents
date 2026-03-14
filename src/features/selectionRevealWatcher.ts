@@ -86,22 +86,85 @@ export function processSelectionRevealRequest(
     targetPanel.reveal();
   }
 
-  targetPanel.webview.postMessage({
-    type: 'scrollAndSelect',
-    original: request.original,
-    context_before: request.context_before,
-    context_after: request.context_after,
-  });
-
-  writeSelectionRevealResponse(
-    {
-      id: request.id,
-      status: 'revealed',
-      file: request.file ?? targetContext?.document.uri.fsPath ?? null,
-    },
-    responseFilePath
-  );
+  scheduleSelectionRevealPosts(targetPanel, request, responseFilePath, targetContext?.document.uri.fsPath ?? null);
   return true;
+}
+
+function scheduleSelectionRevealPosts(
+  targetPanel: vscode.WebviewPanel,
+  request: SelectionRevealRequest,
+  responseFilePath: string,
+  resolvedFilePath: string | null
+): void {
+  const delays = [0, 50, 150];
+  let pendingAttempts = delays.length;
+  let delivered = false;
+
+  for (const delay of delays) {
+    setTimeout(() => {
+      if (delivered) {
+        return;
+      }
+
+      try {
+        const postResult = targetPanel.webview.postMessage({
+          type: 'scrollAndSelect',
+          request_id: request.id,
+          original: request.original,
+          context_before: request.context_before,
+          context_after: request.context_after,
+        });
+
+        void Promise.resolve(postResult)
+          .then(result => {
+            if (result !== false) {
+              delivered = true;
+              return;
+            }
+
+            pendingAttempts -= 1;
+            if (pendingAttempts === 0) {
+              writeSelectionRevealResponse(
+                {
+                  id: request.id,
+                  status: 'error',
+                  error: 'Markdown for Humans did not accept the reveal request message.',
+                  file: request.file ?? resolvedFilePath,
+                },
+                responseFilePath
+              );
+            }
+          })
+          .catch(error => {
+            pendingAttempts -= 1;
+            if (pendingAttempts === 0) {
+              writeSelectionRevealResponse(
+                {
+                  id: request.id,
+                  status: 'error',
+                  error: `Failed to deliver reveal request to the Markdown for Humans webview: ${String(error)}`,
+                  file: request.file ?? resolvedFilePath,
+                },
+                responseFilePath
+              );
+            }
+          });
+      } catch (error) {
+        pendingAttempts -= 1;
+        if (pendingAttempts === 0) {
+          writeSelectionRevealResponse(
+            {
+              id: request.id,
+              status: 'error',
+              error: `Failed to deliver reveal request to the Markdown for Humans webview: ${String(error)}`,
+              file: request.file ?? resolvedFilePath,
+            },
+            responseFilePath
+          );
+        }
+      }
+    }, delay);
+  }
 }
 
 function resolveSelectionRevealTarget(request: SelectionRevealRequest): {

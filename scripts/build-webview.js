@@ -20,6 +20,8 @@ const args = process.argv.slice(2);
 const isProduction = args.includes('--prod') || process.env.NODE_ENV === 'production';
 const isWatch = args.includes('--watch');
 const noSourcemap = args.includes('--no-sourcemap');
+const buildDate = new Date();
+const buildStamp = `${buildDate.getMinutes()}m ${buildDate.getSeconds()}s`;
 
 const buildOptions = {
   entryPoints: ['src/webview/editor.ts'],
@@ -38,6 +40,9 @@ const buildOptions = {
   // while keeping console.error and console.warn
   pure: isProduction ? ['console.log', 'console.debug', 'console.info'] : [],
   plugins: [], // No custom plugins needed - using 'pure' instead
+  define: {
+    __MD4H_BUILD_STAMP__: JSON.stringify(buildStamp),
+  },
 };
 
 async function build() {

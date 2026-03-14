@@ -406,12 +406,23 @@ export const GitHubAlerts = Node.create({
           const newAlertTypeLower = newAlertType.toLowerCase();
 
           if (newAlertType !== alertType) {
+            const preservedClasses = [
+              'ProseMirror-selectednode',
+              'md4h-forced-selectednode',
+            ].filter(className => container.classList.contains(className));
             container.className = `github-alert github-alert-${newAlertTypeLower}`;
+            preservedClasses.forEach(className => container.classList.add(className));
             container.setAttribute('data-alert-type', newAlertType);
             label.textContent = newAlertType;
           }
 
           return true;
+        },
+        selectNode: () => {
+          container.classList.add('ProseMirror-selectednode');
+        },
+        deselectNode: () => {
+          container.classList.remove('ProseMirror-selectednode');
         },
         ignoreMutation: mutation => {
           if (!content.contains(mutation.target) && mutation.target !== content) {

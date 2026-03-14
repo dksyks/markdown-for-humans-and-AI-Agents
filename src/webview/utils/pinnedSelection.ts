@@ -227,6 +227,8 @@ export function calculateProposalRevealBottomPadding(
 
 function normalizeBlockMarkdown(markdown: string): string {
   return markdown
+    .replace(/^>\s?/gm, '')
+    .replace(/\[!([^\]]+)\]/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/(\*\*\*|___)(.*?)\1/g, '$2')
@@ -240,6 +242,70 @@ function normalizeBlockMarkdown(markdown: string): string {
 
 function normalizeInlineText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+function isListItemStart(line: string): boolean {
+  return /^([-*+]|\d+[.)])(?:\s+.*)?$/.test(line) || /^-\s+\[[ xX]\](?:\s+.*)?$/.test(line);
+}
+
+function stripListItemMarker(line: string): string {
+  return line
+    .replace(/^-\s+\[[ xX]\](?:\s+)?/, '')
+    .replace(/^[-*+](?:\s+)?/, '')
+    .replace(/^\d+[.)](?:\s+)?/, '');
+}
+
+function getSelectionBlockParts(markdown: string): string[] {
+  const parts: string[] = [];
+  const lines = markdown.split('\n');
+  let currentParagraph: string[] = [];
+  let currentListItem: string[] | null = null;
+
+  const flushParagraph = () => {
+    if (currentParagraph.length === 0) {
+      return;
+    }
+    parts.push(currentParagraph.join('\n'));
+    currentParagraph = [];
+  };
+
+  const flushListItem = () => {
+    if (!currentListItem || currentListItem.length === 0) {
+      currentListItem = null;
+      return;
+    }
+    parts.push(currentListItem.join('\n'));
+    currentListItem = null;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushListItem();
+      flushParagraph();
+      continue;
+    }
+
+    if (isListItemStart(trimmed)) {
+      flushListItem();
+      flushParagraph();
+      currentListItem = [trimmed];
+      continue;
+    }
+
+    if (currentListItem) {
+      currentListItem.push(trimmed);
+      continue;
+    }
+
+    currentParagraph.push(trimmed);
+  }
+
+  flushListItem();
+  flushParagraph();
+
+  return parts;
 }
 
 function normalizeContextText(text: string): string {
@@ -267,43 +333,46 @@ function scoreSingleBlockSequence<T extends TextBlockMatch>(
   selectedBlocks: string[],
   options?: BlockSequenceMatchOptions
 ): number {
-  const selectedText = normalizeInlineText(
-    options?.selectedText ?? (selectedBlocks.length === 1 ? selectedBlocks[0] : '')
-  );
+  const selectedTextCandidates = [
+    normalizeInlineText(options?.selectedText ?? ''),
+    ...selectedBlocks.map(normalizeInlineText),
+  ].filter((candidate, index, candidates) => candidate.length > 0 && candidates.indexOf(candidate) === index);
   const contextBefore = normalizeContextText(options?.contextBefore ?? '');
   const contextAfter = normalizeContextText(options?.contextAfter ?? '');
 
-  if (!selectedText || matchedBlocks.length !== 1) {
+  if (selectedTextCandidates.length === 0 || matchedBlocks.length !== 1) {
     return 0;
   }
 
   const blockText = normalizeContextText(matchedBlocks[0].text);
   let bestScore = -1;
-  let searchFrom = 0;
+  for (const selectedText of selectedTextCandidates) {
+    let searchFrom = 0;
 
-  while (true) {
-    const matchIndex = blockText.indexOf(selectedText, searchFrom);
-    if (matchIndex === -1) {
-      break;
+    while (true) {
+      const matchIndex = blockText.indexOf(selectedText, searchFrom);
+      if (matchIndex === -1) {
+        break;
+      }
+
+      let score = selectedText.length;
+
+      if (contextBefore) {
+        const before = blockText.slice(Math.max(0, matchIndex - contextBefore.length), matchIndex);
+        score += commonSuffixLength(before, contextBefore);
+      }
+
+      if (contextAfter) {
+        const after = blockText.slice(
+          matchIndex + selectedText.length,
+          matchIndex + selectedText.length + contextAfter.length
+        );
+        score += commonPrefixLength(after, contextAfter);
+      }
+
+      bestScore = Math.max(bestScore, score);
+      searchFrom = matchIndex + 1;
     }
-
-    let score = selectedText.length;
-
-    if (contextBefore) {
-      const before = blockText.slice(Math.max(0, matchIndex - contextBefore.length), matchIndex);
-      score += commonSuffixLength(before, contextBefore);
-    }
-
-    if (contextAfter) {
-      const after = blockText.slice(
-        matchIndex + selectedText.length,
-        matchIndex + selectedText.length + contextAfter.length
-      );
-      score += commonPrefixLength(after, contextAfter);
-    }
-
-    bestScore = Math.max(bestScore, score);
-    searchFrom = matchIndex + 1;
   }
 
   return Math.max(bestScore, 0);
@@ -316,11 +385,14 @@ export function resolveTextRangeWithinTextBlock(
   selectedText: string,
   options?: BlockSequenceMatchOptions
 ): TextRange | null {
-  const normalizedSelectedText = normalizeInlineText(selectedText);
+  const normalizedSelectedTextCandidates = [
+    normalizeInlineText(selectedText),
+    ...getNormalizedSelectionBlocks(selectedText).map(normalizeInlineText),
+  ].filter((candidate, index, candidates) => candidate.length > 0 && candidates.indexOf(candidate) === index);
   const contextBefore = normalizeContextText(options?.contextBefore ?? '');
   const contextAfter = normalizeContextText(options?.contextAfter ?? '');
 
-  if (!normalizedSelectedText) {
+  if (normalizedSelectedTextCandidates.length === 0) {
     return null;
   }
 
@@ -366,66 +438,57 @@ export function resolveTextRangeWithinTextBlock(
 
   let bestRange: TextRange | null = null;
   let bestScore = -1;
-  let searchFrom = 0;
 
-  while (true) {
-    const matchIndex = normalizedText.indexOf(normalizedSelectedText, searchFrom);
-    if (matchIndex === -1) {
-      break;
+  for (const normalizedSelectedText of normalizedSelectedTextCandidates) {
+    let searchFrom = 0;
+
+    while (true) {
+      const matchIndex = normalizedText.indexOf(normalizedSelectedText, searchFrom);
+      if (matchIndex === -1) {
+        break;
+      }
+
+      let score = normalizedSelectedText.length;
+
+      if (contextBefore) {
+        const before = normalizedText.slice(Math.max(0, matchIndex - contextBefore.length), matchIndex);
+        score += commonSuffixLength(before, contextBefore);
+      }
+
+      if (contextAfter) {
+        const after = normalizedText.slice(
+          matchIndex + normalizedSelectedText.length,
+          matchIndex + normalizedSelectedText.length + contextAfter.length
+        );
+        score += commonPrefixLength(after, contextAfter);
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestRange = {
+          from: normalizedPositions[matchIndex],
+          to:
+            normalizedPositions[matchIndex + normalizedSelectedText.length - 1] +
+            1,
+        };
+      }
+
+      searchFrom = matchIndex + 1;
     }
-
-    let score = normalizedSelectedText.length;
-
-    if (contextBefore) {
-      const before = normalizedText.slice(Math.max(0, matchIndex - contextBefore.length), matchIndex);
-      score += commonSuffixLength(before, contextBefore);
-    }
-
-    if (contextAfter) {
-      const after = normalizedText.slice(
-        matchIndex + normalizedSelectedText.length,
-        matchIndex + normalizedSelectedText.length + contextAfter.length
-      );
-      score += commonPrefixLength(after, contextAfter);
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestRange = {
-        from: normalizedPositions[matchIndex],
-        to:
-          normalizedPositions[matchIndex + normalizedSelectedText.length - 1] +
-          1,
-      };
-    }
-
-    searchFrom = matchIndex + 1;
   }
 
   return bestRange;
 }
 
 export function getNormalizedSelectionBlocks(markdown: string): string[] {
-  return markdown
-    .split(/\n{2,}/)
-    .flatMap(part => {
-      const lines = part.split('\n').map(line => line.trim()).filter(Boolean);
-      const listItemLines = lines.filter(line =>
-        /^([-*+]|\d+\.)\s+/.test(line) || /^-\s+\[[ xX]\]\s+/.test(line)
-      );
-
-      if (listItemLines.length === lines.length && listItemLines.length > 0) {
-        return listItemLines.map(line =>
-          normalizeBlockMarkdown(
-            line
-              .replace(/^-\s+\[[ xX]\]\s+/, '')
-              .replace(/^[-*+]\s+/, '')
-              .replace(/^\d+\.\s+/, '')
-          )
-        );
-      }
-
-      return [normalizeBlockMarkdown(part)];
+  return getSelectionBlockParts(markdown)
+    .map(part => {
+      const [firstLine, ...rest] = part.split('\n');
+      const normalizedFirstLine = isListItemStart(firstLine)
+        ? stripListItemMarker(firstLine)
+        : firstLine;
+      const normalizedPart = [normalizedFirstLine, ...rest].join('\n');
+      return normalizeBlockMarkdown(normalizedPart);
     })
     .filter(Boolean);
 }
@@ -445,13 +508,17 @@ export function findTextBlockSequence<T extends TextBlockMatch>(
   }));
 
   const candidates: Array<{ blocks: T[]; score: number }> = [];
+  const requireForwardContainment = selectedBlocks.length > 1;
 
   for (let start = 0; start <= normalizedRendered.length - selectedBlocks.length; start += 1) {
     let matched = true;
     for (let offset = 0; offset < selectedBlocks.length; offset += 1) {
       const expected = selectedBlocks[offset];
       const actual = normalizedRendered[start + offset].text;
-      if (!actual.includes(expected) && !expected.includes(actual)) {
+      const blockMatches = requireForwardContainment
+        ? actual.includes(expected)
+        : actual.includes(expected) || expected.includes(actual);
+      if (!blockMatches) {
         matched = false;
         break;
       }

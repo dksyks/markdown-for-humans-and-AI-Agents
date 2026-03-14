@@ -154,6 +154,69 @@ describe('ProposalPanel', () => {
     expect(currentPanel._sourcePanel).toBe(betaPanel);
   });
 
+  it('targets the matching document by content when proposal routing metadata is missing', () => {
+    const todoPanel = {
+      webview: { postMessage: jest.fn() },
+    } as unknown as vscode.WebviewPanel;
+    const trustPanel = {
+      webview: { postMessage: jest.fn() },
+    } as unknown as vscode.WebviewPanel;
+    const todoDocument = {
+      uri: vscode.Uri.file('/workspace/docs/todo.md'),
+      getText: () => '- [ ] Review drafting notes',
+    } as unknown as vscode.TextDocument;
+    const trustDocument = {
+      uri: vscode.Uri.file('/workspace/docs/initial-trust.md'),
+      getText: () =>
+        [
+          '#### Investment Treatment',
+          '',
+          '- Each Beneficiary is responsible for investing assets held in the Personal Accounts.',
+        ].join('\n'),
+    } as unknown as vscode.TextDocument;
+
+    registerWebviewPanel(todoPanel, todoDocument);
+    registerWebviewPanel(trustPanel, trustDocument);
+    markWebviewPanelActive(todoPanel);
+
+    const proposalPanelWebview = {
+      html: '',
+      onDidReceiveMessage: jest.fn(),
+      asWebviewUri: jest.fn((uri: vscode.Uri) => uri),
+    };
+    const proposalPanel = {
+      webview: proposalPanelWebview,
+      onDidDispose: jest.fn(),
+      reveal: jest.fn(),
+      title: '',
+    } as unknown as vscode.WebviewPanel;
+
+    (vscode.window.createWebviewPanel as jest.Mock).mockReturnValue(proposalPanel);
+
+    ProposalPanel.show(
+      {
+        extensionUri: vscode.Uri.file('/extension'),
+        subscriptions: [],
+      } as unknown as vscode.ExtensionContext,
+      {
+        id: 'proposal-2',
+        original: 'Each Beneficiary is responsible for investing assets held in the Personal Accounts.',
+        replacement:
+          'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
+        context_before: null,
+        context_after: null,
+      }
+    );
+
+    const currentPanel = ProposalPanel.currentPanel as unknown as {
+      _sourceDocument: vscode.TextDocument;
+      _sourcePanel: vscode.WebviewPanel;
+    };
+
+    expect(currentPanel._sourceDocument).toBe(trustDocument);
+    expect(currentPanel._sourcePanel).toBe(trustPanel);
+  });
+
   it('advances through queued proposals and writes one aggregated response at the end', async () => {
     if (fs.existsSync(RESPONSE_TEMP_FILE)) {
       fs.unlinkSync(RESPONSE_TEMP_FILE);

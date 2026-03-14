@@ -326,6 +326,55 @@ describe('pinned selection ranges', () => {
     ]);
   });
 
+  it('normalizes a wrapped unordered list item without keeping the bullet marker', async () => {
+    const { getNormalizedSelectionBlocks } = await import('../../webview/utils/pinnedSelection');
+
+    expect(
+      getNormalizedSelectionBlocks(
+        '- Each Beneficiary is responsible for investing assets held in the Personal Accounts\nin this Section and is expected to do so in a manner generally consistent with the Trust\'s investment policies.'
+      )
+    ).toEqual([
+      'Each Beneficiary is responsible for investing assets held in the Personal Accounts in this Section and is expected to do so in a manner generally consistent with the Trust\'s investment policies.',
+    ]);
+  });
+
+  it('normalizes ordered list items that use the CommonMark 1) style', async () => {
+    const { getNormalizedSelectionBlocks } = await import('../../webview/utils/pinnedSelection');
+
+    expect(
+      getNormalizedSelectionBlocks(
+        '1) First item\ncontinuation line\n\n2) Second item'
+      )
+    ).toEqual([
+      'First item continuation line',
+      'Second item',
+    ]);
+  });
+
+  it('drops empty list-marker-only lines from normalized selection blocks', async () => {
+    const { getNormalizedSelectionBlocks } = await import('../../webview/utils/pinnedSelection');
+
+    expect(
+      getNormalizedSelectionBlocks(
+        '- \n\n- This access and information is necessary to allow the Trustee to calculate annual changes to the Stewardship Score Yearly.'
+      )
+    ).toEqual([
+      'This access and information is necessary to allow the Trustee to calculate annual changes to the Stewardship Score Yearly.',
+    ]);
+  });
+
+  it('normalizes blockquote callout markdown into rendered-text form', async () => {
+    const { getNormalizedSelectionBlocks } = await import('../../webview/utils/pinnedSelection');
+
+    expect(
+      getNormalizedSelectionBlocks(
+        '> [!COMMENT]\n> test comment'
+      )
+    ).toEqual([
+      'COMMENT test comment',
+    ]);
+  });
+
   it('finds a contiguous rendered block sequence for a markdown selection', async () => {
     const { findRenderedBlockSequence } = await import('../../webview/utils/pinnedSelection');
 
@@ -352,6 +401,54 @@ describe('pinned selection ranges', () => {
     expect(matches).toHaveLength(3);
     expect(matches[0].text).toBe('3. Temporary Ban');
     expect(matches[2].text).toContain('Consequence: A temporary ban');
+  });
+
+  it('matches a rendered list item when the selected markdown still includes the bullet marker', async () => {
+    const { findRenderedBlockSequence, getNormalizedSelectionBlocks } = await import(
+      '../../webview/utils/pinnedSelection'
+    );
+
+    const listItem = document.createElement('li');
+    listItem.textContent =
+      'Each Beneficiary is responsible for investing assets held in the Personal Accounts described in this Section.';
+
+    const matches = findRenderedBlockSequence(
+      [{ element: listItem, text: listItem.textContent! }],
+      getNormalizedSelectionBlocks(
+        '- Each Beneficiary is responsible for investing assets held in the Personal Accounts described in this Section.'
+      )
+    );
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].element).toBe(listItem);
+  });
+
+  it('prefers the full ordered-list item over shorter substring blocks when the selection includes the list marker', async () => {
+    const { findTextBlockSequence, getNormalizedSelectionBlocks } = await import(
+      '../../webview/utils/pinnedSelection'
+    );
+
+    const matches = findTextBlockSequence(
+      [
+        { text: 'The', from: 10, to: 13 },
+        {
+          text:
+            'The Beneficiary shall maintain credit cards, bank accounts, brokerage accounts, and other financial accounts only in the Beneficiary\'s name and for the exclusive use of funds received from the Trust. All Trust funds shall be deposited into, remain in, and be expended solely from such accounts.',
+          from: 200,
+          to: 494,
+        },
+      ],
+      getNormalizedSelectionBlocks(
+        '1. The Beneficiary shall maintain credit cards, bank accounts, brokerage accounts, and other financial accounts only in the Beneficiary\'s name and for the exclusive use of funds received from the Trust. All Trust funds shall be deposited into, remain in, and be expended solely from such accounts.'
+      ),
+      {
+        selectedText:
+          '1. The Beneficiary shall maintain credit cards, bank accounts, brokerage accounts, and other financial accounts only in the Beneficiary\'s name and for the exclusive use of funds received from the Trust. All Trust funds shall be deposited into, remain in, and be expended solely from such accounts.',
+      }
+    );
+
+    expect(matches).toHaveLength(1);
+    expect((matches[0] as { from: number }).from).toBe(200);
   });
 
   it('finds a contiguous textblock sequence for a markdown selection', async () => {
@@ -393,6 +490,38 @@ describe('pinned selection ranges', () => {
     expect(matches[0].text).toBe('3. Temporary Ban');
     expect((matches[0] as { from: number }).from).toBe(51);
     expect((matches[2] as { to: number }).to).toBe(100);
+  });
+
+  it('does not match shorter substring blocks for multi-item list selections', async () => {
+    const { findTextBlockSequence, getNormalizedSelectionBlocks } = await import(
+      '../../webview/utils/pinnedSelection'
+    );
+
+    const matches = findTextBlockSequence(
+      [
+        { text: '.', from: 10, to: 11 },
+        { text: '.', from: 12, to: 13 },
+        {
+          text:
+            'Any payments, whether made directly or by credit card, shall be made solely in satisfaction of bona fide obligations of the Beneficiary and only with respect to bills or statements issued exclusively in the Beneficiary\'s name.',
+          from: 100,
+          to: 330,
+        },
+        {
+          text:
+            'The Beneficiary shall provide the Administrative Trustee and the applicable Members of the Committee either (i) viewing access to these accounts, or (ii) in lieu thereof, copies of account statements and related documentation. Whichever method is used, the information provided must be complete and current through the year-end review conducted after the final disbursement date for the applicable calendar year, and must reflect all transactions through the most recent statement period. The foregoing individuals may also request additional documentation evidencing compliance with these terms, including, without limitation, copies of bills, deeds, titles, or other relevant records, and the Beneficiary shall reasonably answer questions and provide assistance necessary to trace the receipt, movement, and expenditure of Trust funds through these accounts, bills, and property records.',
+          from: 331,
+          to: 1210,
+        },
+      ],
+      getNormalizedSelectionBlocks(
+        '- Any payments, whether made directly or by credit card, shall be made solely in satisfaction of bona fide obligations of the Beneficiary and only with respect to bills or statements issued exclusively in the Beneficiary\'s name.\n\n- The Beneficiary shall provide the Administrative Trustee and the applicable Members of the Committee either (i) viewing access to these accounts, or (ii) in lieu thereof, copies of account statements and related documentation. Whichever method is used, the information provided must be complete and current through the year-end review conducted after the final disbursement date for the applicable calendar year, and must reflect all transactions through the most recent statement period. The foregoing individuals may also request additional documentation evidencing compliance with these terms, including, without limitation, copies of bills, deeds, titles, or other relevant records, and the Beneficiary shall reasonably answer questions and provide assistance necessary to trace the receipt, movement, and expenditure of Trust funds through these accounts, bills, and property records.'
+      )
+    );
+
+    expect(matches).toHaveLength(2);
+    expect((matches[0] as { from: number }).from).toBe(100);
+    expect((matches[1] as { from: number }).from).toBe(331);
   });
 
   it('prefers the context-matching repeated text block over the first occurrence', async () => {
@@ -475,5 +604,41 @@ describe('pinned selection ranges', () => {
     );
 
     expect(range).toEqual({ from: 106, to: 121 });
+  });
+
+  it('resolves the inline text range for an ordered list item even when the selection includes the marker', async () => {
+    const { resolveTextRangeWithinTextBlock } = await import('../../webview/utils/pinnedSelection');
+
+    const range = resolveTextRangeWithinTextBlock(
+      {
+        nodesBetween(from: number, to: number, cb: (node: any, pos: number) => void) {
+          const nodes = [
+            {
+              node: {
+                isText: true,
+                text:
+                  'The Beneficiary shall maintain credit cards, bank accounts, brokerage accounts, and other financial accounts only in the Beneficiary\'s name and for the exclusive use of funds received from the Trust. All Trust funds shall be deposited into, remain in, and be expended solely from such accounts.',
+              },
+              pos: 201,
+            },
+          ];
+          for (const entry of nodes) {
+            if (entry.pos < to && entry.pos + entry.node.text.length > from) {
+              cb(entry.node, entry.pos);
+            }
+          }
+        },
+      } as any,
+      200,
+      520,
+      '1. The Beneficiary shall maintain credit cards, bank accounts, brokerage accounts, and other financial accounts only in the Beneficiary\'s name and for the exclusive use of funds received from the Trust. All Trust funds shall be deposited into, remain in, and be expended solely from such accounts.'
+    );
+
+    expect(range).toEqual({
+      from: 201,
+      to:
+        201 +
+        'The Beneficiary shall maintain credit cards, bank accounts, brokerage accounts, and other financial accounts only in the Beneficiary\'s name and for the exclusive use of funds received from the Trust. All Trust funds shall be deposited into, remain in, and be expended solely from such accounts.'.length,
+    });
   });
 });

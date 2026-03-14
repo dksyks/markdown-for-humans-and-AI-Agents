@@ -143,6 +143,19 @@ describe('shouldHandleProposal', () => {
     } as unknown;
     const document = {
       uri: { fsPath: filePath },
+      getText: () => '',
+    } as unknown;
+
+    registerWebviewPanel(panel as never, document as never);
+  }
+
+  function registerDocumentWithText(filePath: string, text: string) {
+    const panel = {
+      webview: { postMessage: jest.fn() },
+    } as unknown;
+    const document = {
+      uri: { fsPath: filePath },
+      getText: () => text,
     } as unknown;
 
     registerWebviewPanel(panel as never, document as never);
@@ -199,6 +212,44 @@ describe('shouldHandleProposal', () => {
               context_after: null,
             },
           ],
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('rejects an unscoped proposal when this window only has unrelated markdown open', () => {
+    registerDocumentWithText('/workspace/docs/todo.md', '- [ ] Review drafting notes');
+
+    expect(
+      shouldHandleProposal(
+        buildProposal({
+          file: undefined,
+          original:
+            'Each Beneficiary is responsible for investing assets held in the Personal Accounts.',
+          replacement:
+            'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('accepts an unscoped proposal when an open document in this window contains the target text', () => {
+    registerDocumentWithText(
+      '/workspace/docs/initial-trust.md',
+      [
+        '#### Investment Treatment',
+        '',
+        '- Each Beneficiary is responsible for investing assets held in the Personal Accounts.',
+      ].join('\n')
+    );
+
+    expect(
+      shouldHandleProposal(
+        buildProposal({
+          file: undefined,
+          original: 'Each Beneficiary is responsible for investing assets held in the Personal Accounts.',
+          replacement:
+            'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
         })
       )
     ).toBe(true);

@@ -21,6 +21,32 @@ export interface CopyResult {
   error?: string;
 }
 
+export function getRangeAsMarkdown(editor: Editor, from: number, to: number): string | null {
+  try {
+    const nodeAtFrom =
+      (editor.state.selection as any)?.node ?? editor.state.doc?.nodeAt?.(from);
+    if (nodeAtFrom && from + nodeAtFrom.nodeSize === to) {
+      const tempDoc = editor.schema.topNodeType.create(null, [nodeAtFrom]);
+      const markdownManager = (editor as any).markdown;
+      if (markdownManager?.serialize) {
+        return markdownManager.serialize(tempDoc.toJSON());
+      }
+    }
+
+    const slice = editor.state.doc.slice(from, to);
+    const tempDoc = editor.schema.topNodeType.create(null, slice.content);
+    const markdownManager = (editor as any).markdown;
+    if (markdownManager?.serialize) {
+      return markdownManager.serialize(tempDoc.toJSON());
+    }
+
+    return sliceToBasicMarkdown(editor, from, to);
+  } catch (error) {
+    console.error('[MD4H] Error getting range as markdown:', error);
+    return editor.state.doc?.textBetween?.(from, to, '\n\n', '\n') ?? null;
+  }
+}
+
 /**
  * Get the current selection as markdown
  *
@@ -34,29 +60,7 @@ export function getSelectionAsMarkdown(editor: Editor): string | null {
     return null;
   }
 
-  try {
-    // Get the selected slice
-    const slice = editor.state.doc.slice(from, to);
-
-    // Create a temporary document with just the selection content
-    const tempDoc = editor.schema.topNodeType.create(null, slice.content);
-
-    // Try to use the markdown manager from @tiptap/markdown
-    // The official package exposes editor.markdown.serialize(json)
-    const markdownManager = (editor as any).markdown;
-    if (markdownManager?.serialize) {
-      // Convert temp doc to JSON and serialize
-      const json = tempDoc.toJSON();
-      return markdownManager.serialize(json);
-    }
-
-    // Fallback: Convert to basic markdown by analyzing node types
-    return sliceToBasicMarkdown(editor, from, to);
-  } catch (error) {
-    console.error('[MD4H] Error getting selection as markdown:', error);
-    // Fallback to plain text
-    return editor.state.doc.textBetween(from, to, '\n\n', '\n');
-  }
+  return getRangeAsMarkdown(editor, from, to);
 }
 
 /**
@@ -101,6 +105,18 @@ function sliceToBasicMarkdown(editor: Editor, from: number, to: number): string 
       case 'blockquote':
         lines.push(`> ${text}`);
         return false;
+      case 'githubAlert': {
+        const alertType = node.attrs.alertType || 'NOTE';
+        if (text) {
+          const linesForAlert = text.split('\n').map((line: string) => `> ${line}`);
+          lines.push(`> [!${alertType}]`);
+          lines.push(...linesForAlert);
+        } else {
+          lines.push(`> [!${alertType}]`);
+          lines.push('> ');
+        }
+        return false;
+      }
       case 'horizontalRule':
         lines.push('---');
         return false;

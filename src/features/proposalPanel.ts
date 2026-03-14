@@ -11,9 +11,11 @@ import { PROPOSAL_STATE_DIR, RESPONSE_TEMP_FILE } from '../editor/MarkdownEditor
 import {
   getActiveDocument,
   getActiveWebviewPanel,
+  getOpenWebviews,
   getOpenWebviewForDocument,
 } from '../activeWebview';
 import { applyProposalReplacement } from './proposalReplacement';
+import { findProposalMatch } from './proposalReplacement';
 
 export interface Proposal {
   original: string;
@@ -497,6 +499,26 @@ function resolveProposalSourceContext(proposal: ProposalRequest): {
     const matched = getOpenWebviewForDocument(proposal.file);
     if (matched) {
       return matched;
+    }
+  }
+
+  const primaryProposal =
+    Array.isArray(proposal.proposals) && proposal.proposals.length > 0
+      ? proposal.proposals[0]
+      : proposal;
+
+  if (primaryProposal.original) {
+    for (const openWebview of getOpenWebviews()) {
+      const match = findProposalMatch(openWebview.document.getText(), {
+        original: primaryProposal.original,
+        replacement: primaryProposal.replacement,
+        context_before: primaryProposal.context_before,
+        context_after: primaryProposal.context_after,
+      });
+
+      if (match) {
+        return openWebview;
+      }
     }
   }
 
