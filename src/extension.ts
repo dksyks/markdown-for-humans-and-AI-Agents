@@ -10,6 +10,7 @@ import { WordCountFeature } from './features/wordCount';
 import { getActiveWebviewPanel } from './activeWebview';
 import { outlineViewProvider } from './features/outlineView';
 import { startProposalWatcher } from './features/proposalWatcher';
+import { startSelectionRevealWatcher } from './features/selectionRevealWatcher';
 
 export function activate(context: vscode.ExtensionContext) {
   // Register the custom editor provider
@@ -42,6 +43,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Watch for incoming AI proposals (Plan Selection feature)
   context.subscriptions.push(startProposalWatcher(context));
+  context.subscriptions.push(startSelectionRevealWatcher());
 
   // Register commands
   context.subscriptions.push(

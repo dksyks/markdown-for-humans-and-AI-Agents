@@ -68,6 +68,13 @@ export function getOpenWebviewForDocument(filePath: string): {
   return undefined;
 }
 
+export function getOpenWebviews(): Array<{
+  panel: vscode.WebviewPanel;
+  document: vscode.TextDocument;
+}> {
+  return Array.from(openWebviews.entries(), ([panel, document]) => ({ panel, document }));
+}
+
 export function hasOpenWebviewForDocument(filePath: string): boolean {
   return !!getOpenWebviewForDocument(filePath);
 }

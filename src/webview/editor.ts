@@ -164,6 +164,14 @@ let pendingInitialContent: string | null = null; // Content from host before edi
 let hasSentReadySignal = false;
 let isDomReady = document.readyState !== 'loading';
 let outlineUpdateTimeout: number | null = null;
+let pendingSelectionRevealMessage:
+  | {
+      type: 'scrollAndSelect' | 'selectProposalSelection' | 'revealCurrentProposalSelection';
+      original?: string;
+      context_before?: string | null;
+      context_after?: string | null;
+    }
+  | null = null;
 let lastProposalSelectionTarget:
   | {
       key: string;
@@ -372,7 +380,31 @@ function resolveSelectionRangeFromTextBlocks(
     contextAfter: options?.contextAfter ?? null,
   });
   if (matchedBlocks.length === 0) {
-  return null;
+    return null;
+  }
+
+  if (matchedBlocks.length === 1) {
+    const inlineRange = resolveTextRangeWithinTextBlock(
+      editor.state.doc,
+      matchedBlocks[0].from,
+      matchedBlocks[0].to,
+      selectedMarkdown,
+      {
+        selectedText: selectedMarkdown,
+        contextBefore: options?.contextBefore ?? null,
+        contextAfter: options?.contextAfter ?? null,
+      }
+    );
+
+    if (inlineRange) {
+      return inlineRange;
+    }
+  }
+
+  return {
+    from: matchedBlocks[0].from,
+    to: matchedBlocks[matchedBlocks.length - 1].to,
+  };
 }
 
 function resolveProposalSelectionTarget(
@@ -451,30 +483,6 @@ function getProposalSelectionKey(
   ctxAfter: string | null
 ): string {
   return JSON.stringify([original, ctxBefore ?? '', ctxAfter ?? '']);
-}
-
-  if (matchedBlocks.length === 1) {
-    const inlineRange = resolveTextRangeWithinTextBlock(
-      editor.state.doc,
-      matchedBlocks[0].from,
-      matchedBlocks[0].to,
-      selectedMarkdown,
-      {
-        selectedText: selectedMarkdown,
-        contextBefore: options?.contextBefore ?? null,
-        contextAfter: options?.contextAfter ?? null,
-      }
-    );
-
-    if (inlineRange) {
-      return inlineRange;
-    }
-  }
-
-  return {
-    from: matchedBlocks[0].from,
-    to: matchedBlocks[matchedBlocks.length - 1].to,
-  };
 }
 
 function revealProposalTarget(editor: Editor, from: number, to: number) {
@@ -567,6 +575,77 @@ function focusEditorPreservingScroll(editor: Editor) {
   } catch (error) {
     console.warn('[MD4H] Failed to focus editor during proposal reveal:', error);
   }
+}
+
+function handleSelectionRevealMessage(
+  editor: Editor,
+  message:
+    | {
+        type: 'scrollAndSelect' | 'selectProposalSelection';
+        original: string;
+        context_before: string | null;
+        context_after: string | null;
+      }
+    | {
+        type: 'revealCurrentProposalSelection';
+      }
+) {
+  if (message.type === 'revealCurrentProposalSelection') {
+    const pinnedRange = pinnedSelectionPluginKey.getState(editor.state);
+    const activeRange =
+      pinnedRange && pinnedRange.from < pinnedRange.to
+        ? { selFrom: pinnedRange.from, selTo: pinnedRange.to }
+        : !editor.state.selection.empty
+          ? { selFrom: editor.state.selection.from, selTo: editor.state.selection.to }
+          : null;
+    const target = lastProposalSelectionTarget ?? activeRange;
+    if (!target) return;
+    applyProposalSelection(editor, target.selFrom, target.selTo);
+    revealProposalTarget(editor, target.selFrom, target.selTo);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!editor) return;
+        focusEditorPreservingScroll(editor);
+        applyProposalSelection(editor, target.selFrom, target.selTo);
+      });
+    });
+    return;
+  }
+
+  const { original, context_before: ctxBefore, context_after: ctxAfter } = message;
+  const selectionKey = getProposalSelectionKey(original, ctxBefore, ctxAfter);
+  const target = resolveProposalSelectionTarget(editor, original, ctxBefore, ctxAfter);
+  if (!target) return;
+  const { selFrom, selTo } = target;
+  lastProposalSelectionTarget = {
+    key: selectionKey,
+    selFrom,
+    selTo,
+  };
+
+  const visibleSelectionRange = resolvePinnedTextRange(editor.state.doc, selFrom, selTo) ?? {
+    from: selFrom,
+    to: selTo,
+  };
+
+  if (navLastRecorded !== null) navRecordPosition(navLastRecorded, true);
+  navIsJumping = true;
+  navLastRecorded = visibleSelectionRange.from;
+  applyProposalSelection(editor, visibleSelectionRange.from, visibleSelectionRange.to);
+  if (message.type === 'scrollAndSelect') {
+    revealProposalTarget(editor, selFrom, selTo);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        focusEditorPreservingScroll(editor);
+        applyProposalSelection(
+          editor,
+          visibleSelectionRange.from,
+          visibleSelectionRange.to
+        );
+      });
+    });
+  }
+  navIsJumping = false;
 }
 const signalReady = () => {
   if (hasSentReadySignal) return;
@@ -1031,6 +1110,26 @@ function initializeEditor(initialContent: string) {
       vscode.postMessage({ type: 'selectionChange', pos: from });
     } catch (error) {
       console.warn('[MD4H] Initial selection sync failed:', error);
+    }
+
+    if (pendingSelectionRevealMessage) {
+      const pendingMessage = pendingSelectionRevealMessage;
+      pendingSelectionRevealMessage = null;
+      requestAnimationFrame(() => {
+        handleSelectionRevealMessage(
+          editorInstance,
+          pendingMessage as
+            | {
+                type: 'scrollAndSelect' | 'selectProposalSelection';
+                original: string;
+                context_before: string | null;
+                context_after: string | null;
+              }
+            | {
+                type: 'revealCurrentProposalSelection';
+              }
+        );
+      });
     }
 
     // Setup code block language badges
@@ -1813,63 +1912,29 @@ window.addEventListener('message', (event: MessageEvent) => {
       }
       case 'selectProposalSelection':
       case 'scrollAndSelect': {
-        if (!editor) break;
-        const { original, context_before: ctxBefore, context_after: ctxAfter } = message as {
+        if (!editor) {
+          pendingSelectionRevealMessage = message as {
+            type: 'scrollAndSelect' | 'selectProposalSelection';
+            original: string;
+            context_before: string | null;
+            context_after: string | null;
+          };
+          break;
+        }
+        handleSelectionRevealMessage(editor, message as {
+          type: 'scrollAndSelect' | 'selectProposalSelection';
           original: string;
           context_before: string | null;
           context_after: string | null;
-        };
-        const selectionKey = getProposalSelectionKey(original, ctxBefore, ctxAfter);
-        const target = resolveProposalSelectionTarget(editor, original, ctxBefore, ctxAfter);
-        if (!target) break;
-        const { occurrences, bestMarkdownIdx, renderedRange, textBlockRange, selFrom, selTo } =
-          target;
-        lastProposalSelectionTarget = {
-          key: selectionKey,
-          selFrom,
-          selTo,
-        };
-
-        const visibleSelectionRange = resolvePinnedTextRange(editor.state.doc, selFrom, selTo) ?? {
-          from: selFrom,
-          to: selTo,
-        };
-
-        // Record current position in nav history before jumping
-        if (navLastRecorded !== null) navRecordPosition(navLastRecorded, true);
-        navIsJumping = true;
-        navLastRecorded = visibleSelectionRange.from;
-        applyProposalSelection(
-          editor,
-          visibleSelectionRange.from,
-          visibleSelectionRange.to
-        );
-        if (message.type === 'scrollAndSelect') {
-          revealProposalTarget(editor, selFrom, selTo);
-        }
-        navIsJumping = false;
+        });
         break;
       }
       case 'revealCurrentProposalSelection': {
-        if (!editor) break;
-        const pinnedRange = pinnedSelectionPluginKey.getState(editor.state);
-        const activeRange =
-          pinnedRange && pinnedRange.from < pinnedRange.to
-            ? { selFrom: pinnedRange.from, selTo: pinnedRange.to }
-            : !editor.state.selection.empty
-              ? { selFrom: editor.state.selection.from, selTo: editor.state.selection.to }
-              : null;
-        const target = lastProposalSelectionTarget ?? activeRange;
-        if (!target) break;
-        applyProposalSelection(editor, target.selFrom, target.selTo);
-        revealProposalTarget(editor, target.selFrom, target.selTo);
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            if (!editor) return;
-            focusEditorPreservingScroll(editor);
-            applyProposalSelection(editor, target.selFrom, target.selTo);
-          });
-        });
+        if (!editor) {
+          pendingSelectionRevealMessage = { type: 'revealCurrentProposalSelection' };
+          break;
+        }
+        handleSelectionRevealMessage(editor, { type: 'revealCurrentProposalSelection' });
         break;
       }
       case 'clearProposalTargetHighlight': {

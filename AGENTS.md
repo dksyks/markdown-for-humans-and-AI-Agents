@@ -161,11 +161,44 @@ See: [vibe-coding-rules/common-pitfalls.md](vibe-coding-rules/common-pitfalls.md
 | Add command | `package.json` + `src/extension.ts` |
 | Add keyboard shortcut | `package.json` |
 | Add config option | `package.json` |
+| Add/update MCP tool | `mcp/server.js` |
+| Add/update MCP temp-file bridge | `src/editor/MarkdownEditorProvider.ts` |
+| Add/update MCP file watcher | `src/features/proposalWatcher.ts` / `src/features/selectionRevealWatcher.ts` |
 | Modify editor UI | `src/webview/editor.ts` + `src/webview/editor.css` |
 | Style changes | `src/webview/editor.css` (see `vibe-coding-rules/styling.md`) |
 | Add toolbar button | `src/webview/BubbleMenuView.ts` |
 | Add TipTap extension | `src/webview/extensions/` |
 | Update document sync | `src/editor/MarkdownEditorProvider.ts` |
+
+---
+
+## MCP Tool Usage
+
+When this extension is active in VS Code, AI agents can use the Markdown for Humans MCP server to work with the editor selection and proposal UI.
+
+Use the MCP tools based on how the task starts:
+
+- `get_markdown_selection`
+  Use when the user is actively selecting text in the editor and refers to "this", "here", or similar.
+  This reads the current editor selection plus `context_before`, `context_after`, and `headings_before`.
+
+- `propose_selection_replacement`
+  Use when the user wants an in-editor suggested rewrite for the current editor selection.
+  Pass the `selected`, `context_before`, and `context_after` values returned by `get_markdown_selection`.
+  Treat the edit as confirmed only when the tool returns status `"applied"`.
+
+- `scroll_to_markdown_selection`
+  Use when the agent is working from raw markdown or file context and the user wants to see a known passage in the WYSIWYG editor.
+  Pass the exact markdown span plus known `context_before` / `context_after` values when available.
+  Do not use this as a normal immediate follow-up to `get_markdown_selection`, because the user’s current editor selection is already visible.
+
+Typical patterns:
+
+- User-driven editor selection:
+  Call `get_markdown_selection`, then use that result for analysis or for `propose_selection_replacement`.
+
+- Agent-driven file context:
+  If the agent identifies a passage from raw file edits and the user wants to see it in the editor, call `scroll_to_markdown_selection`.
 
 ---
 

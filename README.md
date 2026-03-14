@@ -212,6 +212,7 @@ Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI
 Once configured, your AI assistant can call:
 
 - `get_markdown_selection` to read whatever text you have selected in the editor, with surrounding context and heading structure
+- `scroll_to_markdown_selection` to reselect a previously captured markdown span and scroll it into view in the editor
 - `propose_selection_replacement` to show a side-by-side WYSIWYG proposal panel and, when accepted, apply the replacement back to the markdown file
 
 **Telling your AI agent when to use the MCP tools**
@@ -227,10 +228,18 @@ is available via the MCP tool `get_markdown_selection` (server: markdown-for-hum
 Call this tool when the user refers to selected text, "this", "here", or similar
 references suggesting they have something highlighted in the editor.
 
-When the user wants to rewrite, polish, or transform selected markdown in-place,
-first call `get_markdown_selection`, then call
-`propose_selection_replacement` with the original selected text, a proposed
-replacement, and any available `context_before` / `context_after` values.
+Use the tools based on how the task starts:
+
+- If the user is actively selecting text in the editor and referring to "this",
+  "here", or similar, call `get_markdown_selection` to capture the current
+  editor selection.
+- If the agent is working from raw markdown or file edits and the user wants to
+  see a specific passage in the WYSIWYG editor, call
+  `scroll_to_markdown_selection` with the exact markdown span and available
+  `context_before` / `context_after` values.
+- If the user wants an in-editor suggested rewrite for the current selection,
+  call `propose_selection_replacement` with the selected text and context from
+  `get_markdown_selection`.
 
 The tool returns a JSON string with:
 - `file`: absolute path to the markdown file
@@ -242,6 +251,29 @@ The tool returns a JSON string with:
 `propose_selection_replacement` opens a review panel in VS Code. If the user
 accepts the proposal, Markdown for Humans attempts to apply the change directly
 to the source file and returns the final status to the AI assistant.
+
+`scroll_to_markdown_selection` is meant for revealing a known passage to the
+user when the agent is working from file context. It is not intended as a
+normal immediate follow-up to `get_markdown_selection`, because the selection is
+already visible in that workflow.
+
+`scroll_to_markdown_selection` reuses the same selection-matching logic as
+proposal targeting, so the editor can find the right occurrence even when the
+same text appears multiple times.
+
+Examples:
+
+- User-selected text workflow:
+  The user highlights a paragraph in the editor and says, "rewrite this more clearly."
+  The agent should call `get_markdown_selection`, then call
+  `propose_selection_replacement` with the returned `selected`,
+  `context_before`, and `context_after` values.
+
+- Agent-driven raw file workflow:
+  The agent is reviewing markdown from the file directly, identifies a specific
+  passage, and the user says, "show me that section in the editor."
+  The agent should call `scroll_to_markdown_selection` with the exact markdown
+  span and available surrounding context so the editor can select and reveal it.
 ```
 
 For Claude Code, place this in `~/.claude/CLAUDE.md` (applies globally to all projects) or `.claude/CLAUDE.md` in your project root.

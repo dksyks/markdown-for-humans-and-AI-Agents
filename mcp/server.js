@@ -14,6 +14,11 @@ const path = require('path');
 const SELECTION_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Selection.json');
 const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.json');
 const RESPONSE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Response.json');
+const SELECTION_REVEAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-SelectionReveal.json');
+const SELECTION_REVEAL_RESPONSE_TEMP_FILE = path.join(
+  os.tmpdir(),
+  'MarkdownForHumans-SelectionRevealResponse.json'
+);
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 const server = new McpServer({
@@ -76,10 +81,7 @@ Use context_before and context_after to locate the correct occurrence if the tex
             source_instance_id: selectionMetadata.instance_id ?? null,
           }
         : {};
-      // Clear any stale response
-      if (fs.existsSync(RESPONSE_TEMP_FILE)) {
-        try { fs.unlinkSync(RESPONSE_TEMP_FILE); } catch {}
-      }
+      clearFileIfExists(RESPONSE_TEMP_FILE);
       // Write proposal for extension to pick up
       fs.writeFileSync(
         PROPOSAL_TEMP_FILE,
@@ -94,7 +96,14 @@ Use context_before and context_after to locate the correct occurrence if the tex
         'utf8'
       );
 
-      const result = await waitForResponse(id, TIMEOUT_MS);
+      const result = await waitForResponse(id, TIMEOUT_MS, {
+        responseFilePath: RESPONSE_TEMP_FILE,
+        timeoutResult: {
+          id,
+          status: 'timeout',
+          replacement: null,
+        },
+      });
       const finalResult = await applyServerFallbackIfNeeded(result, {
         original,
         replacement,
@@ -102,6 +111,64 @@ Use context_before and context_after to locate the correct occurrence if the tex
         context_after: context_after ?? null,
       });
       return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
+      };
+    }
+  }
+);
+
+server.tool(
+  'scroll_to_markdown_selection',
+  `Select and scroll to a markdown selection in the Markdown for Humans editor.
+Use the exact selected markdown from get_markdown_selection, plus context_before/context_after when available, so the editor can locate the correct occurrence if the text appears multiple times.
+Returns { status, file } where status is "revealed", "timeout", or "error".`,
+  {
+    original: z
+      .string()
+      .describe('The exact selected markdown to reveal (as returned by get_markdown_selection selected field)'),
+    context_before: z
+      .string()
+      .optional()
+      .describe('Text immediately before the selection (context_before from get_markdown_selection)'),
+    context_after: z
+      .string()
+      .optional()
+      .describe('Text immediately after the selection (context_after from get_markdown_selection)'),
+  },
+  async ({ original, context_before, context_after }) => {
+    try {
+      const id = Date.now().toString();
+      const selectionMetadata = readSelectionMetadata();
+      const routingMetadata = buildSelectionRoutingMetadata(selectionMetadata, {
+        original,
+        context_before: context_before ?? null,
+        context_after: context_after ?? null,
+      });
+
+      clearFileIfExists(SELECTION_REVEAL_RESPONSE_TEMP_FILE);
+      fs.writeFileSync(
+        SELECTION_REVEAL_TEMP_FILE,
+        JSON.stringify({
+          id,
+          ...routingMetadata,
+          original,
+          context_before: context_before ?? null,
+          context_after: context_after ?? null,
+        }),
+        'utf8'
+      );
+
+      const result = await waitForResponse(id, TIMEOUT_MS, {
+        responseFilePath: SELECTION_REVEAL_RESPONSE_TEMP_FILE,
+        timeoutResult: {
+          id,
+          status: 'timeout',
+          file: routingMetadata.file ?? null,
+        },
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     } catch (err) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
@@ -139,6 +206,15 @@ function proposalMatchesSelection(selection, proposal) {
     (selection.context_before ?? null) === (proposal.context_before ?? null) &&
     (selection.context_after ?? null) === (proposal.context_after ?? null)
   );
+}
+
+function buildSelectionRoutingMetadata(selectionMetadata, selection) {
+  return proposalMatchesSelection(selectionMetadata, selection)
+    ? {
+        file: selectionMetadata.file ?? null,
+        source_instance_id: selectionMetadata.instance_id ?? null,
+      }
+    : {};
 }
 
 function collapseParagraphBreaks(markdown) {
@@ -237,6 +313,16 @@ function applyProposalReplacement(fullMarkdown, proposal) {
   };
 }
 
+function clearFileIfExists(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+
+  try {
+    fs.unlinkSync(filePath);
+  } catch {}
+}
+
 async function applyServerFallbackIfNeeded(result, proposal) {
   if (!result || result.status !== 'accept' || !result.replacement) {
     return result;
@@ -275,10 +361,12 @@ async function applyServerFallbackIfNeeded(result, proposal) {
 }
 
 /**
- * Wait for the extension to write a response to RESPONSE_TEMP_FILE with matching id.
+ * Wait for the extension to write a response file with a matching id.
  * Uses fs.watch with a polling fallback. Resolves on response or timeout.
  */
-function waitForResponse(id, timeoutMs) {
+function waitForResponse(id, timeoutMs, options) {
+  const { responseFilePath, timeoutResult } = options;
+
   return new Promise((resolve) => {
     let watcher;
     let resolved = false;
@@ -291,13 +379,13 @@ function waitForResponse(id, timeoutMs) {
     };
 
     const deadline = setTimeout(() => {
-      finish({ status: 'timeout', replacement: null });
+      finish(timeoutResult);
     }, timeoutMs);
 
     const check = () => {
       try {
-        if (!fs.existsSync(RESPONSE_TEMP_FILE)) return;
-        const data = JSON.parse(fs.readFileSync(RESPONSE_TEMP_FILE, 'utf8'));
+        if (!fs.existsSync(responseFilePath)) return;
+        const data = JSON.parse(fs.readFileSync(responseFilePath, 'utf8'));
         if (data.id !== id) return;
         clearTimeout(deadline);
         finish(data);
@@ -305,7 +393,7 @@ function waitForResponse(id, timeoutMs) {
     };
 
     try {
-      watcher = fs.watch(path.dirname(RESPONSE_TEMP_FILE), (_event, filename) => {
+      watcher = fs.watch(path.dirname(responseFilePath), (_event, filename) => {
         if (filename && filename.includes('Response')) check();
       });
     } catch {
