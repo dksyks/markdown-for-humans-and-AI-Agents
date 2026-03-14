@@ -92,8 +92,14 @@ describe('ProposalPanel', () => {
     expect(postMessage).toHaveBeenNthCalledWith(2, {
       type: 'revealCurrentProposalSelection',
     });
-    expect(postMessage).toHaveBeenNthCalledWith(4, {
+    expect(postMessage).toHaveBeenNthCalledWith(3, {
       type: 'revealCurrentProposalSelection',
+    });
+    expect(postMessage).toHaveBeenNthCalledWith(4, {
+      type: 'selectProposalSelection',
+      original: '**Note:** Test',
+      context_before: 'Before',
+      context_after: 'After',
     });
   });
 

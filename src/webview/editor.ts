@@ -9,6 +9,7 @@ import './editor.css';
 
 declare const __BUILD_TIME__: string;
 const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+const SELECTION_DEBUG_LOGS = false;
 import './codicon.css';
 
 import { Editor } from '@tiptap/core';
@@ -380,11 +381,34 @@ function resolveSelectionRangeFromRenderedBlocks(
 ): { from: number; to: number; targetBlocks: HTMLElement[] } | null {
   const selectionBlocks = getNormalizedSelectionBlocks(selectedMarkdown);
   const renderedBlocks = getRenderedEditorBlocks();
-  const matchedBlocks = findRenderedBlockSequence(renderedBlocks, selectionBlocks, {
-    selectedText: selectedMarkdown,
-    contextBefore: options?.contextBefore ?? null,
-    contextAfter: options?.contextAfter ?? null,
-  });
+
+  // When the selection is a heading (either starts with # markers, or context_before
+  // ends with heading markers like "#### "), restrict matching to heading elements
+  // first to avoid spurious matches against inline paragraph text that contains
+  // the same words as the heading.
+  const isHeadingSelection =
+    /^#{1,6}\s/.test(selectedMarkdown.trimStart()) ||
+    /^#{1,6}\s*$/.test((options?.contextBefore ?? '').trimEnd().split('\n').pop() ?? '');
+  const headingOnlyBlocks = isHeadingSelection
+    ? renderedBlocks.filter(b => /^h[1-6]$/i.test(b.element.tagName))
+    : null;
+
+  let matchedBlocks =
+    headingOnlyBlocks && headingOnlyBlocks.length > 0
+      ? findRenderedBlockSequence(headingOnlyBlocks, selectionBlocks, {
+          selectedText: selectedMarkdown,
+          contextBefore: options?.contextBefore ?? null,
+          contextAfter: options?.contextAfter ?? null,
+        })
+      : [];
+
+  if (matchedBlocks.length === 0) {
+    matchedBlocks = findRenderedBlockSequence(renderedBlocks, selectionBlocks, {
+      selectedText: selectedMarkdown,
+      contextBefore: options?.contextBefore ?? null,
+      contextAfter: options?.contextAfter ?? null,
+    });
+  }
 
   if (matchedBlocks.length === 0) {
     return null;
@@ -501,7 +525,14 @@ function resolveSelectionRangeFromTextBlocks(
   }
 ): { from: number; to: number } | null {
   const selectionBlocks = getNormalizedSelectionBlocks(selectedMarkdown);
-  const textBlocks: Array<{ text: string; from: number; to: number }> = [];
+
+  // Detect if the selection is a heading — either by leading # markers or by
+  // context_before ending with a heading marker like "#### ".
+  const isHeadingCtx =
+    /^#{1,6}\s/.test(selectedMarkdown.trimStart()) ||
+    /^#{1,6}\s*$/.test((options?.contextBefore ?? '').trimEnd().split('\n').pop() ?? '');
+
+  const allTextBlocks: Array<{ text: string; from: number; to: number; isHeading: boolean }> = [];
 
   editor.state.doc.descendants((node, pos) => {
     if (!node.isTextblock) {
@@ -513,20 +544,36 @@ function resolveSelectionRangeFromTextBlocks(
       return true;
     }
 
-    textBlocks.push({
+    allTextBlocks.push({
       text,
       from: pos,
       to: pos + node.nodeSize,
+      isHeading: node.type.name === 'heading',
     });
 
     return true;
   });
 
-  const matchedBlocks = findTextBlockSequence(textBlocks, selectionBlocks, {
+  // When the selection is a heading, try heading-only blocks first to avoid
+  // matching inline mentions of the same text in paragraphs.
+  const headingBlocks = allTextBlocks.filter(b => b.isHeading);
+  const textBlocks = isHeadingCtx && headingBlocks.length > 0 ? headingBlocks : allTextBlocks;
+
+  let matchedBlocks = findTextBlockSequence(textBlocks, selectionBlocks, {
     selectedText: selectedMarkdown,
     contextBefore: options?.contextBefore ?? null,
     contextAfter: options?.contextAfter ?? null,
   });
+
+  // If heading-only search found nothing, fall back to all blocks.
+  if (matchedBlocks.length === 0 && textBlocks !== allTextBlocks) {
+    matchedBlocks = findTextBlockSequence(allTextBlocks, selectionBlocks, {
+      selectedText: selectedMarkdown,
+      contextBefore: options?.contextBefore ?? null,
+      contextAfter: options?.contextAfter ?? null,
+    });
+  }
+
   if (matchedBlocks.length === 0) {
     return null;
   }
@@ -685,8 +732,14 @@ function revealProposalTarget(editor: Editor, from: number, to: number) {
         return directMatch ? [directMatch] : [];
       };
       const initialTargetBlocks = resolveLiveTargetBlocks();
+      if (SELECTION_DEBUG_LOGS) {
+        console.log(`${BUILD_TAG} revealProposalTarget: from=${from} to=${to} blockRanges=`, blockRanges, 'initialTargetBlocks=', initialTargetBlocks.map(b => b.tagName + ':' + b.textContent?.slice(0, 30)));
+      }
 
       if (initialTargetBlocks.length === 0) {
+        if (SELECTION_DEBUG_LOGS) {
+          console.log(`${BUILD_TAG} revealProposalTarget: no blocks found, scrollToPos`);
+        }
         scrollToPos(editor, from);
         return;
       }
@@ -697,6 +750,9 @@ function revealProposalTarget(editor: Editor, from: number, to: number) {
         try {
           const targetBlocks = resolveLiveTargetBlocks();
           if (targetBlocks.length === 0) {
+            if (SELECTION_DEBUG_LOGS) {
+              console.log(`${BUILD_TAG} revealProposalTarget: no target blocks after relayout from=${from} to=${to}`);
+            }
             scrollToPos(editor, from);
             return;
           }
@@ -710,6 +766,15 @@ function revealProposalTarget(editor: Editor, from: number, to: number) {
           const bottomMargin = 12;
 
           targetBlocks.forEach(block => block.classList.add(PROPOSAL_TARGET_BLOCK_CLASS));
+          if (SELECTION_DEBUG_LOGS) {
+            console.log(
+              `${BUILD_TAG} revealProposalTarget: applied highlight class to`,
+              targetBlocks.map(
+                block =>
+                  `${block.tagName}:${(block.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 32)}`
+              )
+            );
+          }
           document.documentElement.style.setProperty(
             '--md4h-proposal-scroll-margin-top',
             `${Math.ceil(topOffset)}px`
@@ -745,21 +810,84 @@ function revealProposalTarget(editor: Editor, from: number, to: number) {
   });
 }
 
-function applyProposalSelection(editor: Editor, from: number, to: number) {
-  const node = editor.state.doc.nodeAt(from);
-  const canUseNodeSelection = node && from + node.nodeSize === to;
-
-  if (canUseNodeSelection) {
-    editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, from)));
-  } else {
-    editor.commands.setTextSelection({ from, to });
+function findTextNodeBoundary(root: Node, forward: boolean): Text | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  if (forward) {
+    return walker.nextNode() as Text | null;
   }
+
+  let last: Text | null = null;
+  let current = walker.nextNode() as Text | null;
+  while (current) {
+    last = current;
+    current = walker.nextNode() as Text | null;
+  }
+  return last;
+}
+
+function resolveDomTextPoint(
+  view: Editor['view'],
+  pos: number,
+  preferForward: boolean
+): { node: Text; offset: number } | null {
+  const domPoint = view.domAtPos(pos, preferForward ? 1 : -1);
+  if (domPoint.node instanceof Text) {
+    return {
+      node: domPoint.node,
+      offset: Math.max(0, Math.min(domPoint.offset, domPoint.node.textContent?.length ?? 0)),
+    };
+  }
+
+  const container = domPoint.node;
+  const childNodes = Array.from(container.childNodes);
+  const directChild =
+    preferForward
+      ? childNodes[Math.min(domPoint.offset, childNodes.length - 1)] ?? null
+      : childNodes[Math.max(0, domPoint.offset - 1)] ?? null;
+
+  const textNode =
+    (directChild ? findTextNodeBoundary(directChild, preferForward) : null) ??
+    findTextNodeBoundary(container, preferForward);
+  if (!textNode) {
+    return null;
+  }
+
+  return {
+    node: textNode,
+    offset: preferForward ? 0 : textNode.textContent?.length ?? 0,
+  };
+}
+
+function syncBrowserSelectionToRange(editor: Editor, from: number, to: number) {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const start = resolveDomTextPoint(editor.view, from, true);
+  const end = resolveDomTextPoint(editor.view, to, false);
+  if (!start || !end) {
+    return;
+  }
+
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function applyProposalSelection(editor: Editor, from: number, to: number) {
+  editor.commands.setTextSelection({ from, to });
   editor.view.dispatch(
     editor.state.tr.setMeta(pinnedSelectionPluginKey, {
       from,
       to,
     })
   );
+  requestAnimationFrame(() => {
+    syncBrowserSelectionToRange(editor, from, to);
+  });
 }
 
 function applyProposalSelectionByKind(
@@ -789,7 +917,7 @@ function focusEditorPreservingScroll(editor: Editor) {
   try {
     editor.view.focus();
   } catch (error) {
-    console.warn('[MD4H] Failed to focus editor during proposal reveal:', error);
+    console.warn(`${BUILD_TAG} Failed to focus editor during proposal reveal:`, error);
   }
 }
 
@@ -816,6 +944,9 @@ function handleSelectionRevealMessage(
           ? { selFrom: editor.state.selection.from, selTo: editor.state.selection.to }
           : null;
     const target = lastProposalSelectionTarget ?? activeRange;
+    if (SELECTION_DEBUG_LOGS) {
+      console.log(`${BUILD_TAG} revealCurrentProposalSelection: target=`, target, 'pinned=', pinnedRange, 'active=', activeRange);
+    }
     if (!target) return;
     if ((target.selectionKind ?? 'text') !== 'node') {
       applyProposalSelectionByKind(
@@ -824,20 +955,17 @@ function handleSelectionRevealMessage(
         target.selTo,
         target.selectionKind ?? 'text'
       );
+      if (SELECTION_DEBUG_LOGS) {
+        console.log(`${BUILD_TAG} revealCurrentProposalSelection: post-apply selection=`, {
+          from: editor.state.selection.from,
+          to: editor.state.selection.to,
+          empty: editor.state.selection.empty,
+          type: editor.state.selection.constructor?.name ?? 'unknown',
+          pinned: pinnedSelectionPluginKey.getState(editor.state),
+        });
+      }
     }
     revealProposalTarget(editor, target.selFrom, target.selTo);
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (!editor) return;
-        focusEditorPreservingScroll(editor);
-        applyProposalSelectionByKind(
-          editor,
-          target.selFrom,
-          target.selTo,
-          target.selectionKind ?? 'text'
-        );
-      });
-    });
     return;
   }
 
@@ -863,6 +991,9 @@ function handleSelectionRevealMessage(
       return;
     }
     const { selFrom, selTo, resolutionMethod, occurrences, bestMarkdownIdx } = target;
+    if (SELECTION_DEBUG_LOGS) {
+      console.log(`${BUILD_TAG} proposalSelection resolved: method=${resolutionMethod} from=${selFrom} to=${selTo}`);
+    }
     lastProposalSelectionTarget = {
       key: selectionKey,
       selFrom,
@@ -954,7 +1085,7 @@ const pushOutlineUpdate = () => {
     const outline = buildOutlineFromEditor(editor);
     vscode.postMessage({ type: 'outlineUpdated', outline });
   } catch (error) {
-    console.warn('[MD4H] Failed to build outline:', error);
+    console.warn(`${BUILD_TAG} Failed to build outline:`, error);
   }
 };
 
@@ -1034,13 +1165,13 @@ window.setupImageResize = function (
 ): void {
   const editorToUse = editorInstance || editor;
   if (!editorToUse) {
-    console.warn('[MD4H] setupImageResize called before editor is ready');
+    console.warn(`${BUILD_TAG} setupImageResize called before editor is ready`);
     return;
   }
 
   const apiToUse = vscodeApi || vscode;
   void showImageResizeModal(img, editorToUse, apiToUse).catch(error => {
-    console.error('[MD4H] Failed to open image resize modal:', error);
+    console.error(`${BUILD_TAG} Failed to open image resize modal:`, error);
     apiToUse.postMessage({
       type: 'showError',
       message: 'Failed to open the image resize dialog. Please reload the editor and try again.',
@@ -1079,7 +1210,7 @@ function immediateUpdate() {
       });
     }, 50); // Small delay to ensure edit is processed first
   } catch (error) {
-    console.error('[MD4H] Error in immediate save:', error);
+    console.error(`${BUILD_TAG} Error in immediate save:`, error);
   }
 }
 
@@ -1097,7 +1228,7 @@ function debouncedUpdate(markdown: string) {
       // Check if any images are currently being saved
       if (hasPendingImageSaves()) {
         const count = getPendingImageCount();
-        console.log(`[MD4H] Delaying document sync - ${count} image(s) still being saved`);
+        console.log(`${BUILD_TAG} Delaying document sync - ${count} image(s) still being saved`);
         // Reschedule the update to check again
         debouncedUpdate(markdown);
         return;
@@ -1111,7 +1242,7 @@ function debouncedUpdate(markdown: string) {
         content: markdown,
       });
     } catch (error) {
-      console.error('[MD4H] Error sending update:', error);
+      console.error(`${BUILD_TAG} Error sending update:`, error);
     }
   }, 500);
 }
@@ -1149,13 +1280,13 @@ function setupCodeBlockLanguageBadges(editorInstance: Editor) {
 function initializeEditor(initialContent: string) {
   try {
     if (editor) {
-      console.warn('[MD4H] Editor already initialized, skipping re-init');
+      console.warn(`${BUILD_TAG} Editor already initialized, skipping re-init`);
       return;
     }
 
     const editorElement = document.querySelector('#editor') as HTMLElement;
     if (!editorElement) {
-      console.error('[MD4H] Editor element not found');
+      console.error(`${BUILD_TAG} Editor element not found`);
       return;
     }
 
@@ -1283,7 +1414,7 @@ function initializeEditor(initialContent: string) {
           debouncedUpdate(markdown);
           scheduleOutlineUpdate();
         } catch (error) {
-          console.error('[MD4H] Error in onUpdate:', error);
+          console.error(`${BUILD_TAG} Error in onUpdate:`, error);
         }
       },
       onSelectionUpdate: ({ editor }) => {
@@ -1317,7 +1448,7 @@ function initializeEditor(initialContent: string) {
           const headings_before = getHeadingsBeforeSelection(editor);
           vscode.postMessage({ type: 'selectionPush', selected, context_before, context_after, headings_before });
         } catch (error) {
-          console.warn('[MD4H] Selection update failed:', error);
+          console.warn(`${BUILD_TAG} Selection update failed:`, error);
         }
       },
       onCreate: () => {
@@ -1396,7 +1527,7 @@ function initializeEditor(initialContent: string) {
       const { from } = editorInstance.state.selection;
       vscode.postMessage({ type: 'selectionChange', pos: from });
     } catch (error) {
-      console.warn('[MD4H] Initial selection sync failed:', error);
+      console.warn(`${BUILD_TAG} Initial selection sync failed:`, error);
     }
 
     if (pendingSelectionRevealMessage) {
@@ -1439,7 +1570,7 @@ function initializeEditor(initialContent: string) {
           tableMenu.style.display = 'none';
         }
       } catch (error) {
-        console.error('[MD4H] Error in context menu:', error);
+        console.error(`${BUILD_TAG} Error in context menu:`, error);
       }
     };
 
@@ -1450,11 +1581,6 @@ function initializeEditor(initialContent: string) {
     // Handle keyboard shortcuts
     const keydownHandler = (e: KeyboardEvent) => {
       const isMod = e.metaKey || e.ctrlKey; // Cmd on Mac, Ctrl on Windows/Linux
-
-      // Log ALL modifier key presses for debugging
-      if (isMod) {
-        console.log(`[MD4H] Key pressed: ${e.key}, metaKey: ${e.metaKey}, ctrlKey: ${e.ctrlKey}`);
-      }
 
       // Save shortcut - immediate save
       if (isMod && e.key === 's') {
@@ -1482,7 +1608,7 @@ function initializeEditor(initialContent: string) {
 
       if (isMod && formattingShortcuts.includes(e.key.toLowerCase())) {
         e.stopPropagation(); // Stop event from reaching VS Code
-        console.log(`[MD4H] Intercepted Cmd+${e.key.toUpperCase()} for editor`);
+        console.log(`${BUILD_TAG} Intercepted Cmd+${e.key.toUpperCase()} for editor`);
         // TipTap will handle the formatting
         return;
       }
@@ -1657,7 +1783,7 @@ function initializeEditor(initialContent: string) {
 
     console.log(`${BUILD_TAG} Editor initialization complete`);
   } catch (error) {
-    console.error('[MD4H] Fatal error initializing editor:', error);
+    console.error(`${BUILD_TAG} Fatal error initializing editor:`, error);
     const editorElement = document.querySelector('#editor') as HTMLElement;
     if (editorElement) {
       editorElement.innerHTML = `
@@ -2089,7 +2215,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
 
         if (!imgElement) {
-          console.warn('[MD4H] Could not find image element for local image copy');
+          console.warn(`${BUILD_TAG} Could not find image element for local image copy`);
           break;
         }
 
@@ -2097,7 +2223,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         const pos = editor.view.posAtDOM(imgElement, 0);
 
         if (pos === undefined || pos === null) {
-          console.warn('[MD4H] Could not find position for image in editor');
+          console.warn(`${BUILD_TAG} Could not find position for image in editor`);
           break;
         }
 
@@ -2105,7 +2231,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         const node = editor.state.doc.nodeAt(pos);
 
         if (!node || node.type.name !== 'image') {
-          console.warn(`[MD4H] Node at position ${pos} is not an image: ${node?.type.name}`);
+          console.warn(`${BUILD_TAG} Node at position ${pos} is not an image: ${node?.type.name}`);
           break;
         }
 
@@ -2159,14 +2285,14 @@ window.addEventListener('message', (event: MessageEvent) => {
             }
           }
         } catch (error) {
-          console.error('[MD4H] Failed to update image node after copy:', error);
+          console.error(`${BUILD_TAG} Failed to update image node after copy:`, error);
         }
         break;
       }
       case 'localImageCopyError': {
         // Local image copy failed
         const error = message.error as string;
-        console.error('[MD4H] Local image copy failed:', error);
+        console.error(`${BUILD_TAG} Local image copy failed:`, error);
         // Error already shown by extension, just clean up any pending state
         const images = document.querySelectorAll('.markdown-image');
         for (const img of images) {
@@ -2263,10 +2389,10 @@ window.addEventListener('message', (event: MessageEvent) => {
         break;
       }
       default:
-        console.warn('[MD4H] Unknown message type:', message.type);
+        console.warn(`${BUILD_TAG} Unknown message type:`, message.type);
     }
   } catch (error) {
-    console.error('[MD4H] Error handling message:', error);
+    console.error(`${BUILD_TAG} Error handling message:`, error);
   }
 });
 
@@ -2275,7 +2401,7 @@ window.addEventListener('message', (event: MessageEvent) => {
  */
 function updateEditorContent(markdown: string) {
   if (!editor) {
-    console.error('[MD4H] Editor not initialized');
+    console.error(`${BUILD_TAG} Editor not initialized`);
     return;
   }
 
@@ -2294,7 +2420,7 @@ function updateEditorContent(markdown: string) {
     // Don't update if user edited recently (within 2 seconds)
     const timeSinceLastEdit = Date.now() - lastUserEditTime;
     if (timeSinceLastEdit < 2000) {
-      console.log(`[MD4H] Skipping update - user recently edited (${timeSinceLastEdit}ms ago)`);
+      console.log(`${BUILD_TAG} Skipping update - user recently edited (${timeSinceLastEdit}ms ago)`);
       return;
     }
 
@@ -2303,7 +2429,7 @@ function updateEditorContent(markdown: string) {
     const startTime = performance.now();
     const docSize = markdown.length;
 
-    console.log(`[MD4H] Updating content (${docSize} chars)...`);
+    console.log(`${BUILD_TAG} Updating content (${docSize} chars)...`);
 
     // Skip if content is already in sync
     const currentMarkdown = getEditorMarkdownForSync(editor);
@@ -2314,7 +2440,7 @@ function updateEditorContent(markdown: string) {
 
     // Save cursor position
     const { from, to } = editor.state.selection;
-    console.log(`[MD4H] Saving cursor position: ${from}-${to}`);
+    console.log(`${BUILD_TAG} Saving cursor position: ${from}-${to}`);
 
     // Set content
     editor.commands.setContent(markdown, { contentType: 'markdown' });
@@ -2322,9 +2448,9 @@ function updateEditorContent(markdown: string) {
     // Restore cursor position
     try {
       editor.commands.setTextSelection({ from, to });
-      console.log(`[MD4H] Restored cursor position: ${from}-${to}`);
+      console.log(`${BUILD_TAG} Restored cursor position: ${from}-${to}`);
     } catch {
-      console.warn('[MD4H] Could not restore exact cursor position, using safe position');
+      console.warn(`${BUILD_TAG} Could not restore exact cursor position, using safe position`);
       // If exact position fails, move to end of document
       const endPos = editor.state.doc.content.size;
       editor.commands.setTextSelection(Math.min(from, endPos));
@@ -2333,14 +2459,14 @@ function updateEditorContent(markdown: string) {
     pushOutlineUpdate();
 
     const duration = performance.now() - startTime;
-    console.log(`[MD4H] Content updated in ${duration.toFixed(2)}ms`);
+    console.log(`${BUILD_TAG} Content updated in ${duration.toFixed(2)}ms`);
 
     if (duration > 1000) {
-      console.warn(`[MD4H] Slow update: ${duration.toFixed(2)}ms for ${docSize} chars`);
+      console.warn(`${BUILD_TAG} Slow update: ${duration.toFixed(2)}ms for ${docSize} chars`);
     }
   } catch (error) {
-    console.error('[MD4H] Error updating content:', error);
-    console.error('[MD4H] Document size:', markdown.length, 'chars');
+    console.error(`${BUILD_TAG} Error updating content:`, error);
+    console.error(`${BUILD_TAG} Document size:`, markdown.length, 'chars');
   } finally {
     isUpdating = false;
   }
@@ -2485,7 +2611,7 @@ window.addEventListener('exportDocument', async (event: Event) => {
   const customEvent = event as CustomEvent;
   const format = customEvent.detail?.format || 'pdf';
 
-  console.log(`[MD4H] Exporting document as ${format}...`);
+  console.log(`${BUILD_TAG} Exporting document as ${format}...`);
 
   try {
     // Collect content and convert Mermaid to PNG
@@ -2501,7 +2627,7 @@ window.addEventListener('exportDocument', async (event: Event) => {
       title,
     });
   } catch (error) {
-    console.error('[MD4H] Export failed:', error);
+    console.error(`${BUILD_TAG} Export failed:`, error);
     vscode.postMessage({
       type: 'showError',
       message: 'Failed to prepare document for export. See console for details.',
@@ -2556,11 +2682,11 @@ document.addEventListener(
 
 // Global error handler
 window.addEventListener('error', event => {
-  console.error('[MD4H] Uncaught error:', event.error);
+  console.error(`${BUILD_TAG} Uncaught error:`, event.error);
 });
 
 window.addEventListener('unhandledrejection', event => {
-  console.error('[MD4H] Unhandled promise rejection:', event.reason);
+  console.error(`${BUILD_TAG} Unhandled promise rejection:`, event.reason);
 });
 
 // Testing hooks (not used in production UI)

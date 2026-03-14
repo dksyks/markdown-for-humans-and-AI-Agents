@@ -501,7 +501,7 @@ function splitMarkdownBlocks(markdown: string): MarkdownBlock[] {
 
     if (/^\s*[-*+]\s+/.test(line)) {
       const match = /^\s*[-*+]\s+(.*)$/.exec(line);
-      if (match) {
+      if (match && match[1].trim()) {
         blocks.push({
           kind: 'unorderedListItem',
           markdown: line,
@@ -514,7 +514,7 @@ function splitMarkdownBlocks(markdown: string): MarkdownBlock[] {
 
     if (/^\s*\d+\.\s+/.test(line)) {
       const match = /^\s*(\d+)\.\s+(.*)$/.exec(line);
-      if (match) {
+      if (match && match[2].trim()) {
         blocks.push({
           kind: 'orderedListItem',
           markdown: line,

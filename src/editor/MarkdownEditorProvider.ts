@@ -2671,6 +2671,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
               content="default-src 'none';
                        style-src ${webview.cspSource} 'unsafe-inline';
                        script-src 'nonce-${nonce}';
+                       connect-src ${webview.cspSource};
                        font-src ${webview.cspSource};
                        img-src ${webview.cspSource} https: data: blob:;">
         

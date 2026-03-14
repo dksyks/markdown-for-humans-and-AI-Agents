@@ -451,10 +451,11 @@ export class ProposalPanel {
     this._scrollMainEditor();
 
     // Opening the proposal panel beside the editor resizes the main webview.
-    // Apply the reveal only after layout settles; do not re-apply the selection.
-    for (const delay of [100, 250, 500]) {
+    // Re-apply the selection on the final retry so visible highlighting survives layout changes.
+    for (const delay of [100, 250]) {
       setTimeout(() => this._revealMainEditorSelection(), delay);
     }
+    setTimeout(() => this._scrollMainEditor(), 500);
   }
 
   private _getHtml(): string {
@@ -477,6 +478,7 @@ export class ProposalPanel {
               content="default-src 'none';
                        style-src ${webview.cspSource} 'unsafe-inline';
                        script-src 'nonce-${nonce}';
+                       connect-src ${webview.cspSource};
                        font-src ${webview.cspSource};
                        img-src ${webview.cspSource} https: data: blob:;">
         <link href="${styleUri}" rel="stylesheet">
