@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { getEditorHostInstanceId, hasOpenWebviewForDocument } from '../activeWebview';
 import { PROPOSAL_TEMP_FILE } from '../editor/MarkdownEditorProvider';
 import { Proposal, ProposalPanel } from './proposalPanel';
 
@@ -25,6 +26,22 @@ export function readPendingProposal(proposalFilePath: string = PROPOSAL_TEMP_FIL
   return data;
 }
 
+export function shouldHandleProposal(proposal: Proposal): boolean {
+  const instanceMatch =
+    !proposal.source_instance_id || proposal.source_instance_id === getEditorHostInstanceId();
+  const fileMatch = !proposal.file || hasOpenWebviewForDocument(proposal.file);
+
+  if (!instanceMatch) {
+    return false;
+  }
+
+  if (proposal.file) {
+    return fileMatch;
+  }
+
+  return true;
+}
+
 /**
  * Watch for incoming proposals written by the MCP server.
  * When a new proposal appears (new id), opens the ProposalPanel.
@@ -37,6 +54,7 @@ export function startProposalWatcher(context: vscode.ExtensionContext): vscode.D
       const data = readPendingProposal();
       if (!data) return;
       if (!data.id || data.id === lastId) return;
+      if (!shouldHandleProposal(data)) return;
       lastId = data.id;
       ProposalPanel.show(context, data);
     } catch {

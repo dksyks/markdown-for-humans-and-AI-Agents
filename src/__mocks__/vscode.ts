@@ -59,6 +59,7 @@ export enum ProgressLocation {
 // Mock window API
 export const window = {
   createStatusBarItem: jest.fn(() => mockStatusBarItem),
+  createWebviewPanel: jest.fn(),
   activeTextEditor: undefined as unknown,
   showErrorMessage: jest.fn(),
   showInformationMessage: jest.fn(),
@@ -105,11 +106,20 @@ export const Uri = {
     scheme: 'file',
     toString: () => uri,
   })),
+  joinPath: jest.fn((base: MockUri, ...paths: string[]) => ({
+    fsPath: [base.fsPath, ...paths].join('/'),
+    path: [base.path, ...paths].join('/'),
+    scheme: base.scheme,
+  })),
 };
 
 // Mock env API
 export const env = {
   openExternal: jest.fn(),
+  clipboard: {
+    writeText: jest.fn(),
+  },
+  sessionId: 'mock-session-id',
 };
 
 // Mock ConfigurationTarget enum
@@ -247,3 +257,16 @@ export class WorkspaceEdit {
     this.replaces.push({ uri, range, text });
   }
 }
+
+export class Disposable {
+  constructor(private readonly callback: () => void = () => {}) {}
+
+  dispose() {
+    this.callback();
+  }
+}
+
+export const ViewColumn = {
+  Active: -1,
+  Beside: -2,
+};

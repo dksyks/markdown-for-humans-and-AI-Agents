@@ -65,6 +65,17 @@ Use context_before and context_after to locate the correct occurrence if the tex
   async ({ original, replacement, context_before, context_after }) => {
     try {
       const id = Date.now().toString();
+      const selectionMetadata = readSelectionMetadata();
+      const routingMetadata = proposalMatchesSelection(selectionMetadata, {
+        original,
+        context_before: context_before ?? null,
+        context_after: context_after ?? null,
+      })
+        ? {
+            file: selectionMetadata.file ?? null,
+            source_instance_id: selectionMetadata.instance_id ?? null,
+          }
+        : {};
       // Clear any stale response
       if (fs.existsSync(RESPONSE_TEMP_FILE)) {
         try { fs.unlinkSync(RESPONSE_TEMP_FILE); } catch {}
@@ -74,6 +85,7 @@ Use context_before and context_after to locate the correct occurrence if the tex
         PROPOSAL_TEMP_FILE,
         JSON.stringify({
           id,
+          ...routingMetadata,
           original,
           replacement,
           context_before: context_before ?? null,
@@ -100,6 +112,33 @@ Use context_before and context_after to locate the correct occurrence if the tex
 
 function normalizeForMatching(markdown) {
   return markdown.replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ');
+}
+
+function readSelectionMetadata() {
+  try {
+    if (!fs.existsSync(SELECTION_TEMP_FILE)) {
+      return null;
+    }
+
+    return JSON.parse(fs.readFileSync(SELECTION_TEMP_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function proposalMatchesSelection(selection, proposal) {
+  if (!selection || typeof selection !== 'object') {
+    return false;
+  }
+
+  if (selection.selected !== proposal.original) {
+    return false;
+  }
+
+  return (
+    (selection.context_before ?? null) === (proposal.context_before ?? null) &&
+    (selection.context_after ?? null) === (proposal.context_after ?? null)
+  );
 }
 
 function collapseParagraphBreaks(markdown) {

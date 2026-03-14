@@ -9,7 +9,15 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { outlineViewProvider } from '../features/outlineView';
-import { setActiveWebviewPanel, getActiveWebviewPanel, getActiveDocument } from '../activeWebview';
+import {
+  getActiveDocument,
+  getActiveWebviewPanel,
+  getEditorHostInstanceId,
+  markWebviewPanelActive,
+  registerWebviewPanel,
+  setActiveWebviewPanel,
+  unregisterWebviewPanel,
+} from '../activeWebview';
 import { buildResizeBackupLocation, resolveBackupPathWithCollisionDetection } from './imageBackups';
 
 export const SELECTION_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Selection.json');
@@ -368,7 +376,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       this.context.subscriptions
     );
 
-    // Track active panel
+    // Track this editor so proposal routing can find the correct document in this window.
+    registerWebviewPanel(webviewPanel, document);
     setActiveWebviewPanel(webviewPanel, document);
 
     // Send initial content to webview
@@ -401,7 +410,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
 
     webviewPanel.onDidChangeViewState(() => {
       if (webviewPanel.active) {
-        setActiveWebviewPanel(webviewPanel, document);
+        markWebviewPanelActive(webviewPanel);
       } else if (getActiveWebviewPanel() === webviewPanel) {
         setActiveWebviewPanel(undefined);
       }
@@ -414,9 +423,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       // Clean up pending edits tracking for this document
       this.pendingEdits.delete(document.uri.toString());
       this.lastWebviewContent.delete(document.uri.toString());
-      if (getActiveWebviewPanel() === webviewPanel) {
-        setActiveWebviewPanel(undefined);
-      }
+      unregisterWebviewPanel(webviewPanel);
     });
   }
 
@@ -515,13 +522,15 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         break;
       }
       case 'selectionPush': {
-        writeSelectionToTempFile({
+        const selectionPayload = {
+          instance_id: getEditorHostInstanceId(),
           file: document.uri.fsPath,
           selected: message.selected ?? null,
           context_before: message.context_before ?? null,
           context_after: message.context_after ?? null,
           headings_before: message.headings_before ?? [],
-        });
+        };
+        writeSelectionToTempFile(selectionPayload);
         break;
       }
       case 'saveImage':
@@ -607,13 +616,15 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         break;
       case 'selectionResult': {
         if (this.pendingSelectionResolve) {
-          this.pendingSelectionResolve(JSON.stringify({
+          const selectionResult = {
+            instance_id: getEditorHostInstanceId(),
             file: document.uri.fsPath,
             selected: message.selected ?? null,
             context_before: message.context_before ?? null,
             context_after: message.context_after ?? null,
             headings_before: message.headings_before ?? [],
-          }));
+          };
+          this.pendingSelectionResolve(JSON.stringify(selectionResult));
           this.pendingSelectionResolve = undefined;
         }
         break;
@@ -632,7 +643,12 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       panel.webview.postMessage({ type: 'getSelection' });
       setTimeout(() => {
         if (this.pendingSelectionResolve) {
-          this.pendingSelectionResolve(JSON.stringify({ file: document.uri.fsPath, selected: null }));
+          const timedOutSelectionResult = {
+            instance_id: getEditorHostInstanceId(),
+            file: document.uri.fsPath,
+            selected: null,
+          };
+          this.pendingSelectionResolve(JSON.stringify(timedOutSelectionResult));
           this.pendingSelectionResolve = undefined;
         }
       }, 2000);

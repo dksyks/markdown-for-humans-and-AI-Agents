@@ -8,11 +8,17 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { RESPONSE_TEMP_FILE } from '../editor/MarkdownEditorProvider';
-import { getActiveWebviewPanel, getActiveDocument } from '../activeWebview';
+import {
+  getActiveDocument,
+  getActiveWebviewPanel,
+  getOpenWebviewForDocument,
+} from '../activeWebview';
 import { applyProposalReplacement } from './proposalReplacement';
 
 export interface Proposal {
   id: string;
+  file?: string | null;
+  source_instance_id?: string | null;
   original: string;
   replacement: string;
   context_before: string | null;
@@ -27,9 +33,14 @@ export class ProposalPanel {
   static currentPanel: ProposalPanel | undefined;
 
   static show(context: vscode.ExtensionContext, proposal: Proposal) {
-    const doc = getActiveDocument();
-    const sourcePanel = getActiveWebviewPanel();
-    const filename = doc ? path.basename(doc.uri.fsPath) : 'document';
+    const sourceContext = resolveProposalSourceContext(proposal);
+    const doc = sourceContext.document;
+    const sourcePanel = sourceContext.panel;
+    const filename = doc?.uri.fsPath
+      ? path.basename(doc.uri.fsPath)
+      : proposal.file
+        ? path.basename(proposal.file)
+        : 'document';
 
     if (ProposalPanel.currentPanel) {
       ProposalPanel.currentPanel._update(proposal, filename, doc, sourcePanel);
@@ -289,6 +300,23 @@ export class ProposalPanel {
       </html>
     `;
   }
+}
+
+function resolveProposalSourceContext(proposal: Proposal): {
+  document: vscode.TextDocument | undefined;
+  panel: vscode.WebviewPanel | undefined;
+} {
+  if (proposal.file) {
+    const matched = getOpenWebviewForDocument(proposal.file);
+    if (matched) {
+      return matched;
+    }
+  }
+
+  return {
+    document: getActiveDocument(),
+    panel: getActiveWebviewPanel(),
+  };
 }
 
 function getNonce() {
