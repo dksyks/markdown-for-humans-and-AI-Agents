@@ -43,6 +43,7 @@ import { shouldAutoLink } from './utils/linkValidation';
 import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
+import { renderProposalRedlineHtml } from './utils/proposalRedline';
 import { applyColors, updateColorSettingsPanel, DEFAULT_COLORS } from './features/colorSettings';
 import { resolveSelectionMatch } from './utils/selectionMatching';
 import {
@@ -2274,8 +2275,8 @@ export const __testing = {
 // ---------------------------------------------------------------------------
 // Proposal mode
 // Activated when the webview HTML contains #proposal-root instead of #editor.
-// Renders two TipTap instances (original read-only, proposed editable) plus
-// Accept / Edit / Cancel buttons and a countdown timer.
+// Renders a read-only redline review above an editable proposed TipTap instance,
+// plus Accept / Edit / Cancel buttons and a countdown timer.
 // ---------------------------------------------------------------------------
 
 const PROPOSAL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes, must match MCP server
@@ -2288,14 +2289,14 @@ function initializeProposalMode() {
   root.innerHTML = `
     <div class="proposal-layout">
       <div class="proposal-section">
-        <div class="proposal-section-label">Original</div>
-        <div class="proposal-pane-wrap proposal-pane-wrap-original">
-          <div id="proposal-original" class="proposal-pane proposal-pane-original markdown-editor"></div>
+        <div class="proposal-section-label">Redlined Proposal</div>
+        <div class="proposal-pane-wrap proposal-pane-wrap-review">
+          <div id="proposal-review" class="proposal-review-pane markdown-editor"></div>
         </div>
       </div>
       <div class="proposal-section">
         <div id="proposal-toolbar-mount"></div>
-        <div class="proposal-section-label">Proposed</div>
+        <div class="proposal-section-label">Editable Proposal</div>
         <div class="proposal-pane-wrap">
           <div id="proposal-proposed" class="proposal-pane proposal-pane-proposed markdown-editor"></div>
         </div>
@@ -2317,10 +2318,40 @@ function initializeProposalMode() {
     .proposal-section-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin-bottom: 4px; }
     /* Wrap provides the border/scroll container; extra left padding for heading ::before labels */
     .proposal-pane-wrap { flex: 1; overflow: auto; border: 1px solid var(--vscode-widget-border, #444); border-radius: 3px; min-height: 0; padding-left: 2.5em; }
-    .proposal-pane-wrap-original { opacity: 0.65; }
-    .proposal-pane-wrap-original .ProseMirror { cursor: default; }
+    .proposal-pane-wrap-review { background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-panel-border, #444) 10%); }
     /* Override .markdown-editor defaults that don't fit inside the wrap */
     .proposal-pane.markdown-editor { margin: 6px 16px 6px 0; padding-left: 0; min-height: 2em; }
+    .proposal-review-pane.markdown-editor { margin: 6px 16px 6px 0; padding-left: 0; min-height: 2em; pointer-events: none; }
+    .proposal-review-pane > :first-child { margin-top: 0; }
+    .proposal-review-pane > :last-child { margin-bottom: 0; }
+    .proposal-redline-added { background: color-mix(in srgb, var(--vscode-diffEditor-insertedTextBackground, rgba(46, 160, 67, 0.25)) 88%, transparent); color: inherit; border-radius: 3px; padding: 0 0.08em; }
+    .proposal-redline-removed { background: color-mix(in srgb, var(--vscode-diffEditor-removedTextBackground, rgba(248, 81, 73, 0.18)) 92%, transparent); color: inherit; text-decoration: line-through; text-decoration-thickness: 2px; text-decoration-color: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 78%, transparent); border-radius: 3px; padding: 0 0.08em; }
+    .proposal-redline-list { margin: 0 0 1em 0; padding-left: 1.4em; }
+    .proposal-redline-task-list { list-style: none; padding-left: 0; }
+    .proposal-redline-task-list label { display: inline-flex; align-items: flex-start; gap: 0.5em; }
+    .proposal-redline-task-list input { margin: 0.2em 0 0; }
+    .proposal-redline-structural { border-radius: 6px; margin: 0 0 12px; padding: 2px 6px; }
+    .proposal-redline-structural.proposal-redline-added { background: color-mix(in srgb, var(--vscode-diffEditor-insertedLineBackground, rgba(46, 160, 67, 0.08)) 88%, transparent); }
+    .proposal-redline-structural.proposal-redline-removed { background: color-mix(in srgb, var(--vscode-diffEditor-removedLineBackground, rgba(248, 81, 73, 0.08)) 88%, transparent); }
+    .proposal-redline-structural-content > :first-child { margin-top: 0; }
+    .proposal-redline-structural-content > :last-child { margin-bottom: 0; }
+    .proposal-redline-structural.proposal-redline-removed .proposal-redline-structural-content > * {
+      text-decoration: line-through;
+      text-decoration-thickness: 2px;
+      text-decoration-color: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 78%, transparent);
+    }
+    .proposal-redline-block { border-radius: 6px; margin: 0 0 12px; padding: 2px 6px; }
+    .proposal-redline-block-removed { background: color-mix(in srgb, var(--vscode-diffEditor-removedLineBackground, rgba(248, 81, 73, 0.08)) 88%, transparent); }
+    .proposal-redline-block-added { background: color-mix(in srgb, var(--vscode-diffEditor-insertedLineBackground, rgba(46, 160, 67, 0.08)) 88%, transparent); }
+    .proposal-redline-block-content > :first-child { margin-top: 0; }
+    .proposal-redline-block-content > :last-child { margin-bottom: 0; }
+    .proposal-redline-block-removed .proposal-redline-block-content > * {
+      text-decoration: line-through;
+      text-decoration-thickness: 2px;
+      text-decoration-color: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 78%, transparent);
+    }
+    .proposal-review-pane .github-alert { pointer-events: none; }
+    .proposal-redline-empty { opacity: 0.7; font-style: italic; }
     .proposal-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0; flex-shrink: 0; }
     .proposal-btn { padding: 4px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; font-size: 13px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); }
     .proposal-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
@@ -2332,9 +2363,11 @@ function initializeProposalMode() {
   document.head.appendChild(styleEl);
 
   // --- Create TipTap instances ---
-  const originalEl = document.getElementById('proposal-original')!;
+  const reviewEl = document.getElementById('proposal-review')!;
   const proposedEl = document.getElementById('proposal-proposed')!;
   const toolbarMount = document.getElementById('proposal-toolbar-mount')!;
+  let currentOriginalMarkdown = '';
+  let proposedEditor: Editor | null = null;
 
   // Shared extensions (same as main editor minus persistence-related ones)
   const sharedExtensions = [
@@ -2349,18 +2382,23 @@ function initializeProposalMode() {
     OrderedListMarkdownFix,
   ];
 
-  const originalEditor = new Editor({
-    element: originalEl,
-    extensions: sharedExtensions,
-    editable: false,
-    content: '',
-  });
+  const renderReviewPane = () => {
+    if (!proposedEditor) {
+      return;
+    }
 
-  const proposedEditor = new Editor({
+    reviewEl.innerHTML = renderProposalRedlineHtml(
+      currentOriginalMarkdown,
+      getEditorMarkdownForSync(proposedEditor)
+    );
+  };
+
+  proposedEditor = new Editor({
     element: proposedEl,
     extensions: sharedExtensions,
     editable: true,
     content: '',
+    onUpdate: renderReviewPane,
     onFocus: () => {
       window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
     },
@@ -2440,8 +2478,9 @@ function initializeProposalMode() {
       applyColors({ ...DEFAULT_COLORS, ...(msg.colors as object) });
     }
     // Load content into both editors
-    originalEditor.commands.setContent(msg.original ?? '', { contentType: 'markdown' });
+    currentOriginalMarkdown = msg.original ?? '';
     proposedEditor.commands.setContent(msg.replacement ?? '', { contentType: 'markdown' });
+    renderReviewPane();
     updateToolbarStates();
     // Reset timer
     remainingMs = PROPOSAL_TIMEOUT_MS;

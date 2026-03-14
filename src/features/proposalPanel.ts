@@ -45,8 +45,8 @@ interface ProposalResult {
 }
 
 /**
- * A VS Code WebviewPanel that displays a proposed text replacement side-by-side
- * with the original, rendered as WYSIWYG via the same webview.js bundle.
+ * A VS Code WebviewPanel that displays a WYSIWYG redline review above an
+ * editable proposed replacement via the same webview.js bundle.
  */
 export class ProposalPanel {
   static currentPanel: ProposalPanel | undefined;
