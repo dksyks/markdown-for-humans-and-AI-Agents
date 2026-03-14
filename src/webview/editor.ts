@@ -6,6 +6,9 @@
 
 // Import CSS files (esbuild will bundle these)
 import './editor.css';
+
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
 import './codicon.css';
 
 import { Editor } from '@tiptap/core';
@@ -346,10 +349,11 @@ function setProposalTargetSpacer(height: number) {
 function getRenderedEditorBlocks(): Array<{ element: HTMLElement; text: string }> {
   return Array.from(
     document.querySelectorAll(
-      '.markdown-editor .ProseMirror :is(h1, h2, h3, h4, h5, h6, p, li, blockquote, pre)'
+      '.ProseMirror.markdown-editor :is(h1, h2, h3, h4, h5, h6, p, li, blockquote, pre)'
     )
   )
     .filter((node): node is HTMLElement => node instanceof HTMLElement)
+    .filter(element => !element.closest('.github-alert-content') && !element.closest('.github-alert-header'))
     .map(element => ({
       element,
       text: element.matches('blockquote.github-alert')
@@ -388,11 +392,45 @@ function resolveSelectionRangeFromRenderedBlocks(
 
   const firstBlock = matchedBlocks[0].element;
   const lastBlock = matchedBlocks[matchedBlocks.length - 1].element;
-  const from = editor.view.posAtDOM(firstBlock, 0);
-  const to = editor.view.posAtDOM(lastBlock, lastBlock.childNodes.length);
-
+  let from = editor.view.posAtDOM(firstBlock, 0);
+  let to = editor.view.posAtDOM(lastBlock, lastBlock.childNodes.length);
   if (typeof from !== 'number' || typeof to !== 'number') {
     return null;
+  }
+
+  // Refine `from` if the first selected block is a partial match within the first rendered block
+  // (e.g. selection starts at "marriage." which is the end of a longer paragraph).
+  const firstSelectedBlock = selectionBlocks[0];
+  const firstMatchedText = matchedBlocks[0].text;
+  if (firstSelectedBlock && firstMatchedText !== firstSelectedBlock) {
+    const firstBlockNodeEnd = editor.view.posAtDOM(firstBlock, firstBlock.childNodes.length);
+    const refined = resolveTextRangeWithinTextBlock(
+      editor.state.doc,
+      from,
+      firstBlockNodeEnd,
+      firstSelectedBlock,
+      { contextBefore: options?.contextBefore ?? null, contextAfter: null }
+    );
+    if (refined) {
+      from = refined.from;
+    }
+  }
+
+  // Refine `to` if the last selected block is a partial match within the last rendered block.
+  const lastSelectedBlock = selectionBlocks[selectionBlocks.length - 1];
+  const lastMatchedText = matchedBlocks[matchedBlocks.length - 1].text;
+  if (lastSelectedBlock && lastMatchedText !== lastSelectedBlock && lastBlock !== firstBlock) {
+    const lastBlockStart = editor.view.posAtDOM(lastBlock, 0);
+    const refined = resolveTextRangeWithinTextBlock(
+      editor.state.doc,
+      lastBlockStart,
+      to,
+      lastSelectedBlock,
+      { contextBefore: null, contextAfter: options?.contextAfter ?? null }
+    );
+    if (refined) {
+      to = refined.to;
+    }
   }
 
   return {
@@ -853,11 +891,12 @@ function handleSelectionRevealMessage(
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             focusEditorPreservingScroll(editor);
+            const isAlert = resolutionMethod === 'githubAlert';
             applyProposalSelectionByKind(
               editor,
-            visibleSelectionRange.from,
-              visibleSelectionRange.to,
-              resolutionMethod === 'githubAlert' ? 'node' : 'text'
+              isAlert ? selFrom : visibleSelectionRange.from,
+              isAlert ? selTo : visibleSelectionRange.to,
+              isAlert ? 'node' : 'text'
             );
           });
         });
@@ -1025,7 +1064,7 @@ function immediateUpdate() {
     const markdown = getEditorMarkdownForSync(editor);
     trackSentContent(markdown);
 
-    console.log('[MD4H] Immediate save triggered');
+    console.log(`${BUILD_TAG} Immediate save triggered`);
 
     // Send edit first
     vscode.postMessage({
@@ -1120,7 +1159,7 @@ function initializeEditor(initialContent: string) {
       return;
     }
 
-    console.log('[MD4H] Initializing editor...');
+    console.log(`${BUILD_TAG} Initializing editor...`);
     const editorInstance = new Editor({
       element: editorElement,
       extensions: [
@@ -1282,10 +1321,10 @@ function initializeEditor(initialContent: string) {
         }
       },
       onCreate: () => {
-        console.log('[MD4H] Editor created successfully');
+        console.log(`${BUILD_TAG} Editor created successfully`);
       },
       onDestroy: () => {
-        console.log('[MD4H] Editor destroyed');
+        console.log(`${BUILD_TAG} Editor destroyed`);
       },
     });
 
@@ -1419,7 +1458,7 @@ function initializeEditor(initialContent: string) {
 
       // Save shortcut - immediate save
       if (isMod && e.key === 's') {
-        console.log('[MD4H] *** SAVE SHORTCUT TRIGGERED ***');
+        console.log(`${BUILD_TAG} *** SAVE SHORTCUT TRIGGERED ***`);
         e.preventDefault();
         e.stopPropagation();
         immediateUpdate();
@@ -1452,7 +1491,7 @@ function initializeEditor(initialContent: string) {
       if (isMod && e.key === 'k') {
         e.preventDefault();
         e.stopPropagation();
-        console.log('[MD4H] Link shortcut');
+        console.log(`${BUILD_TAG} Link shortcut`);
         if (editor) {
           showLinkDialog(editor);
         }
@@ -1613,10 +1652,10 @@ function initializeEditor(initialContent: string) {
       document.removeEventListener('click', documentClickHandler);
       document.removeEventListener('keydown', keydownHandler, { capture: true });
       editorInstance.view.dom.removeEventListener('click', handleLinkClick);
-      console.log('[MD4H] Editor destroyed, global listeners cleaned up');
+      console.log(`${BUILD_TAG} Editor destroyed, global listeners cleaned up`);
     });
 
-    console.log('[MD4H] Editor initialization complete');
+    console.log(`${BUILD_TAG} Editor initialization complete`);
   } catch (error) {
     console.error('[MD4H] Fatal error initializing editor:', error);
     const editorElement = document.querySelector('#editor') as HTMLElement;
@@ -2247,7 +2286,7 @@ function updateEditorContent(markdown: string) {
       // Also check timestamp to allow legitimate identical content after a delay
       const timeSinceLastSend = Date.now() - lastSentTimestamp;
       if (timeSinceLastSend < 2000) {
-        console.log('[MD4H] Ignoring update (matches content we just sent)');
+        console.log(`${BUILD_TAG} Ignoring update (matches content we just sent)`);
         return;
       }
     }
@@ -2269,7 +2308,7 @@ function updateEditorContent(markdown: string) {
     // Skip if content is already in sync
     const currentMarkdown = getEditorMarkdownForSync(editor);
     if (currentMarkdown === markdown) {
-      console.log('[MD4H] Update skipped (content unchanged)');
+      console.log(`${BUILD_TAG} Update skipped (content unchanged)`);
       return;
     }
 
@@ -2430,7 +2469,7 @@ document.addEventListener(
 
 // Handle open source view from toolbar button
 window.addEventListener('openSourceView', () => {
-  console.log('[MD4H] Opening source view...');
+  console.log(`${BUILD_TAG} Opening source view...`);
   vscode.postMessage({ type: 'openSourceView' });
 });
 

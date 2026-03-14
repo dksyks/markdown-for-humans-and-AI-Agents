@@ -340,8 +340,25 @@ function scoreSingleBlockSequence<T extends TextBlockMatch>(
   const contextBefore = normalizeContextText(options?.contextBefore ?? '');
   const contextAfter = normalizeContextText(options?.contextAfter ?? '');
 
-  if (selectedTextCandidates.length === 0 || matchedBlocks.length !== 1) {
+  if (selectedTextCandidates.length === 0) {
     return 0;
+  }
+
+  if (matchedBlocks.length !== 1) {
+    let score = 0;
+    const firstBlockText = normalizeContextText(matchedBlocks[0].text);
+    const lastBlockText = normalizeContextText(matchedBlocks[matchedBlocks.length - 1].text);
+
+    const firstSelected = normalizeInlineText(selectedBlocks[0]);
+    const lastSelected = normalizeInlineText(selectedBlocks[selectedBlocks.length - 1]);
+    if (firstBlockText === firstSelected) {
+      score += firstSelected.length * 2;
+    }
+    if (lastBlockText === lastSelected) {
+      score += lastSelected.length * 2;
+    }
+
+    return score;
   }
 
   const blockText = normalizeContextText(matchedBlocks[0].text);

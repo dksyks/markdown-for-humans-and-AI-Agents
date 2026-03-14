@@ -22,6 +22,7 @@ const isWatch = args.includes('--watch');
 const noSourcemap = args.includes('--no-sourcemap');
 const buildDate = new Date();
 const buildStamp = `${buildDate.getMinutes()}m ${buildDate.getSeconds()}s`;
+const buildTime = `${String(buildDate.getHours()).padStart(2, '0')}:${String(buildDate.getMinutes()).padStart(2, '0')}`;
 
 const buildOptions = {
   entryPoints: ['src/webview/editor.ts'],
@@ -42,6 +43,7 @@ const buildOptions = {
   plugins: [], // No custom plugins needed - using 'pure' instead
   define: {
     __MD4H_BUILD_STAMP__: JSON.stringify(buildStamp),
+    __BUILD_TIME__: JSON.stringify(buildTime),
   },
 };
 
