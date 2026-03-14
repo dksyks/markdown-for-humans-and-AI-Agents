@@ -7,7 +7,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { RESPONSE_TEMP_FILE } from '../editor/MarkdownEditorProvider';
+import { PROPOSAL_STATE_DIR, RESPONSE_TEMP_FILE } from '../editor/MarkdownEditorProvider';
 import {
   getActiveDocument,
   getActiveWebviewPanel,
@@ -44,6 +44,31 @@ interface ProposalResult {
   replacement: string | null;
 }
 
+interface ProposalStatePayload {
+  id: string;
+  file: string | null;
+  review_kind: 'single' | 'sequential';
+  status: string;
+  message?: string;
+  review_id?: string;
+  session_id?: string;
+  original?: string;
+  context_before?: string | null;
+  context_after?: string | null;
+  replacement?: string | null;
+  progress?: {
+    current: number;
+    total: number;
+  };
+  results?: Array<{
+    status: string;
+    original: string;
+    context_before: string | null;
+    context_after: string | null;
+    replacement: string | null;
+  }>;
+}
+
 /**
  * A VS Code WebviewPanel that displays a WYSIWYG redline review above an
  * editable proposed replacement via the same webview.js bundle.
@@ -78,6 +103,7 @@ export class ProposalPanel {
   private _context: vscode.ExtensionContext;
   private _sourceDocument: vscode.TextDocument | undefined;
   private _sourcePanel: vscode.WebviewPanel | undefined;
+  private _hasPendingHandoff: boolean;
 
   private constructor(
     context: vscode.ExtensionContext,
@@ -94,6 +120,8 @@ export class ProposalPanel {
     this._proposal = this._proposalQueue[0];
     this._sourceDocument = sourceDocument;
     this._sourcePanel = sourcePanel;
+    this._hasPendingHandoff = false;
+    this._clearProposalState();
 
     this._panel = vscode.window.createWebviewPanel(
       'markdownForHumansProposal',
@@ -140,6 +168,8 @@ export class ProposalPanel {
     this._proposalIndex = 0;
     this._proposalResults = [];
     this._proposal = this._proposalQueue[0];
+    this._hasPendingHandoff = false;
+    this._clearProposalState();
     if (sourceDocument) {
       this._sourceDocument = sourceDocument;
     }
@@ -204,6 +234,9 @@ export class ProposalPanel {
       if (this._shouldAdvanceToNextProposal(appliedStatus)) {
         this._proposalIndex += 1;
         this._proposal = this._proposalQueue[this._proposalIndex];
+        if (this._hasPendingHandoff) {
+          this._writeProposalState(this._buildPendingPayload());
+        }
         this._panel.webview.postMessage({
           type: 'proposalInit',
           ...this._proposal,
@@ -214,16 +247,36 @@ export class ProposalPanel {
       }
 
       try {
-        fs.writeFileSync(
-          RESPONSE_TEMP_FILE,
-          JSON.stringify(this._buildResponsePayload(appliedStatus), null, 2),
-          'utf8'
-        );
+        const payload = this._buildResponsePayload(appliedStatus);
+        this._writeResponsePayload(payload);
+        this._writeProposalState(payload);
       } catch (err) {
         console.warn('[MD4H] Failed to write response temp file:', err);
       }
 
       this._panel.dispose();
+      return;
+    }
+
+    if (msg.type === 'proposalPending') {
+      if (this._hasPendingHandoff) {
+        return;
+      }
+
+      this._hasPendingHandoff = true;
+      const payload = this._buildPendingPayload();
+
+      try {
+        this._writeResponsePayload(payload);
+        this._writeProposalState(payload);
+      } catch (err) {
+        console.warn('[MD4H] Failed to write pending proposal state:', err);
+      }
+      return;
+    }
+
+    if (msg.type === 'copyResumePrompt') {
+      await vscode.env.clipboard.writeText('resume');
     }
   }
 
@@ -231,11 +284,12 @@ export class ProposalPanel {
     return status !== 'timeout' && this._proposalIndex < this._proposalQueue.length - 1;
   }
 
-  private _buildResponsePayload(finalStatus: string) {
+  private _buildResponsePayload(finalStatus: string): ProposalStatePayload {
     if (this._proposalQueue.length === 1) {
       return {
         id: this._requestId,
         file: this._sourceDocument?.uri.fsPath ?? null,
+        review_kind: 'single',
         original: this._proposal.original,
         context_before: this._proposal.context_before,
         context_after: this._proposal.context_after,
@@ -247,6 +301,7 @@ export class ProposalPanel {
     return {
       id: this._requestId,
       file: this._sourceDocument?.uri.fsPath ?? null,
+      review_kind: 'sequential',
       status: finalStatus === 'timeout' ? 'timeout' : 'completed',
       results: this._proposalResults.map(result => ({
         status: result.status,
@@ -256,6 +311,70 @@ export class ProposalPanel {
         replacement: result.replacement,
       })),
     };
+  }
+
+  private _buildPendingPayload(): ProposalStatePayload {
+    const basePayload: ProposalStatePayload = {
+      id: this._requestId,
+      file: this._sourceDocument?.uri.fsPath ?? null,
+      review_kind: this._proposalQueue.length === 1 ? 'single' : 'sequential',
+      status: 'pending',
+      message: 'Review still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
+      progress: {
+        current: this._proposalIndex + 1,
+        total: this._proposalQueue.length,
+      },
+    };
+
+    if (this._proposalQueue.length === 1) {
+      return {
+        ...basePayload,
+        review_id: this._requestId,
+        original: this._proposal.original,
+        context_before: this._proposal.context_before,
+        context_after: this._proposal.context_after,
+        replacement: null,
+      };
+    }
+
+    return {
+      ...basePayload,
+      session_id: this._requestId,
+      results: this._proposalResults.map(result => ({
+        status: result.status,
+        original: result.original,
+        context_before: result.context_before,
+        context_after: result.context_after,
+        replacement: result.replacement,
+      })),
+    };
+  }
+
+  private _writeResponsePayload(payload: object) {
+    fs.writeFileSync(RESPONSE_TEMP_FILE, JSON.stringify(payload, null, 2), 'utf8');
+  }
+
+  private _writeProposalState(payload: ProposalStatePayload) {
+    try {
+      fs.mkdirSync(PROPOSAL_STATE_DIR, { recursive: true });
+      fs.writeFileSync(
+        ProposalPanel._getProposalStateFilePath(this._requestId),
+        JSON.stringify(payload, null, 2),
+        'utf8'
+      );
+    } catch (err) {
+      console.warn('[MD4H] Failed to write proposal state file:', err);
+    }
+  }
+
+  static _getProposalStateFilePath(id: string): string {
+    return path.join(PROPOSAL_STATE_DIR, `${id}.json`);
+  }
+
+  private _clearProposalState() {
+    try {
+      fs.unlinkSync(ProposalPanel._getProposalStateFilePath(this._requestId));
+    } catch {}
   }
 
   private async _applyReplacement(replacement: string): Promise<boolean> {

@@ -23,6 +23,7 @@ import { buildResizeBackupLocation, resolveBackupPathWithCollisionDetection } fr
 export const SELECTION_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Selection.json');
 export const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.json');
 export const RESPONSE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Response.json');
+export const PROPOSAL_STATE_DIR = path.join(os.tmpdir(), 'MarkdownForHumans-ProposalState');
 export const SELECTION_REVEAL_TEMP_FILE = path.join(
   os.tmpdir(),
   'MarkdownForHumans-SelectionReveal.json'

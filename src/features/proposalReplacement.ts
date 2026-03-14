@@ -54,6 +54,24 @@ function commonPrefixLength(a: string, b: string): number {
   return i;
 }
 
+function mapNormalizedIndexToOriginal(markdown: string, normalizedIndex: number): number {
+  if (normalizedIndex <= 0) {
+    return 0;
+  }
+
+  let originalIndex = 0;
+  let seenNormalizedChars = 0;
+
+  while (originalIndex < markdown.length && seenNormalizedChars < normalizedIndex) {
+    if (markdown[originalIndex] !== '\r') {
+      seenNormalizedChars += 1;
+    }
+    originalIndex += 1;
+  }
+
+  return originalIndex;
+}
+
 export function findProposalMatch(
   fullMarkdown: string,
   proposal: ProposalReplacementInput
@@ -70,6 +88,7 @@ export function findProposalMatch(
 
   for (const candidate of buildCandidates(proposal.original)) {
     for (const searchContent of [fullMarkdown, normalizedFullMarkdown]) {
+      const useNormalizedIndex = searchContent === normalizedFullMarkdown;
       let searchFrom = 0;
 
       while (true) {
@@ -78,12 +97,21 @@ export function findProposalMatch(
           break;
         }
 
-        const matchedText = fullMarkdown.slice(index, index + candidate.length);
+        const matchStart = useNormalizedIndex
+          ? mapNormalizedIndexToOriginal(fullMarkdown, index)
+          : index;
+        const matchEnd = useNormalizedIndex
+          ? mapNormalizedIndexToOriginal(fullMarkdown, index + candidate.length)
+          : index + candidate.length;
+        const matchedText = fullMarkdown.slice(matchStart, matchEnd);
         let score = candidate.length;
 
         if (normalizedContextBefore) {
           const before = normalizeForMatching(
-            fullMarkdown.slice(Math.max(0, index - normalizedContextBefore.length), index)
+            fullMarkdown.slice(
+              Math.max(0, matchStart - normalizedContextBefore.length),
+              matchStart
+            )
           );
           score += commonSuffixLength(before, normalizedContextBefore);
         }
@@ -91,8 +119,8 @@ export function findProposalMatch(
         if (normalizedContextAfter) {
           const after = normalizeForMatching(
             fullMarkdown.slice(
-              index + candidate.length,
-              index + candidate.length + normalizedContextAfter.length
+              matchEnd,
+              matchEnd + normalizedContextAfter.length + 8
             )
           );
           score += commonPrefixLength(after, normalizedContextAfter);
@@ -100,7 +128,7 @@ export function findProposalMatch(
 
         if (!bestMatch || score > bestMatch.score) {
           bestMatch = {
-            index,
+            index: matchStart,
             matchedText,
             score,
           };

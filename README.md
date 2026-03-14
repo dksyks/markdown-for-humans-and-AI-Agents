@@ -215,6 +215,8 @@ Once configured, your AI assistant can call:
 - `scroll_to_markdown_selection` to reselect a previously captured markdown span and scroll it into view in the editor
 - `propose_selection_replacement` to show a side-by-side WYSIWYG proposal panel and, when accepted, apply the replacement back to the markdown file
 - `propose_sequential_selection_replacements` to review multiple proposed replacements for the same markdown file in one queued session and return a single aggregated result
+- `resume_proposal_review` to resume a single proposal review that previously returned `status: "pending"`
+- `resume_sequential_proposal_review` to resume a queued multi-edit review session that previously returned `status: "pending"`
 
 **Telling your AI agent when to use the MCP tools**
 
@@ -244,6 +246,10 @@ Use the tools based on how the task starts:
 - If the user wants to review several rewrites for the same markdown file in one
   uninterrupted pass, call `propose_sequential_selection_replacements` with the
   file path from `get_markdown_selection` and an ordered `changes` array.
+- If either proposal tool returns `status: "pending"`, tell the user the review
+  is still open in Markdown for Humans and, when they are done editing, call
+  `resume_proposal_review` or `resume_sequential_proposal_review` with the
+  returned `review_id` or `session_id`.
 
 The tool returns a JSON string with:
 - `file`: absolute path to the markdown file
@@ -254,12 +260,19 @@ The tool returns a JSON string with:
 
 `propose_selection_replacement` opens a review panel in VS Code. If the user
 accepts the proposal, Markdown for Humans attempts to apply the change directly
-to the source file and returns the final status to the AI assistant.
+to the source file and returns the final status to the AI assistant. Some MCP
+clients time out before the editor review is finished. In that case the tool
+may return `status: "pending"` with a `review_id` while the review panel
+remains open in VS Code. When the user finishes editing, call
+`resume_proposal_review` with that `review_id`.
 
 `propose_sequential_selection_replacements` reuses that same review panel, but
 queues each proposal and advances to the next one without returning control to
 the MCP client between steps. It returns one JSON result containing the per-step
-statuses after the queue completes or times out.
+statuses after the queue completes or times out. If the client times out first,
+the tool may return `status: "pending"` with a `session_id`. When the user
+finishes the queued review, call `resume_sequential_proposal_review` with that
+`session_id`.
 
 `scroll_to_markdown_selection` is meant for revealing a known passage to the
 user when the agent is working from file context. It is not intended as a

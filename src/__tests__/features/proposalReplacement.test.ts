@@ -131,4 +131,33 @@ describe('proposalReplacement', () => {
       matchedText: fullMarkdown,
     });
   });
+
+  it('applies replacements at the correct offsets in CRLF documents', () => {
+    const fullMarkdown = [
+      '# Heading',
+      '',
+      'First paragraph.',
+      '',
+      'We commit to acting and interacting in ways that support an open, welcoming, diverse, inclusive, and healthy community.',
+      '',
+      'After text.',
+    ].join('\r\n');
+
+    const result = applyProposalReplacement(fullMarkdown, {
+      original: 'We commit to acting and interacting in ways that support an open, welcoming, diverse, inclusive, and healthy community.',
+      replacement:
+        'We commit to acting and interacting in ways that support an open, welcoming, inclusive, and healthy set of people.',
+      context_before: 'First paragraph.\n\n',
+      context_after: '\n\nAfter text.',
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.matchedText).toBe(
+      'We commit to acting and interacting in ways that support an open, welcoming, diverse, inclusive, and healthy community.'
+    );
+    expect(result?.newContent).toContain(
+      'We commit to acting and interacting in ways that support an open, welcoming, inclusive, and healthy set of people.\r\n\r\nAfter text.'
+    );
+    expect(result?.newContent).not.toContain('set of people.nity.');
+  });
 });

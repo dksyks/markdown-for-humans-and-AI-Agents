@@ -6,7 +6,7 @@ import {
   resetActiveWebviewStateForTests,
 } from '../../activeWebview';
 import { ProposalPanel } from '../../features/proposalPanel';
-import { RESPONSE_TEMP_FILE } from '../../editor/MarkdownEditorProvider';
+import { PROPOSAL_STATE_DIR, RESPONSE_TEMP_FILE } from '../../editor/MarkdownEditorProvider';
 
 describe('ProposalPanel', () => {
   beforeEach(() => {
@@ -19,6 +19,9 @@ describe('ProposalPanel', () => {
     if (fs.existsSync(RESPONSE_TEMP_FILE)) {
       fs.unlinkSync(RESPONSE_TEMP_FILE);
     }
+    try {
+      fs.rmSync(PROPOSAL_STATE_DIR, { recursive: true, force: true });
+    } catch {}
   });
 
   it('applies the replacement using the captured source document even after active focus changes', async () => {
@@ -234,6 +237,7 @@ describe('ProposalPanel', () => {
     expect(payload).toEqual({
       id: 'batch-1',
       file: '/test/CHANGELOG.md',
+      review_kind: 'sequential',
       status: 'completed',
       results: [
         {
@@ -252,5 +256,71 @@ describe('ProposalPanel', () => {
         },
       ],
     });
+  });
+
+  it('writes a pending handoff response and keeps the panel open for single proposals', async () => {
+    if (fs.existsSync(RESPONSE_TEMP_FILE)) {
+      fs.unlinkSync(RESPONSE_TEMP_FILE);
+    }
+
+    const proposalHostPanel = {
+      dispose: jest.fn(),
+    };
+
+    const panel = Object.create(ProposalPanel.prototype) as Record<string, unknown>;
+    panel._panel = proposalHostPanel;
+    panel._requestId = 'pending-1';
+    panel._proposal = {
+      original: 'Old text',
+      replacement: 'New text',
+      context_before: null,
+      context_after: null,
+    };
+    panel._proposalQueue = [
+      {
+        original: 'Old text',
+        replacement: 'New text',
+        context_before: null,
+        context_after: null,
+      },
+    ];
+    panel._proposalResults = [];
+    panel._proposalIndex = 0;
+    panel._sourceDocument = {
+      uri: vscode.Uri.file('/test/CHANGELOG.md'),
+    } as unknown as vscode.TextDocument;
+    panel._hasPendingHandoff = false;
+
+    await (panel._handleMessage as (msg: unknown) => Promise<void>)({
+      type: 'proposalPending',
+    });
+
+    expect(proposalHostPanel.dispose).not.toHaveBeenCalled();
+    expect(fs.existsSync(RESPONSE_TEMP_FILE)).toBe(true);
+
+    const payload = JSON.parse(fs.readFileSync(RESPONSE_TEMP_FILE, 'utf8')) as {
+      id: string;
+      review_id: string;
+      status: string;
+      message: string;
+      review_kind: string;
+      progress: { current: number; total: number };
+    };
+    expect(payload).toEqual({
+      id: 'pending-1',
+      file: '/test/CHANGELOG.md',
+      review_kind: 'single',
+      status: 'pending',
+      message: 'Review still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
+      progress: { current: 1, total: 1 },
+      review_id: 'pending-1',
+      original: 'Old text',
+      context_before: null,
+      context_after: null,
+      replacement: null,
+    });
+
+    const stateFilePath = ProposalPanel._getProposalStateFilePath('pending-1');
+    expect(fs.existsSync(stateFilePath)).toBe(true);
   });
 });

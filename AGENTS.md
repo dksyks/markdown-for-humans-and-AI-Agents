@@ -186,11 +186,21 @@ Use the MCP tools based on how the task starts:
   Use when the user wants an in-editor suggested rewrite for the current editor selection.
   Pass the `selected`, `context_before`, and `context_after` values returned by `get_markdown_selection`.
   Treat the edit as confirmed only when the tool returns status `"applied"`.
+  If the tool returns status `"pending"`, tell the user the review is still open in Markdown for Humans and, when they are done editing, call `resume_proposal_review` with the returned `review_id`.
 
 - `propose_sequential_selection_replacements`
   Use when the user wants to review multiple proposed replacements for the same markdown file in one uninterrupted pass.
   Pass the file path when available plus an ordered `changes` array of `{ original, replacement, context_before, context_after }`.
   Treat each edit as confirmed only when its entry in the returned `results` array has status `"applied"`.
+  If the tool returns status `"pending"`, tell the user the queued review is still open in Markdown for Humans and, when they are done editing, call `resume_sequential_proposal_review` with the returned `session_id`.
+
+- `resume_proposal_review`
+  Use when `propose_selection_replacement` previously returned status `"pending"` and the user later says they are done editing in Markdown for Humans.
+  Pass the `review_id` from the pending response.
+
+- `resume_sequential_proposal_review`
+  Use when `propose_sequential_selection_replacements` previously returned status `"pending"` and the user later says they are done editing in Markdown for Humans.
+  Pass the `session_id` from the pending response.
 
 - `scroll_to_markdown_selection`
   Use when the agent is working from raw markdown or file context and the user wants to see a known passage in the WYSIWYG editor.
@@ -201,9 +211,11 @@ Typical patterns:
 
 - User-driven editor selection:
   Call `get_markdown_selection`, then use that result for analysis or for `propose_selection_replacement`.
+  If the proposal returns `"pending"`, wait for the user to finish in the editor and then call `resume_proposal_review`.
 
 - User-driven batch review:
   Call `get_markdown_selection` to capture the file path and any needed context, then call `propose_sequential_selection_replacements` with the ordered change list for that file.
+  If the batch returns `"pending"`, wait for the user to finish in the editor and then call `resume_sequential_proposal_review`.
 
 - Agent-driven file context:
   If the agent identifies a passage from raw file edits and the user wants to see it in the editor, call `scroll_to_markdown_selection`.

@@ -2280,6 +2280,7 @@ export const __testing = {
 // ---------------------------------------------------------------------------
 
 const PROPOSAL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes, must match MCP server
+const PROPOSAL_PENDING_HANDOFF_MS = 110 * 1000; // hand off before common 120s MCP client timeout
 
 function initializeProposalMode() {
   const root = document.getElementById('proposal-root');
@@ -2304,7 +2305,7 @@ function initializeProposalMode() {
       <div class="proposal-actions">
         <button id="proposal-accept" class="proposal-btn proposal-btn-primary">Accept</button>
         <button id="proposal-cancel" class="proposal-btn">Cancel</button>
-        <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Click to reset timer">10:00 ↺</button>
+        <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Review in progress">Review in progress</button>
       </div>
     </div>
   `;
@@ -2357,8 +2358,9 @@ function initializeProposalMode() {
     .proposal-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
     .proposal-btn-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
     .proposal-btn-primary:hover { background: var(--vscode-button-hoverBackground); }
-    .proposal-btn-timer { margin-left: auto; font-variant-numeric: tabular-nums; min-width: 72px; }
+    .proposal-btn-timer { margin-left: auto; min-width: 72px; }
     .proposal-btn-timer.expiring { color: var(--vscode-errorForeground, #f44); border-color: var(--vscode-errorForeground, #f44); }
+    .proposal-btn-timer.resume-ready { color: var(--vscode-textLink-foreground, #3794ff); border-color: var(--vscode-textLink-foreground, #3794ff); }
   `;
   document.head.appendChild(styleEl);
 
@@ -2423,20 +2425,41 @@ function initializeProposalMode() {
   let remainingMs = PROPOSAL_TIMEOUT_MS;
   let timerInterval: ReturnType<typeof setInterval> | null = null;
   const timerBtn = document.getElementById('proposal-timer') as HTMLButtonElement;
+  let hasPendingHandoff = false;
+  let hasCopiedResumePrompt = false;
 
   const formatTime = (ms: number): string => {
     const totalSec = Math.ceil(ms / 1000);
     const m = Math.floor(totalSec / 60);
     const s = totalSec % 60;
-    return `${m}:${s.toString().padStart(2, '0')} ↺`;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const updateTimerButtonForPendingHandoff = () => {
+    timerBtn.textContent = hasCopiedResumePrompt ? 'Copied: resume' : 'Resume Conversation';
+    timerBtn.title = 'When you finish editing, return to chat and type: resume';
+    timerBtn.classList.add('resume-ready');
+  };
+
+  const notifyPendingHandoff = () => {
+    if (hasPendingHandoff) {
+      return;
+    }
+
+    hasPendingHandoff = true;
+    hasCopiedResumePrompt = false;
+    updateTimerButtonForPendingHandoff();
+    vscode.postMessage({ type: 'proposalPending' });
   };
 
   const startTimer = () => {
     if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(() => {
       remainingMs -= 1000;
-      timerBtn.textContent = formatTime(remainingMs);
       timerBtn.classList.toggle('expiring', remainingMs <= 60_000);
+      if (!hasPendingHandoff && PROPOSAL_TIMEOUT_MS - remainingMs >= PROPOSAL_PENDING_HANDOFF_MS) {
+        notifyPendingHandoff();
+      }
       if (remainingMs <= 0) {
         clearInterval(timerInterval!);
         timerInterval = null;
@@ -2446,10 +2469,13 @@ function initializeProposalMode() {
   };
 
   timerBtn.addEventListener('click', () => {
-    remainingMs = PROPOSAL_TIMEOUT_MS;
-    timerBtn.textContent = formatTime(remainingMs);
-    timerBtn.classList.remove('expiring');
-    startTimer();
+    if (!hasPendingHandoff) {
+      return;
+    }
+
+    hasCopiedResumePrompt = true;
+    updateTimerButtonForPendingHandoff();
+    vscode.postMessage({ type: 'copyResumePrompt' });
   });
 
   // --- Button handlers ---
@@ -2483,9 +2509,13 @@ function initializeProposalMode() {
     renderReviewPane();
     updateToolbarStates();
     // Reset timer
+    hasPendingHandoff = false;
+    hasCopiedResumePrompt = false;
     remainingMs = PROPOSAL_TIMEOUT_MS;
-    timerBtn.textContent = formatTime(remainingMs);
+    timerBtn.textContent = 'Review in progress';
     timerBtn.classList.remove('expiring');
+    timerBtn.classList.remove('resume-ready');
+    timerBtn.title = 'Review in progress';
     startTimer();
   });
 

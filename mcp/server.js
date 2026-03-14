@@ -14,6 +14,7 @@ const path = require('path');
 const SELECTION_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Selection.json');
 const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.json');
 const RESPONSE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Response.json');
+const PROPOSAL_STATE_DIR = path.join(os.tmpdir(), 'MarkdownForHumans-ProposalState');
 const SELECTION_REVEAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-SelectionReveal.json');
 const SELECTION_REVEAL_RESPONSE_TEMP_FILE = path.join(
   os.tmpdir(),
@@ -58,7 +59,7 @@ server.tool(
 Opens a popup panel beside the editor showing the original and proposed text as WYSIWYG.
 The user can Accept, Edit (modify the replacement inline), or Cancel.
 The main editor scrolls to and highlights the original text when the popup opens.
-Returns { status, replacement } where status is "accept", "edit", "cancelled", or "timeout".
+Returns { status, replacement } where status is "accept", "edit", "cancelled", "pending", or "timeout".
 On status "accept" or "edit": apply the returned replacement to the file, replacing the original text.
 Use context_before and context_after to locate the correct occurrence if the text appears multiple times.`,
   {
@@ -109,6 +110,40 @@ Use context_before and context_after to locate the correct occurrence if the tex
         replacement,
         context_before: context_before ?? null,
         context_after: context_after ?? null,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
+      };
+    }
+  }
+);
+
+server.tool(
+  'resume_proposal_review',
+  `Resume a pending single proposed change review in the Markdown for Humans editor.
+Use this after propose_selection_replacement returned status "pending" and the user later says they are done editing.
+Returns the final review result when available, or "pending" again if the review is still open.`,
+  {
+    review_id: z.string().describe('The review_id returned by propose_selection_replacement when status was pending'),
+  },
+  async ({ review_id }) => {
+    try {
+      const result = await waitForProposalState(review_id, {
+        pendingResult: {
+          id: review_id,
+          review_id,
+          status: 'pending',
+          message: 'Review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
+        },
+      });
+
+      const finalResult = await applyServerFallbackIfNeeded(result, {
+        original: result.original,
+        replacement: result.replacement,
+        context_before: result.context_before ?? null,
+        context_after: result.context_after ?? null,
       });
       return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
     } catch (err) {
@@ -189,6 +224,45 @@ Pass file when available so the extension can target the correct open markdown d
           context_before: change.context_before ?? null,
           context_after: change.context_after ?? null,
         })),
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
+      };
+    }
+  }
+);
+
+server.tool(
+  'resume_sequential_proposal_review',
+  `Resume a pending sequential proposal review session in the Markdown for Humans editor.
+Use this after propose_sequential_selection_replacements returned status "pending" and the user later says they are done editing.
+Returns the final aggregated result when available, or "pending" again if the session is still open.`,
+  {
+    session_id: z.string().describe('The session_id returned by propose_sequential_selection_replacements when status was pending'),
+  },
+  async ({ session_id }) => {
+    try {
+      const result = await waitForProposalState(session_id, {
+        pendingResult: {
+          id: session_id,
+          session_id,
+          status: 'pending',
+          message: 'Sequential review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
+        },
+      });
+
+      const finalResult = await applyServerBatchFallbackIfNeeded(result, {
+        file: result.file ?? null,
+        changes: Array.isArray(result.results)
+          ? result.results.map(entry => ({
+              original: entry.original,
+              replacement: entry.replacement,
+              context_before: entry.context_before ?? null,
+              context_after: entry.context_after ?? null,
+            }))
+          : [],
       });
       return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
     } catch (err) {
@@ -345,6 +419,24 @@ function commonPrefixLength(a, b) {
   return i;
 }
 
+function mapNormalizedIndexToOriginal(markdown, normalizedIndex) {
+  if (normalizedIndex <= 0) {
+    return 0;
+  }
+
+  let originalIndex = 0;
+  let seenNormalizedChars = 0;
+
+  while (originalIndex < markdown.length && seenNormalizedChars < normalizedIndex) {
+    if (markdown[originalIndex] !== '\r') {
+      seenNormalizedChars += 1;
+    }
+    originalIndex += 1;
+  }
+
+  return originalIndex;
+}
+
 function findProposalMatch(fullMarkdown, proposal) {
   const normalizedFullMarkdown = normalizeForMatching(fullMarkdown);
   const normalizedContextBefore = proposal.context_before
@@ -358,6 +450,7 @@ function findProposalMatch(fullMarkdown, proposal) {
 
   for (const candidate of buildCandidates(proposal.original)) {
     for (const searchContent of [fullMarkdown, normalizedFullMarkdown]) {
+      const useNormalizedIndex = searchContent === normalizedFullMarkdown;
       let searchFrom = 0;
 
       while (true) {
@@ -366,12 +459,21 @@ function findProposalMatch(fullMarkdown, proposal) {
           break;
         }
 
-        const matchedText = fullMarkdown.slice(index, index + candidate.length);
+        const matchStart = useNormalizedIndex
+          ? mapNormalizedIndexToOriginal(fullMarkdown, index)
+          : index;
+        const matchEnd = useNormalizedIndex
+          ? mapNormalizedIndexToOriginal(fullMarkdown, index + candidate.length)
+          : index + candidate.length;
+        const matchedText = fullMarkdown.slice(matchStart, matchEnd);
         let score = candidate.length;
 
         if (normalizedContextBefore) {
           const before = normalizeForMatching(
-            fullMarkdown.slice(Math.max(0, index - normalizedContextBefore.length), index)
+            fullMarkdown.slice(
+              Math.max(0, matchStart - normalizedContextBefore.length),
+              matchStart
+            )
           );
           score += commonSuffixLength(before, normalizedContextBefore);
         }
@@ -379,15 +481,15 @@ function findProposalMatch(fullMarkdown, proposal) {
         if (normalizedContextAfter) {
           const after = normalizeForMatching(
             fullMarkdown.slice(
-              index + candidate.length,
-              index + candidate.length + normalizedContextAfter.length
+              matchEnd,
+              matchEnd + normalizedContextAfter.length + 8
             )
           );
           score += commonPrefixLength(after, normalizedContextAfter);
         }
 
         if (!bestMatch || score > bestMatch.score) {
-          bestMatch = { index, matchedText, score };
+          bestMatch = { index: matchStart, matchedText, score };
         }
 
         searchFrom = index + 1;
@@ -421,6 +523,27 @@ function clearFileIfExists(filePath) {
   try {
     fs.unlinkSync(filePath);
   } catch {}
+}
+
+function getProposalStateFilePath(id) {
+  return path.join(PROPOSAL_STATE_DIR, `${id}.json`);
+}
+
+function readProposalState(id) {
+  const stateFilePath = getProposalStateFilePath(id);
+  if (!fs.existsSync(stateFilePath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function isFinalProposalState(state) {
+  return Boolean(state) && state.status !== 'pending';
 }
 
 async function applyServerFallbackIfNeeded(result, proposal) {
@@ -565,6 +688,70 @@ function waitForResponse(id, timeoutMs, options) {
     }
 
     check(); // Check immediately in case file already exists
+  });
+}
+
+function waitForProposalState(id, options = {}) {
+  const { pendingResult } = options;
+  const stateFilePath = getProposalStateFilePath(id);
+
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      resolve(value);
+    };
+
+    const check = () => {
+      const state = readProposalState(id);
+      if (!state) {
+        return false;
+      }
+
+      if (isFinalProposalState(state)) {
+        finish(state);
+        return true;
+      }
+
+      return false;
+    };
+
+    if (check()) {
+      return;
+    }
+
+    const stateDir = path.dirname(stateFilePath);
+    try {
+      watcher = fs.watch(stateDir, (_event, filename) => {
+        if (filename && filename.includes(`${id}.json`)) {
+          check();
+        }
+      });
+    } catch {
+      // Fallback to polling if fs.watch is unavailable
+      const iv = setInterval(() => {
+        if (resolved) {
+          clearInterval(iv);
+          return;
+        }
+
+        if (check()) {
+          clearInterval(iv);
+        }
+      }, 1000);
+    }
+
+    setTimeout(() => {
+      finish(readProposalState(id) ?? pendingResult ?? {
+        id,
+        status: 'pending',
+        message: 'Review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
+      });
+    }, TIMEOUT_MS);
   });
 }
 
