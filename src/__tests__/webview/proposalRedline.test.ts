@@ -31,6 +31,24 @@ describe('proposalRedline', () => {
     expect(html).not.toContain('>clearly.</span>');
   });
 
+  it('keeps shared trailing words out of duplicated delete and insert edges', () => {
+    const html = renderProposalRedlineHtml(
+      'open, welcoming, and community.',
+      'inclusive, diverse, or thriving community.'
+    );
+
+    const removedIndex = html.indexOf('proposal-redline-removed');
+    const addedIndex = html.indexOf('proposal-redline-added');
+
+    expect(removedIndex).toBeGreaterThanOrEqual(0);
+    expect(addedIndex).toBeGreaterThan(removedIndex);
+    expect(html).toContain('>open, welcoming, and</span>');
+    expect(html).toContain('>inclusive, diverse, or thriving</span>');
+    expect(html).not.toContain('>open, welcoming, and community.</span>');
+    expect(html).not.toContain('>inclusive, diverse, or thriving community.</span>');
+    expect(html).toContain('community.');
+  });
+
   it('preserves heading presentation while redlining the heading text', () => {
     const html = renderProposalRedlineHtml('## Project Goals', '## Implementation Plan');
 

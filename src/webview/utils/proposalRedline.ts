@@ -183,7 +183,7 @@ function renderChangedBlockGroup(removedBlocks: MarkdownBlock[], addedBlocks: Ma
     const removedBlock = removedBlocks[0];
     const addedBlock = addedBlocks[0];
 
-    if (canRenderInlineRedline(removedBlock, addedBlock)) {
+    if (removedBlock.kind === addedBlock.kind && isInlineRenderableBlock(removedBlock)) {
       return [renderInlineRedlineBlock(removedBlock, addedBlock)];
     }
   }
@@ -709,7 +709,9 @@ function diffTextParts(original: string, replacement: string): DiffPart[] {
   const merged = mergeAdjacentParts(parts);
   const absorbed = absorbSpacesIntoDiffRuns(merged);
   const remerged = mergeAdjacentParts(absorbed);
-  return ensureDeleteBeforeInsert(remerged);
+  const reordered = ensureDeleteBeforeInsert(remerged);
+  const trimmed = trimSharedEdgeTokensFromChangePairs(reordered);
+  return mergeAdjacentParts(trimmed);
 }
 
 function tokenizeText(text: string): string[] {
@@ -841,6 +843,85 @@ function ensureDeleteBeforeInsert(parts: DiffPart[]): DiffPart[] {
     result.push(...dels, ...ins, ...pendingEquals);
   }
   return result;
+}
+
+function trimSharedEdgeTokensFromChangePairs(parts: DiffPart[]): DiffPart[] {
+  const result: DiffPart[] = [];
+
+  for (let i = 0; i < parts.length; i += 1) {
+    const current = parts[i];
+    const next = parts[i + 1];
+
+    if (
+      next &&
+      current.type !== 'equal' &&
+      next.type !== 'equal' &&
+      current.type !== next.type
+    ) {
+      const deletePart = current.type === 'delete' ? current : next;
+      const insertPart = current.type === 'insert' ? current : next;
+      const normalized = normalizeChangePair(deletePart, insertPart);
+      result.push(...normalized);
+      i += 1;
+      continue;
+    }
+
+    result.push(current);
+  }
+
+  return result;
+}
+
+function normalizeChangePair(deletePart: DiffPart, insertPart: DiffPart): DiffPart[] {
+  const deleteTokens = tokenizeText(deletePart.value);
+  const insertTokens = tokenizeText(insertPart.value);
+
+  let sharedPrefixLength = 0;
+  const maxPrefixLength = Math.min(deleteTokens.length, insertTokens.length);
+  while (
+    sharedPrefixLength < maxPrefixLength &&
+    deleteTokens[sharedPrefixLength] === insertTokens[sharedPrefixLength]
+  ) {
+    sharedPrefixLength += 1;
+  }
+
+  let sharedSuffixLength = 0;
+  const maxSuffixLength = Math.min(
+    deleteTokens.length - sharedPrefixLength,
+    insertTokens.length - sharedPrefixLength
+  );
+  while (
+    sharedSuffixLength < maxSuffixLength &&
+    deleteTokens[deleteTokens.length - 1 - sharedSuffixLength] ===
+      insertTokens[insertTokens.length - 1 - sharedSuffixLength]
+  ) {
+    sharedSuffixLength += 1;
+  }
+
+  const prefix = deleteTokens.slice(0, sharedPrefixLength).join('');
+  const suffix =
+    sharedSuffixLength > 0 ? deleteTokens.slice(deleteTokens.length - sharedSuffixLength).join('') : '';
+  const trimmedDelete = deleteTokens
+    .slice(sharedPrefixLength, deleteTokens.length - sharedSuffixLength)
+    .join('');
+  const trimmedInsert = insertTokens
+    .slice(sharedPrefixLength, insertTokens.length - sharedSuffixLength)
+    .join('');
+
+  const normalized: DiffPart[] = [];
+  if (prefix) {
+    normalized.push({ type: 'equal', value: prefix });
+  }
+  if (trimmedDelete) {
+    normalized.push({ type: 'delete', value: trimmedDelete });
+  }
+  if (trimmedInsert) {
+    normalized.push({ type: 'insert', value: trimmedInsert });
+  }
+  if (suffix) {
+    normalized.push({ type: 'equal', value: suffix });
+  }
+  return normalized;
 }
 
 function mergeAdjacentParts(parts: DiffPart[]): DiffPart[] {

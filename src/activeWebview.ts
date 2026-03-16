@@ -5,11 +5,17 @@
  */
 
 import * as vscode from 'vscode';
+import * as path from 'path';
 
 let activeWebviewPanel: vscode.WebviewPanel | undefined;
 let activeDocument: vscode.TextDocument | undefined;
 const editorHostInstanceId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const openWebviews = new Map<vscode.WebviewPanel, vscode.TextDocument>();
+
+function normalizeDocumentPath(filePath: string): string {
+  const normalized = path.normalize(filePath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
 
 function setActiveContext(isActive: boolean) {
   vscode.commands.executeCommand('setContext', 'markdownForHumans.isActive', isActive);
@@ -60,8 +66,9 @@ export function getOpenWebviewForDocument(filePath: string): {
   panel: vscode.WebviewPanel;
   document: vscode.TextDocument;
 } | undefined {
+  const targetPath = normalizeDocumentPath(filePath);
   for (const [panel, document] of openWebviews.entries()) {
-    if (document.uri.fsPath === filePath) {
+    if (normalizeDocumentPath(document.uri.fsPath) === targetPath) {
       return { panel, document };
     }
   }

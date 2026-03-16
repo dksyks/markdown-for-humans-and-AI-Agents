@@ -2882,14 +2882,16 @@ function initializeProposalMode() {
   const renderReviewPane = () => {
     const activeEditor = proposedEditors[activeEditorIndex];
     if (!activeEditor || !reviewEl) return;
-    reviewEl.innerHTML = renderProposalRedlineHtml(
+    const replacementMarkdown = getEditorMarkdownForSync(activeEditor);
+    const redlineHtml = renderProposalRedlineHtml(
       currentOriginalMarkdown,
-      getEditorMarkdownForSync(activeEditor),
+      replacementMarkdown,
       {
         displayContextBefore: currentDisplayContextBefore || undefined,
         displayContextAfter: currentDisplayContextAfter || undefined,
       }
     );
+    reviewEl.innerHTML = redlineHtml;
     if (redlineTitleEl) {
       const suffix = numOptions > 1 ? ` — Option ${activeEditorIndex + 1}` : '';
       redlineTitleEl.textContent = `Redlined Proposal${suffix}`;
