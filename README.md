@@ -221,11 +221,11 @@ Once configured, your AI assistant has access to 6 tools (server: `markdown-for-
 
 **`scroll_to_selection`** — Scrolls the editor to a specific passage and selects it. Parameters: `selection` (required), `file`, `context_before`, `context_after`, `headings_before` (all optional). Returns: `{ status, file }` where status is `"revealed"`, `"timeout"`, or `"error"`.
 
-**`propose_single_replacement`** — Opens a WYSIWYG side-by-side proposal panel. The user can Accept, Edit, or Skip. Parameters: `selection`, `replacement` (required); `file`, `context_before`, `context_after`, `headings_before` (all optional). Returns `status` of `"applied"`, `"accepted_unchanged"`, `"accepted_changed"`, `"skipped"`, `"in_progress"`, `"timeout"`, or `"error"`, plus `session_id` when status is `"in_progress"`. Treat only `"applied"` as authoritative success.
+**`propose_single_replacement`** — Opens a WYSIWYG side-by-side proposal panel. The user can Accept, Edit, or Skip. Parameters: `selection`, `replacement` (required); `file`, `context_before`, `context_after`, `headings_before`, `justification` (all optional). When `justification` is supplied, a third panel is shown between the redline and editing panels with the agent's reasoning rendered as markdown. Returns `status` of `"applied"`, `"accepted_unchanged"`, `"accepted_changed"`, `"skipped"`, `"in_progress"`, `"timeout"`, or `"error"`, plus `session_id` when status is `"in_progress"`. Treat only `"applied"` as authoritative success.
 
 **`resume_single_replacement`** — Resumes a proposal panel that returned `"in_progress"`. Parameter: `session_id` (from the `"in_progress"` response).
 
-**`propose_sequential_replacements`** — Queues multiple replacements for the same file and presents them in one uninterrupted review flow. Parameters: `file` (optional), `changes` array (required) — each item has `selection`, `replacement`, and optional `context_before`, `context_after`, `headings_before`. Returns one aggregated result with per-step statuses, plus `session_id` when status is `"in_progress"`.
+**`propose_sequential_replacements`** — Queues multiple replacements for the same file and presents them in one uninterrupted review flow. Parameters: `file` (optional), `changes` array (required) — each item has `selection`, `replacement`, and optional `context_before`, `context_after`, `headings_before`, `justification`. When `justification` is supplied for a step, the reasoning panel is shown for that step. Returns one aggregated result with per-step statuses, plus `session_id` when status is `"in_progress"`.
 
 **`resume_sequential_replacements`** — Resumes a sequential review session that returned `"in_progress"`. Parameter: `session_id` (from the `"in_progress"` response).
 

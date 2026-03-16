@@ -473,6 +473,12 @@ function renderMarkdownBlock(block: MarkdownBlock): string {
   return enhanceRenderedReviewHtml(markdownToHtml(block.markdown));
 }
 
+export function renderMarkdownHtml(markdown: string): string {
+  return splitMarkdownBlocks(markdown)
+    .map(block => renderMarkdownBlock(block))
+    .join('');
+}
+
 function renderInlineMarkdownSegment(markdown: string): string {
   if (!markdown) {
     return '';

@@ -47,7 +47,7 @@ import { shouldAutoLink } from './utils/linkValidation';
 import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
-import { renderProposalRedlineHtml } from './utils/proposalRedline';
+import { renderProposalRedlineHtml, renderMarkdownHtml } from './utils/proposalRedline';
 import { applyColors, updateColorSettingsPanel, DEFAULT_COLORS } from './features/colorSettings';
 import { resolveSelectionMatch } from './utils/selectionMatching';
 import {
@@ -2745,15 +2745,23 @@ function initializeProposalMode() {
   root.innerHTML = `
     <div class="proposal-layout">
       <div class="proposal-section">
-        <div class="proposal-section-label">Redlined Proposal</div>
+        <div class="proposal-section-label proposal-label-redline">Redlined Proposal</div>
         <div class="proposal-pane-wrap proposal-pane-wrap-review">
           <div id="proposal-review" class="proposal-review-pane markdown-editor"></div>
         </div>
       </div>
+      <div class="proposal-section proposal-justification-section" id="proposal-justification-section" style="display:none">
+        <details open>
+          <summary class="proposal-section-label proposal-label-justification">Justification</summary>
+          <div class="proposal-pane-wrap proposal-pane-wrap-review">
+            <div id="proposal-justification" class="proposal-review-pane markdown-editor"></div>
+          </div>
+        </details>
+      </div>
       <div class="proposal-section">
         <div id="proposal-toolbar-mount"></div>
-        <div class="proposal-section-label">Editable Proposal</div>
-        <div class="proposal-pane-wrap">
+        <div class="proposal-section-label proposal-label-editing">Editable Proposal</div>
+        <div class="proposal-pane-wrap proposal-border-editing">
           <div id="proposal-proposed" class="proposal-pane proposal-pane-proposed markdown-editor"></div>
         </div>
       </div>
@@ -2771,9 +2779,13 @@ function initializeProposalMode() {
     body { margin: 0; padding: 0; overflow: auto; }
     .proposal-layout { display: flex; flex-direction: column; height: 100vh; padding: 8px; box-sizing: border-box; gap: 6px; }
     .proposal-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-    .proposal-section-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin-bottom: 4px; }
+    .proposal-section-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .proposal-label-redline { opacity: 0.6; }
+    .proposal-label-justification { opacity: 0.6; }
+    .proposal-label-editing { color: #2980b9; }
     /* Wrap provides the border/scroll container; extra left padding for heading ::before labels */
     .proposal-pane-wrap { flex: 1; overflow: auto; border: 1px solid var(--vscode-widget-border, #444); border-radius: 3px; min-height: 0; padding-left: 2.5em; }
+    .proposal-border-editing { border-color: #2980b9; }
     .proposal-pane-wrap-review { background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-panel-border, #444) 10%); }
     /* Override .markdown-editor defaults that don't fit inside the wrap */
     .proposal-pane.markdown-editor { margin: 6px 16px 6px 0; padding-left: 0; min-height: 2em; }
@@ -2809,6 +2821,13 @@ function initializeProposalMode() {
     .proposal-review-pane .github-alert { pointer-events: none; }
     .proposal-redline-empty { opacity: 0.7; font-style: italic; }
     .proposal-context-ghost { opacity: 0.35; pointer-events: none; }
+    .proposal-justification-section { flex: 0 1 auto; max-height: 33vh; margin-top: 8px; margin-bottom: 8px; }
+    .proposal-justification-section details { display: flex; flex-direction: column; max-height: 33vh; }
+    .proposal-justification-section details[open] .proposal-pane-wrap { max-height: 33vh; }
+    .proposal-justification-section summary { cursor: pointer; list-style: none; margin-bottom: 4px; }
+    .proposal-justification-section summary::-webkit-details-marker { display: none; }
+    .proposal-justification-section summary::before { content: '▶ '; font-size: 9px; opacity: 0.6; }
+    .proposal-justification-section details[open] summary::before { content: '▼ '; }
     .proposal-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0; flex-shrink: 0; }
     .proposal-btn { padding: 4px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; font-size: 13px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); }
     .proposal-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
@@ -2827,6 +2846,7 @@ function initializeProposalMode() {
   let currentOriginalMarkdown = '';
   let currentDisplayContextBefore = '';
   let currentDisplayContextAfter = '';
+  let currentJustification = '';
   let proposedEditor: Editor | null = null;
 
   // Shared extensions (same as main editor minus persistence-related ones)
@@ -2969,6 +2989,16 @@ function initializeProposalMode() {
     currentOriginalMarkdown = msg.original ?? '';
     currentDisplayContextBefore = msg.displayContextBefore ?? '';
     currentDisplayContextAfter = msg.displayContextAfter ?? '';
+    currentJustification = msg.justification ?? '';
+    const justificationSection = document.getElementById('proposal-justification-section')!;
+    const justificationEl = document.getElementById('proposal-justification')!;
+    if (currentJustification) {
+      justificationEl.innerHTML = renderMarkdownHtml(currentJustification);
+      justificationSection.style.display = '';
+    } else {
+      justificationEl.innerHTML = '';
+      justificationSection.style.display = 'none';
+    }
     proposedEditor.commands.setContent(msg.replacement ?? '', { contentType: 'markdown' });
     renderReviewPane();
     updateToolbarStates();

@@ -23,6 +23,7 @@ export interface Proposal {
   context_before: string | null;
   context_after: string | null;
   headings_before?: string[] | null;
+  justification?: string | null;
 }
 
 export interface ProposalBatchRequest {
@@ -565,6 +566,7 @@ function normalizeProposalQueue(request: ProposalRequest): Proposal[] {
       replacement: request.replacement,
       context_before: request.context_before,
       context_after: request.context_after,
+      justification: request.justification,
     },
   ];
 }

@@ -75,8 +75,9 @@ Use context_before and context_after to locate the correct occurrence if the tex
     context_before: z.string().optional().describe('Text immediately before the selection (context_before from get_selection)'),
     context_after: z.string().optional().describe('Text immediately after the selection (context_after from get_selection)'),
     headings_before: z.array(z.string()).optional().describe('Up to 5 headings preceding the selection, closest first (headings_before from get_selection)'),
+    justification: z.string().optional().describe('Optional markdown explaining the reasoning behind this proposed change. When supplied, displayed between the redline and editing panels.'),
   },
-  async ({ selection, replacement, file, context_before, context_after, headings_before }) => {
+  async ({ selection, replacement, file, context_before, context_after, headings_before, justification }) => {
     try {
       const id = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
@@ -102,6 +103,7 @@ Use context_before and context_after to locate the correct occurrence if the tex
           context_before: context_before ?? null,
           context_after: context_after ?? null,
           headings_before: headings_before ?? null,
+          justification: justification ?? null,
         }),
         'utf8'
       );
@@ -193,6 +195,10 @@ Pass file when available so the extension can target the correct open markdown d
             .array(z.string())
             .optional()
             .describe('Up to 5 headings preceding this selection, closest first (headings_before from get_selection)'),
+          justification: z
+            .string()
+            .optional()
+            .describe('Optional markdown explaining the reasoning behind this proposed change. When supplied, displayed between the redline and editing panels.'),
         })
       )
       .min(1)
@@ -216,6 +222,7 @@ Pass file when available so the extension can target the correct open markdown d
             context_before: change.context_before ?? null,
             context_after: change.context_after ?? null,
             headings_before: change.headings_before ?? null,
+            justification: change.justification ?? null,
           })),
         }),
         'utf8'
