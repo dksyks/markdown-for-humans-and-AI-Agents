@@ -183,6 +183,7 @@ export class ProposalPanel {
     this._panel.webview.postMessage({
       type: 'proposalInit',
       ...this._proposal,
+      ...this._getDisplayContext(),
       colors: this._getColors(),
     });
     this._scrollMainEditorWithRetries();
@@ -204,11 +205,30 @@ export class ProposalPanel {
     };
   }
 
+  private _getDisplayContext(): { displayContextBefore: string; displayContextAfter: string } {
+    const doc = this._sourceDocument;
+    if (!doc) {
+      return { displayContextBefore: '', displayContextAfter: '' };
+    }
+    const fullMarkdown = doc.getText();
+    const match = findProposalMatch(fullMarkdown, {
+      original: this._proposal.original,
+      replacement: this._proposal.replacement,
+      context_before: this._proposal.context_before,
+      context_after: this._proposal.context_after,
+    });
+    if (!match) {
+      return { displayContextBefore: '', displayContextAfter: '' };
+    }
+    return extractDisplayContext(fullMarkdown, match.index, match.matchedText.length);
+  }
+
   private async _handleMessage(msg: any) {
     if (msg.type === 'proposalReady') {
       this._panel.webview.postMessage({
         type: 'proposalInit',
         ...this._proposal,
+        ...this._getDisplayContext(),
         colors: this._getColors(),
       });
       this._scrollMainEditorWithRetries();
@@ -244,6 +264,7 @@ export class ProposalPanel {
         this._panel.webview.postMessage({
           type: 'proposalInit',
           ...this._proposal,
+          ...this._getDisplayContext(),
           colors: this._getColors(),
         });
         this._scrollMainEditorWithRetries();
@@ -555,4 +576,76 @@ function getNonce() {
     text += possible.charAt(Math.floor(Math.random() * possible.length));
   }
   return text;
+}
+
+const DISPLAY_CONTEXT_MIN_CHARS = 400; // ~5 lines at 80 chars each
+
+/**
+ * Extract display context from the full document around a matched selection.
+ *
+ * Before: go back at least DISPLAY_CONTEXT_MIN_CHARS, extend to paragraph
+ * start (blank-line boundary), then include any contiguous headings above.
+ *
+ * After: go forward at least DISPLAY_CONTEXT_MIN_CHARS, extend to paragraph
+ * end (blank-line boundary).
+ */
+export function extractDisplayContext(
+  fullMarkdown: string,
+  matchIndex: number,
+  matchLength: number
+): { displayContextBefore: string; displayContextAfter: string } {
+  const normalized = fullMarkdown.replace(/\r\n/g, '\n');
+  // matchIndex and matchLength are in fullMarkdown-space; convert to normalized-space
+  // by subtracting the number of \r characters that were removed before each position.
+  const selStart = fullMarkdown.slice(0, matchIndex).replace(/\r\n/g, '\n').length;
+  const selEnd = fullMarkdown.slice(0, matchIndex + matchLength).replace(/\r\n/g, '\n').length;
+
+  // --- context before ---
+  let beforeStart = Math.max(0, selStart - DISPLAY_CONTEXT_MIN_CHARS);
+
+  // Extend back to start of paragraph (find preceding blank line or doc start)
+  const lastBlankBefore = normalized.lastIndexOf('\n\n', beforeStart);
+  if (lastBlankBefore !== -1) {
+    beforeStart = lastBlankBefore + 2;
+  } else {
+    beforeStart = 0;
+  }
+
+  // Walk further back to include any contiguous heading lines above
+  const linesBefore = normalized.slice(0, beforeStart).split('\n');
+  let li = linesBefore.length - 1;
+  // skip trailing blank lines at the boundary
+  while (li >= 0 && linesBefore[li].trim() === '') {
+    li -= 1;
+  }
+  // consume heading lines (and blank lines between them)
+  while (li >= 0) {
+    if (/^#{1,6}\s/.test(linesBefore[li].trim())) {
+      li -= 1;
+      while (li >= 0 && linesBefore[li].trim() === '') {
+        li -= 1;
+      }
+    } else {
+      break;
+    }
+  }
+  // li+1 is the first heading line index; recalculate beforeStart from there
+  const headingLineStart = li + 1;
+  if (headingLineStart < linesBefore.length) {
+    const charsBeforeHeadings = linesBefore.slice(0, headingLineStart).join('\n');
+    beforeStart = headingLineStart > 0 ? charsBeforeHeadings.length + 1 : 0;
+  }
+
+  const displayContextBefore = normalized.slice(beforeStart, selStart);
+
+  // --- context after ---
+  let afterEnd = Math.min(normalized.length, selEnd + DISPLAY_CONTEXT_MIN_CHARS);
+
+  // Extend forward to end of paragraph
+  const nextBlankAfter = normalized.indexOf('\n\n', afterEnd);
+  afterEnd = nextBlankAfter !== -1 ? nextBlankAfter : normalized.length;
+
+  const displayContextAfter = normalized.slice(selEnd, afterEnd);
+
+  return { displayContextBefore, displayContextAfter };
 }

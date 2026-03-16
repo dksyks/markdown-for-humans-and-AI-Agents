@@ -2808,6 +2808,7 @@ function initializeProposalMode() {
     }
     .proposal-review-pane .github-alert { pointer-events: none; }
     .proposal-redline-empty { opacity: 0.7; font-style: italic; }
+    .proposal-context-ghost { opacity: 0.35; pointer-events: none; }
     .proposal-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0; flex-shrink: 0; }
     .proposal-btn { padding: 4px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; font-size: 13px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); }
     .proposal-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
@@ -2824,6 +2825,8 @@ function initializeProposalMode() {
   const proposedEl = document.getElementById('proposal-proposed')!;
   const toolbarMount = document.getElementById('proposal-toolbar-mount')!;
   let currentOriginalMarkdown = '';
+  let currentDisplayContextBefore = '';
+  let currentDisplayContextAfter = '';
   let proposedEditor: Editor | null = null;
 
   // Shared extensions (same as main editor minus persistence-related ones)
@@ -2846,7 +2849,11 @@ function initializeProposalMode() {
 
     reviewEl.innerHTML = renderProposalRedlineHtml(
       currentOriginalMarkdown,
-      getEditorMarkdownForSync(proposedEditor)
+      getEditorMarkdownForSync(proposedEditor),
+      {
+        displayContextBefore: currentDisplayContextBefore || undefined,
+        displayContextAfter: currentDisplayContextAfter || undefined,
+      }
     );
   };
 
@@ -2960,6 +2967,8 @@ function initializeProposalMode() {
     }
     // Load content into both editors
     currentOriginalMarkdown = msg.original ?? '';
+    currentDisplayContextBefore = msg.displayContextBefore ?? '';
+    currentDisplayContextAfter = msg.displayContextAfter ?? '';
     proposedEditor.commands.setContent(msg.replacement ?? '', { contentType: 'markdown' });
     renderReviewPane();
     updateToolbarStates();

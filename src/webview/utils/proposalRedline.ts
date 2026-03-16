@@ -42,9 +42,14 @@ const PREFER_INLINE_REVIEW_RENDERING = true;
 
 /**
  * Render a WYSIWYG review HTML fragment that shows redlined differences between
- * the original markdown selection and the proposed replacement.
+ * the original markdown selection and the proposed replacement, optionally
+ * surrounded by ghosted (low-opacity) context blocks from the source document.
  */
-export function renderProposalRedlineHtml(originalMarkdown: string, replacementMarkdown: string): string {
+export function renderProposalRedlineHtml(
+  originalMarkdown: string,
+  replacementMarkdown: string,
+  options?: { displayContextBefore?: string; displayContextAfter?: string }
+): string {
   const originalBlocks = splitMarkdownBlocks(originalMarkdown);
   const replacementBlocks = splitMarkdownBlocks(replacementMarkdown);
   const operations = diffSequences(
@@ -99,11 +104,78 @@ export function renderProposalRedlineHtml(originalMarkdown: string, replacementM
     }
   }
 
-  if (fragments.length === 0) {
+  if (fragments.length === 0 && !options?.displayContextBefore && !options?.displayContextAfter) {
     return '<p class="proposal-redline-empty">No proposed changes.</p>';
   }
 
-  return fragments.join('');
+  // Detect inline context: the context may contain complete block elements (headings,
+  // paragraphs) followed/preceded by a partial paragraph snippet. Split on \n\n to
+  // separate the complete blocks from the inline trailing/leading snippet.
+  const contextBefore = options?.displayContextBefore ?? '';
+  const contextAfter = options?.displayContextAfter ?? '';
+  const beforeParts = contextBefore.split('\n\n');
+  const afterParts = contextAfter.split('\n\n');
+  // Trailing snippet of contextBefore (the partial paragraph continuation before the selection)
+  const inlineBefore = beforeParts[beforeParts.length - 1];
+  // Preceding complete blocks (headings, full paragraphs above the inline snippet)
+  const precedingContext = beforeParts.slice(0, -1).join('\n\n');
+  // Leading snippet of contextAfter (the partial paragraph continuation after the selection)
+  const inlineAfter = afterParts[0];
+  // Following complete blocks after the inline snippet
+  const followingContext = afterParts.slice(1).join('\n\n');
+
+  const isInlineContext =
+    (inlineBefore || inlineAfter) &&
+    fragments.length > 0 &&
+    fragments.every(f => /^<p[ >]/.test(f.trimStart()));
+
+  if (isInlineContext) {
+    // Strip outer <p>...</p> from each fragment, then wrap everything in one paragraph.
+    const innerHtml = fragments
+      .map(f => f.trimStart().replace(/^<p[^>]*>/, '').replace(/<\/p>\s*$/, ''))
+      .join('');
+    const beforeHtml = inlineBefore
+      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(inlineBefore)}</span>`
+      : '';
+    const afterHtml = inlineAfter
+      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(inlineAfter)}</span>`
+      : '';
+
+    // Render any preceding complete blocks (e.g. headings) as ghost divs above
+    const precedingFragments = precedingContext
+      ? splitMarkdownBlocks(precedingContext).map(
+          block => `<div class="proposal-context-ghost">${renderMarkdownBlock(block)}</div>`
+        )
+      : [];
+    // Render any following complete blocks as ghost divs below
+    const followingFragments = followingContext
+      ? splitMarkdownBlocks(followingContext).map(
+          block => `<div class="proposal-context-ghost">${renderMarkdownBlock(block)}</div>`
+        )
+      : [];
+
+    return [...precedingFragments, `<p>${beforeHtml}${innerHtml}${afterHtml}</p>`, ...followingFragments].join('');
+  }
+
+  const beforeFragments = options?.displayContextBefore
+    ? splitMarkdownBlocks(options.displayContextBefore).map(
+        block => `<div class="proposal-context-ghost">${renderMarkdownBlock(block)}</div>`
+      )
+    : [];
+
+  const afterFragments = options?.displayContextAfter
+    ? splitMarkdownBlocks(options.displayContextAfter).map(
+        block => `<div class="proposal-context-ghost">${renderMarkdownBlock(block)}</div>`
+      )
+    : [];
+
+  const allFragments = [...beforeFragments, ...fragments, ...afterFragments];
+
+  if (allFragments.length === 0) {
+    return '<p class="proposal-redline-empty">No proposed changes.</p>';
+  }
+
+  return allFragments.join('');
 }
 
 function renderChangedBlockGroup(removedBlocks: MarkdownBlock[], addedBlocks: MarkdownBlock[]): string[] {
