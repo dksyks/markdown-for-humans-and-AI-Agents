@@ -4,6 +4,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for details.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import { Editor } from '@tiptap/core';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
@@ -203,7 +206,7 @@ function applySearchDecorations(
 
     editor.view.dispatch(editor.state.tr.setMeta(searchPluginKey, decorationSet));
   } catch (error) {
-    console.warn('[MD4H] Skipping search decorations:', error);
+    console.warn(`${BUILD_TAG} Skipping search decorations:`, error);
   }
 }
 

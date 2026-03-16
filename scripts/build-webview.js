@@ -21,7 +21,7 @@ const isProduction = args.includes('--prod') || process.env.NODE_ENV === 'produc
 const isWatch = args.includes('--watch');
 const noSourcemap = args.includes('--no-sourcemap');
 const buildDate = new Date();
-const buildStamp = `${buildDate.getMinutes()}m ${buildDate.getSeconds()}s`;
+const buildStamp = `B ${String(buildDate.getHours()).padStart(2, '0')}:${String(buildDate.getMinutes()).padStart(2, '0')}`;
 const buildTime = `${String(buildDate.getHours()).padStart(2, '0')}:${String(buildDate.getMinutes()).padStart(2, '0')}`;
 
 const buildOptions = {
@@ -44,6 +44,7 @@ const buildOptions = {
   define: {
     __MD4H_BUILD_STAMP__: JSON.stringify(buildStamp),
     __BUILD_TIME__: JSON.stringify(buildTime),
+    __IS_DEV_BUILD__: JSON.stringify(!isProduction),
   },
 };
 

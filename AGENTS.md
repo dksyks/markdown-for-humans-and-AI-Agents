@@ -178,13 +178,13 @@ When this extension is active in VS Code, AI agents can use the Markdown for Hum
 
 See [`examples/CLAUDE.md`](examples/CLAUDE.md) for the full tool reference. Summary:
 
-- `get_selection` — reads the current editor selection plus `file`, `context_before`, `context_after`, and `headings_before`.
+- `get_selection` — reads the current editor selection plus `file`, `context_before`, `context_after`, and `headings_before`. **Only call this when the user refers to something they have highlighted.** Do not call it as a routine prerequisite before proposing changes.
 
-- `propose_single_replacement` — proposes a single in-editor rewrite. Pass `selection`, `replacement`, and context fields from `get_selection`. Optional `justification` markdown string is displayed as a third panel between the redline and editing panels. Treat as confirmed only when status is `"applied"`. Status `"accepted_unchanged"` means user accepted without edits; `"accepted_changed"` means user accepted after editing; `"skipped"` means user declined. If status is `"in_progress"`, resume with `resume_single_replacement` using the returned `session_id`.
+- `propose_single_replacement` — proposes up to 3 alternative rewrites for a selection. Pass `selection` (the exact text to replace — no prior `get_selection` call needed), an `options` array (each with `replacement` and optional `justification`), and optional context fields. The extension automatically scrolls the main editor to the target passage when the panel opens. The panel shows a shared redline (driven by the focused option) and per-option Accept buttons. Treat as confirmed only when status is `"applied"`. `selected_option_index` in the response indicates which alternative was accepted. If status is `"in_progress"`, resume with `resume_single_replacement` using the returned `session_id`.
 
 - `resume_single_replacement` — resumes a single proposal that returned `"in_progress"`. Pass `session_id`.
 
-- `propose_sequential_replacements` — proposes multiple replacements for the same file in one uninterrupted review flow. Pass `file` and an ordered `changes` array of `{ selection, replacement, context_before, context_after, headings_before, justification }`. Optional `justification` per step displays the reasoning panel for that step. Treat each step as confirmed only when its status is `"applied"`. If status is `"in_progress"`, resume with `resume_sequential_replacements`.
+- `propose_sequential_replacements` — proposes multiple replacements for the same file in one uninterrupted review flow. Pass `file` and an ordered `changes` array of `{ selection, options, context_before, context_after, headings_before }` where `options` is an array of `{ replacement, justification? }` (1–3 per step). Treat each step as confirmed only when its status is `"applied"`. If status is `"in_progress"`, resume with `resume_sequential_replacements`.
 
 - `resume_sequential_replacements` — resumes a sequential review that returned `"in_progress"`. Pass `session_id`.
 
@@ -192,9 +192,10 @@ See [`examples/CLAUDE.md`](examples/CLAUDE.md) for the full tool reference. Summ
 
 Typical patterns:
 
-- User-driven editor selection: call `get_selection`, then `propose_single_replacement` with the returned fields.
+- Agent knows what to change (most cases): call `propose_single_replacement` or `propose_sequential_replacements` directly with the target text — no `get_selection` needed.
+- User points at selected text: call `get_selection` to read what they highlighted, then call the appropriate proposal tool.
 - Batch review: call `propose_sequential_replacements` with `file` and an ordered change list.
-- Agent-driven reveal: call `scroll_to_selection` with the exact text and available context.
+- Agent-driven reveal (no proposal): call `scroll_to_selection` with the exact text and available context.
 
 ---
 

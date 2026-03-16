@@ -4,6 +4,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for details.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -38,13 +41,27 @@ export function readPendingSelectionRevealRequest(
   const data = JSON.parse(fs.readFileSync(requestFilePath, 'utf8')) as SelectionRevealRequest;
   if (!data.id) return null;
 
-  try {
-    fs.unlinkSync(requestFilePath);
-  } catch {
-    // Ignore cleanup failures; the request has already been read.
+  return data;
+}
+
+export function consumePendingSelectionRevealRequest(
+  requestId: string,
+  requestFilePath: string = SELECTION_REVEAL_TEMP_FILE
+): boolean {
+  if (!fs.existsSync(requestFilePath)) {
+    return false;
   }
 
-  return data;
+  try {
+    const data = JSON.parse(fs.readFileSync(requestFilePath, 'utf8')) as SelectionRevealRequest;
+    if (data.id !== requestId) {
+      return false;
+    }
+    fs.unlinkSync(requestFilePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function shouldHandleSelectionRevealRequest(request: SelectionRevealRequest): boolean {
@@ -206,7 +223,7 @@ function writeSelectionRevealResponse(
   try {
     fs.writeFileSync(responseFilePath, JSON.stringify(response, null, 2), 'utf8');
   } catch (error) {
-    console.warn('[MD4H] Failed to write selection reveal response temp file:', error);
+    console.warn(`${BUILD_TAG} Failed to write selection reveal response temp file:`, error);
   }
 }
 
@@ -223,6 +240,7 @@ export function startSelectionRevealWatcher(): vscode.Disposable {
       if (!data) return;
       if (!data.id || data.id === lastId) return;
       if (!shouldHandleSelectionRevealRequest(data)) return;
+      if (!consumePendingSelectionRevealRequest(data.id)) return;
       lastId = data.id;
       processSelectionRevealRequest(data);
     } catch {
@@ -237,7 +255,7 @@ export function startSelectionRevealWatcher(): vscode.Disposable {
     });
   } catch (err) {
     console.warn(
-      '[MD4H] selectionRevealWatcher: fs.watch unavailable, changes will not be detected automatically',
+      `${BUILD_TAG} selectionRevealWatcher: fs.watch unavailable, changes will not be detected automatically`,
       err
     );
   }

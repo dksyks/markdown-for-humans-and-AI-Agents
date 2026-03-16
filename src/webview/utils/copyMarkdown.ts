@@ -10,6 +10,9 @@
  * Utilities for copying TipTap editor selection to clipboard as clean markdown.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import { Editor } from '@tiptap/core';
 
 /**
@@ -42,7 +45,7 @@ export function getRangeAsMarkdown(editor: Editor, from: number, to: number): st
 
     return sliceToBasicMarkdown(editor, from, to);
   } catch (error) {
-    console.error('[MD4H] Error getting range as markdown:', error);
+    console.error(`${BUILD_TAG} Error getting range as markdown:`, error);
     return editor.state.doc?.textBetween?.(from, to, '\n\n', '\n') ?? null;
   }
 }
@@ -153,7 +156,7 @@ export async function copyToClipboard(markdown: string): Promise<CopyResult> {
       await navigator.clipboard.writeText(markdown);
       return { success: true, markdown };
     } catch (err) {
-      console.warn('[MD4H] Clipboard API failed, trying fallback:', err);
+      console.warn(`${BUILD_TAG} Clipboard API failed, trying fallback:`, err);
     }
   }
 
@@ -226,9 +229,9 @@ export async function copySelectionAsMarkdown(editor: Editor): Promise<CopyResul
   showCopyFeedback(result.success);
 
   if (result.success) {
-    console.log('[MD4H] Copied to clipboard:', markdown.substring(0, 100) + '...');
+    console.log(`${BUILD_TAG} Copied to clipboard:`, markdown.substring(0, 100) + '...');
   } else {
-    console.error('[MD4H] Copy failed:', result.error);
+    console.error(`${BUILD_TAG} Copy failed:`, result.error);
   }
 
   return result;

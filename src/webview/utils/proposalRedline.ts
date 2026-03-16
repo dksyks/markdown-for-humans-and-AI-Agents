@@ -706,13 +706,141 @@ function diffTextParts(original: string, replacement: string): DiffPart[] {
     replacementIndex += 1;
   }
 
-  return mergeAdjacentParts(parts);
+  const merged = mergeAdjacentParts(parts);
+  const absorbed = absorbSpacesIntoDiffRuns(merged);
+  const remerged = mergeAdjacentParts(absorbed);
+  return ensureDeleteBeforeInsert(remerged);
 }
 
 function tokenizeText(text: string): string[] {
   return text.match(
     /\s+|!\[[^\]]*?\]\([^)]+\)|\[[^\]]+?\]\([^)]+\)|\*\*[^*\n]+?\*\*|__[^_\n]+?__|~~[^~\n]+?~~|\*[^*\n]+?\*|_[^_\n]+?_|`[^`\n]+?`|[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*|[.,!?;:()[\]{}"“”'‘’/\\-]+|[^\s]/g
   ) ?? [];
+}
+
+/**
+ * Returns true if every non-whitespace token in the string is either
+ * punctuation-only or a word of 1–2 characters. These "glue" segments
+ * (e.g. ", and ", "or", "; ") are absorbed into surrounding change runs
+ * so that contiguous deletions/insertions render as single highlighted spans.
+ */
+function isAbsorbableEqualSegment(value: string): boolean {
+  const tokens = value.match(/\S+/g) ?? [];
+  if (tokens.length === 0) return true; // whitespace-only
+  return tokens.every(t => /^[\p{P}\p{S}]+$/u.test(t) || t.length <= 2);
+}
+
+/**
+ * After merging adjacent same-type parts, equal segments sandwiched between
+ * change runs produce alternating spans in the rendered output. This function
+ * absorbs equal segments that consist entirely of punctuation or short words
+ * (≤ 2 chars) into the surrounding change runs.
+ *
+ * Handles two patterns:
+ *   1. [del][equal-glue][del]  →  merged del
+ *   2. [del][ins][equal-glue][del][ins]  →  merged del + merged ins
+ *      (and the symmetric [ins][del][equal-glue][ins][del])
+ */
+function absorbSpacesIntoDiffRuns(parts: DiffPart[]): DiffPart[] {
+  let changed = true;
+  let result = parts;
+  while (changed) {
+    changed = false;
+    const next: DiffPart[] = [];
+    let i = 0;
+    while (i < result.length) {
+      // Pattern: [A][B][equal-glue][A][B]  where A and B are delete/insert (any order)
+      // e.g. del ins equal del ins  →  merged-del merged-ins (deletion always first)
+      if (
+        i + 4 < result.length &&
+        result[i].type !== 'equal' &&
+        result[i + 1].type !== 'equal' &&
+        result[i].type !== result[i + 1].type &&
+        result[i + 2].type === 'equal' &&
+        result[i + 3].type === result[i].type &&
+        result[i + 4].type === result[i + 1].type &&
+        isAbsorbableEqualSegment(result[i + 2].value)
+      ) {
+        const glue = result[i + 2].value;
+        const mergedA = { type: result[i].type, value: result[i].value + glue + result[i + 3].value };
+        const mergedB = { type: result[i + 1].type, value: result[i + 1].value + glue + result[i + 4].value };
+        // Always output deletion before insertion
+        if (mergedA.type === 'delete') {
+          next.push(mergedA, mergedB);
+        } else {
+          next.push(mergedB, mergedA);
+        }
+        i += 5;
+        changed = true;
+        continue;
+      }
+      // Pattern: [same][equal-glue][same]  →  merged same
+      if (
+        i + 2 < result.length &&
+        result[i].type !== 'equal' &&
+        result[i + 1].type === 'equal' &&
+        result[i + 2].type === result[i].type &&
+        isAbsorbableEqualSegment(result[i + 1].value)
+      ) {
+        next.push({ type: result[i].type, value: result[i].value + result[i + 1].value + result[i + 2].value });
+        i += 3;
+        changed = true;
+        continue;
+      }
+      next.push(result[i]);
+      i += 1;
+    }
+    result = next;
+  }
+  return result;
+}
+
+/**
+ * Reorder parts so all deletions for a change group appear before insertions.
+ * Collects all contiguous non-equal parts (dels and ins mixed with equals between
+ * them) and re-emits them as: all deletes, then all inserts, then the trailing equal.
+ */
+function ensureDeleteBeforeInsert(parts: DiffPart[]): DiffPart[] {
+  const result: DiffPart[] = [];
+  let i = 0;
+  while (i < parts.length) {
+    if (parts[i].type === 'equal') {
+      result.push(parts[i]);
+      i++;
+      continue;
+    }
+    // Collect a run of change parts (del/ins) possibly separated by equal segments
+    // Stop when we hit an equal that is NOT between two change parts
+    const dels: DiffPart[] = [];
+    const ins: DiffPart[] = [];
+    const pendingEquals: DiffPart[] = [];
+    while (i < parts.length) {
+      if (parts[i].type === 'delete') {
+        dels.push(parts[i]);
+        pendingEquals.length = 0;
+        i++;
+      } else if (parts[i].type === 'insert') {
+        ins.push(parts[i]);
+        pendingEquals.length = 0;
+        i++;
+      } else {
+        // equal — peek ahead: if next non-equal is a change, keep collecting
+        let j = i + 1;
+        while (j < parts.length && parts[j].type === 'equal') j++;
+        if (j < parts.length && parts[j].type !== 'equal') {
+          // there's more changes ahead — hold this equal as pending
+          pendingEquals.push(parts[i]);
+          i++;
+        } else {
+          // no more changes — stop here, leave equal for next iteration
+          break;
+        }
+      }
+    }
+    // Emit: all deletes, then all inserts, then any pending equals
+    result.push(...dels, ...ins, ...pendingEquals);
+  }
+  return result;
 }
 
 function mergeAdjacentParts(parts: DiffPart[]): DiffPart[] {
@@ -744,19 +872,19 @@ function measureInlineDiffComplexity(original: string, replacement: string): {
 } {
   const originalTokens = tokenizeText(original);
   const replacementTokens = tokenizeText(replacement);
-  const operations = diffSequences(originalTokens, replacementTokens);
+  // Use the post-absorbed parts so run counts match what actually renders
+  const parts = diffTextParts(original, replacement);
 
   let changeRuns = 0;
   let changedTokenCount = 0;
   let inChangeRun = false;
 
-  for (const operation of operations) {
-    if (operation.type === 'equal') {
+  for (const part of parts) {
+    if (part.type === 'equal') {
       inChangeRun = false;
       continue;
     }
-
-    changedTokenCount += 1;
+    changedTokenCount += (part.value.trim().match(/\S+/g) ?? []).length;
     if (!inChangeRun) {
       changeRuns += 1;
       inChangeRun = true;

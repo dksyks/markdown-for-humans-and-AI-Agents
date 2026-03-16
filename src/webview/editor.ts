@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Copyright (c) 2025-2026 Concret.io
  *
  * Licensed under the MIT License. See LICENSE file in the project root for details.
@@ -135,6 +135,7 @@ type VsCodeApi = {
 
 declare const acquireVsCodeApi: () => VsCodeApi;
 declare const __MD4H_BUILD_STAMP__: string;
+declare const __IS_DEV_BUILD__: boolean;
 // Extended window interface for MD4H globals
 declare global {
   interface Window {
@@ -952,7 +953,7 @@ function handleSelectionRevealMessage(
 ) {
   if (message.type === 'revealCurrentProposalSelection') {
     const pinnedRange = pinnedSelectionPluginKey.getState(editor.state);
-    const activeRange =
+    const activeRange: { selFrom: number; selTo: number; selectionKind?: 'text' | 'node' } | null =
       pinnedRange && pinnedRange.from < pinnedRange.to
         ? { selFrom: pinnedRange.from, selTo: pinnedRange.to }
         : !editor.state.selection.empty
@@ -2494,7 +2495,7 @@ function updateEditorContent(markdown: string) {
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     isDomReady = true;
-    ensureBuildStampBadge();
+    if (__IS_DEV_BUILD__) ensureBuildStampBadge();
     if (document.getElementById('proposal-root')) {
       initializeProposalMode();
     } else {
@@ -2507,7 +2508,7 @@ if (document.readyState === 'loading') {
   });
 } else {
   isDomReady = true;
-  ensureBuildStampBadge();
+  if (__IS_DEV_BUILD__) ensureBuildStampBadge();
   if (document.getElementById('proposal-root')) {
     initializeProposalMode();
   } else {
@@ -2741,52 +2742,25 @@ function initializeProposalMode() {
   const root = document.getElementById('proposal-root');
   if (!root) return;
 
-  // --- Build layout ---
-  root.innerHTML = `
-    <div class="proposal-layout">
-      <div class="proposal-section">
-        <div class="proposal-section-label proposal-label-redline">Redlined Proposal</div>
-        <div class="proposal-pane-wrap proposal-pane-wrap-review">
-          <div id="proposal-review" class="proposal-review-pane markdown-editor"></div>
-        </div>
-      </div>
-      <div class="proposal-section proposal-justification-section" id="proposal-justification-section" style="display:none">
-        <details open>
-          <summary class="proposal-section-label proposal-label-justification">Justification</summary>
-          <div class="proposal-pane-wrap proposal-pane-wrap-review">
-            <div id="proposal-justification" class="proposal-review-pane markdown-editor"></div>
-          </div>
-        </details>
-      </div>
-      <div class="proposal-section">
-        <div id="proposal-toolbar-mount"></div>
-        <div class="proposal-section-label proposal-label-editing">Editable Proposal</div>
-        <div class="proposal-pane-wrap proposal-border-editing">
-          <div id="proposal-proposed" class="proposal-pane proposal-pane-proposed markdown-editor"></div>
-        </div>
-      </div>
-      <div class="proposal-actions">
-        <button id="proposal-accept" class="proposal-btn proposal-btn-primary" title="Apply this change to the document">Accept</button>
-        <button id="proposal-cancel" class="proposal-btn" title="Dismiss without applying">Skip</button>
-        <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Review in progress">Review in progress</button>
-      </div>
-    </div>
-  `;
-
-  // Inline styles for proposal layout (VS Code theme variables)
+  // Inject styles once
   const styleEl = document.createElement('style');
   styleEl.textContent = `
-    body { margin: 0; padding: 0; overflow: auto; }
-    .proposal-layout { display: flex; flex-direction: column; height: 100vh; padding: 8px; box-sizing: border-box; gap: 6px; }
-    .proposal-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    body { margin: 0; padding: 0; overflow-y: auto; }
+    .proposal-layout { display: flex; flex-direction: column; min-height: 100vh; padding: 8px; box-sizing: border-box; gap: 6px; overflow-x: hidden; }
+    .proposal-section { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; }
+    .proposal-section-redline { flex: 0 0 auto; }
     .proposal-section-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
     .proposal-label-redline { opacity: 0.6; }
-    .proposal-label-justification { opacity: 0.6; }
-    .proposal-label-editing { color: #2980b9; }
     /* Wrap provides the border/scroll container; extra left padding for heading ::before labels */
-    .proposal-pane-wrap { flex: 1; overflow: auto; border: 1px solid var(--vscode-widget-border, #444); border-radius: 3px; min-height: 0; padding-left: 2.5em; }
+    .proposal-pane-wrap { flex: 1; overflow: auto; border: 1px solid var(--vscode-widget-border, #444); border-radius: 3px; min-height: 0; padding-left: 2.5em; box-sizing: border-box; }
     .proposal-border-editing { border-color: #2980b9; }
     .proposal-pane-wrap-review { background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-panel-border, #444) 10%); }
+    .proposal-redline-wrap,
+    .proposal-edit-wrap {
+      overflow: auto;
+      min-height: 0;
+      box-sizing: border-box;
+    }
     /* Override .markdown-editor defaults that don't fit inside the wrap */
     .proposal-pane.markdown-editor { margin: 6px 16px 6px 0; padding-left: 0; min-height: 2em; }
     .proposal-review-pane.markdown-editor { margin: 6px 16px 6px 0; padding-left: 0; min-height: 2em; pointer-events: none; }
@@ -2821,13 +2795,24 @@ function initializeProposalMode() {
     .proposal-review-pane .github-alert { pointer-events: none; }
     .proposal-redline-empty { opacity: 0.7; font-style: italic; }
     .proposal-context-ghost { opacity: 0.35; pointer-events: none; }
-    .proposal-justification-section { flex: 0 1 auto; max-height: 33vh; margin-top: 8px; margin-bottom: 8px; }
-    .proposal-justification-section details { display: flex; flex-direction: column; max-height: 33vh; }
-    .proposal-justification-section details[open] .proposal-pane-wrap { max-height: 33vh; }
-    .proposal-justification-section summary { cursor: pointer; list-style: none; margin-bottom: 4px; }
-    .proposal-justification-section summary::-webkit-details-marker { display: none; }
-    .proposal-justification-section summary::before { content: '▶ '; font-size: 9px; opacity: 0.6; }
-    .proposal-justification-section details[open] summary::before { content: '▼ '; }
+    /* Multi-option layout */
+    .proposal-option-section { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; transition: opacity 0.15s; }
+    .proposal-option-section.proposal-option-inactive { opacity: 0.35; }
+    .proposal-option-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    .proposal-option-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #2980b9; }
+    .proposal-option-accept { padding: 4px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; font-size: 13px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .proposal-option-accept:hover { background: var(--vscode-button-hoverBackground); }
+    .proposal-justification-section { flex: 0 0 auto; margin-top: 4px; margin-bottom: 6px; overflow: hidden; }
+    .proposal-justification-body {
+      padding: 4px 8px 4px 1em;
+      border: 1px solid var(--vscode-widget-border, #444);
+      border-radius: 3px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-panel-border, #444) 10%);
+      box-sizing: border-box;
+      overflow: auto;
+      min-height: 0;
+    }
+    .proposal-justification-content { overflow: visible; }
     .proposal-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0; flex-shrink: 0; }
     .proposal-btn { padding: 4px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; font-size: 13px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); }
     .proposal-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
@@ -2839,17 +2824,7 @@ function initializeProposalMode() {
   `;
   document.head.appendChild(styleEl);
 
-  // --- Create TipTap instances ---
-  const reviewEl = document.getElementById('proposal-review')!;
-  const proposedEl = document.getElementById('proposal-proposed')!;
-  const toolbarMount = document.getElementById('proposal-toolbar-mount')!;
-  let currentOriginalMarkdown = '';
-  let currentDisplayContextBefore = '';
-  let currentDisplayContextAfter = '';
-  let currentJustification = '';
-  let proposedEditor: Editor | null = null;
-
-  // Shared extensions (same as main editor minus persistence-related ones)
+  // Shared TipTap extensions (same as main editor minus persistence-related ones)
   const sharedExtensions = [
     StarterKit,
     Markdown,
@@ -2862,61 +2837,100 @@ function initializeProposalMode() {
     OrderedListMarkdownFix,
   ];
 
-  const renderReviewPane = () => {
-    if (!proposedEditor) {
+  // --- State ---
+  let currentOriginalMarkdown = '';
+  let currentDisplayContextBefore = '';
+  let currentDisplayContextAfter = '';
+  // proposedEditors[i] corresponds to options[i]
+  const proposedEditors: Editor[] = [];
+  let activeEditorIndex = 0;
+
+  // These are populated after buildLayout() based on msg.options count
+  let reviewEl: HTMLElement;
+  let redlineTitleEl: HTMLElement;
+  let numOptions = 1;
+  let optionSections: HTMLElement[] = [];
+  let acceptBtns: HTMLButtonElement[] = [];
+  let cancelBtn: HTMLButtonElement;
+  let timerBtn: HTMLButtonElement;
+
+  // --- Timer state ---
+  let remainingMs = PROPOSAL_TIMEOUT_MS;
+  let timerInterval: ReturnType<typeof setInterval> | null = null;
+  let hasPendingHandoff = false;
+  let hasCopiedResumePrompt = false;
+
+  const centerActiveRedlineChange = () => {
+    const redlineWrap = root?.querySelector('.proposal-redline-wrap') as HTMLElement | null;
+    if (!redlineWrap || !reviewEl) return;
+
+    const changeTarget = reviewEl.querySelector(
+      '.proposal-redline-added, .proposal-redline-removed, .proposal-redline-block-added, .proposal-redline-block-removed, .proposal-redline-structural.proposal-redline-added, .proposal-redline-structural.proposal-redline-removed'
+    ) as HTMLElement | null;
+
+    if (!changeTarget) {
+      redlineWrap.scrollTop = 0;
       return;
     }
 
+    const targetTop = changeTarget.offsetTop;
+    const targetHeight = changeTarget.offsetHeight;
+    redlineWrap.scrollTop = Math.max(0, targetTop - (redlineWrap.clientHeight - targetHeight) / 2);
+  };
+
+  // --- Render redline from the active editor ---
+  const renderReviewPane = () => {
+    const activeEditor = proposedEditors[activeEditorIndex];
+    if (!activeEditor || !reviewEl) return;
     reviewEl.innerHTML = renderProposalRedlineHtml(
       currentOriginalMarkdown,
-      getEditorMarkdownForSync(proposedEditor),
+      getEditorMarkdownForSync(activeEditor),
       {
         displayContextBefore: currentDisplayContextBefore || undefined,
         displayContextAfter: currentDisplayContextAfter || undefined,
       }
     );
+    if (redlineTitleEl) {
+      const suffix = numOptions > 1 ? ` — Option ${activeEditorIndex + 1}` : '';
+      redlineTitleEl.textContent = `Redlined Proposal${suffix}`;
+    }
   };
 
-  proposedEditor = new Editor({
-    element: proposedEl,
-    extensions: sharedExtensions,
-    editable: true,
-    content: '',
-    onUpdate: renderReviewPane,
-    onFocus: () => {
+  // --- Opacity: dim all option sections except the active one ---
+  const updateOptionOpacity = () => {
+    optionSections.forEach((section, i) => {
+      section.classList.toggle('proposal-option-inactive', i !== activeEditorIndex);
+    });
+  };
+
+  const activateOption = (index: number, focusEditor = false) => {
+    activeEditorIndex = index;
+    renderReviewPane();
+    updateOptionOpacity();
+    updateToolbarStates();
+    if (focusEditor) {
+      proposedEditors[index]?.commands.focus();
       window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
-    },
-    onBlur: () => {
-      window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: false } }));
-    },
-  });
-
-  // Attach toolbar to proposed pane
-  const toolbar = createFormattingToolbar(proposedEditor);
-  toolbarMount.appendChild(toolbar);
-  // Prevent toolbar mousedown from stealing focus away from the proposed editor,
-  // which would disable the toolbar buttons before the click handler runs.
-  toolbar.addEventListener('mousedown', e => {
-    e.preventDefault();
-    // Ensure the proposed editor stays focused
-    proposedEditor.commands.focus();
-    window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
-  });
-
-  // --- Timer ---
-  let remainingMs = PROPOSAL_TIMEOUT_MS;
-  let timerInterval: ReturnType<typeof setInterval> | null = null;
-  const timerBtn = document.getElementById('proposal-timer') as HTMLButtonElement;
-  let hasPendingHandoff = false;
-  let hasCopiedResumePrompt = false;
-
-  const formatTime = (ms: number): string => {
-    const totalSec = Math.ceil(ms / 1000);
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
+    }
   };
 
+  // --- Response handler (shared by Accept buttons and Skip All / timer) ---
+  const handleProposalResponse = (status: 'accept' | 'skip' | 'timeout' | 'skipped', optionIndex?: number) => {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    const normalizedStatus = status === 'skip' ? 'skipped' : status;
+    const resolvedIndex = optionIndex ?? activeEditorIndex;
+    const replacementMd = normalizedStatus === 'skipped'
+      ? null
+      : getEditorMarkdownForSync(proposedEditors[resolvedIndex]);
+    vscode.postMessage({
+      type: 'proposalResponse',
+      status: normalizedStatus,
+      replacement: replacementMd,
+      selected_option_index: normalizedStatus === 'skipped' ? null : resolvedIndex,
+    });
+  };
+
+  // --- Timer helpers ---
   const updateTimerButtonForPendingHandoff = () => {
     timerBtn.textContent = hasCopiedResumePrompt ? 'Copied: resume' : 'Resume Conversation';
     timerBtn.title = 'When you finish editing, return to chat and type: resume';
@@ -2924,10 +2938,7 @@ function initializeProposalMode() {
   };
 
   const notifyPendingHandoff = () => {
-    if (hasPendingHandoff) {
-      return;
-    }
-
+    if (hasPendingHandoff) return;
     hasPendingHandoff = true;
     hasCopiedResumePrompt = false;
     updateTimerButtonForPendingHandoff();
@@ -2950,58 +2961,215 @@ function initializeProposalMode() {
     }, 1000);
   };
 
-  timerBtn.addEventListener('click', () => {
-    if (!hasPendingHandoff) {
-      return;
-    }
+  // --- Build dynamic layout from options array ---
+  interface OptionData { replacement: string; justification?: string | null; }
 
-    hasCopiedResumePrompt = true;
-    updateTimerButtonForPendingHandoff();
-    vscode.postMessage({ type: 'copyResumePrompt' });
-  });
+  const buildLayout = (options: OptionData[]) => {
+    // Destroy any previous editors
+    proposedEditors.forEach(ed => ed.destroy());
+    proposedEditors.length = 0;
+    optionSections.length = 0;
+    acceptBtns.length = 0;
+    activeEditorIndex = 0;
 
-  // --- Button handlers ---
-  const acceptBtn = document.getElementById('proposal-accept') as HTMLButtonElement;
-  const cancelBtn = document.getElementById('proposal-cancel') as HTMLButtonElement;
+    const multiOption = options.length > 1;
 
-  const handleProposalResponse = (status: 'accept' | 'skip' | 'timeout' | 'skipped') => {
-    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-    const normalizedStatus = status === 'skip' ? 'skipped' : status;
-    const replacementMd = normalizedStatus === 'skipped'
-      ? null
-      : getEditorMarkdownForSync(proposedEditor);
-    vscode.postMessage({ type: 'proposalResponse', status: normalizedStatus, replacement: replacementMd });
+    // Build option section HTML strings
+    const optionSectionsHtml = options.map((_, i) => `
+      <div class="proposal-option-section" id="proposal-option-section-${i}">
+        <div class="proposal-justification-section" id="proposal-just-section-${i}" style="display:none">
+          <div class="proposal-justification-label">Justification${multiOption ? ` \u2014 Option ${i + 1}` : ''}</div>
+          <div class="proposal-justification-body">
+            <div class="proposal-justification-content proposal-review-pane markdown-editor" id="proposal-just-content-${i}"></div>
+          </div>
+        </div>
+        <div class="proposal-option-title-row">
+          <div class="proposal-section-label proposal-label-editing">Editable Proposal${multiOption ? ` \u2014 Option ${i + 1}` : ''}</div>
+          <button class="proposal-option-accept" id="proposal-accept-${i}" title="Apply option ${i + 1} to the document">Accept</button>
+        </div>
+        <div id="proposal-toolbar-mount-${i}"></div>
+        <div class="proposal-pane-wrap proposal-edit-wrap" style="border:1px solid #2980b9; border-radius:3px; padding-left:2.5em;">
+          <div id="proposal-proposed-${i}" class="proposal-pane proposal-pane-proposed markdown-editor"></div>
+        </div>
+      </div>
+    `).join('');
+
+    root!.innerHTML = `
+      <div class="proposal-layout">
+        <div class="proposal-section proposal-section-redline">
+          <div id="proposal-redline-title" class="proposal-section-label proposal-label-redline">Redlined Proposal</div>
+          <div class="proposal-pane-wrap proposal-pane-wrap-review proposal-redline-wrap">
+            <div id="proposal-review" class="proposal-review-pane markdown-editor"></div>
+          </div>
+        </div>
+        ${optionSectionsHtml}
+        <div class="proposal-actions">
+          <button id="proposal-cancel" class="proposal-btn" title="Dismiss without applying">${multiOption ? 'Skip All Options' : 'Skip'}</button>
+          <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Review in progress">Review in progress</button>
+        </div>
+      </div>
+    `;
+
+    // Grab stable DOM refs
+    reviewEl = document.getElementById('proposal-review')!;
+    redlineTitleEl = document.getElementById('proposal-redline-title')!;
+    numOptions = options.length;
+    cancelBtn = document.getElementById('proposal-cancel') as HTMLButtonElement;
+    timerBtn = document.getElementById('proposal-timer') as HTMLButtonElement;
+
+    cancelBtn.addEventListener('click', () => handleProposalResponse('skip'));
+    timerBtn.addEventListener('click', () => {
+      if (!hasPendingHandoff) return;
+      hasCopiedResumePrompt = true;
+      updateTimerButtonForPendingHandoff();
+      vscode.postMessage({ type: 'copyResumePrompt' });
+    });
+
+    // Create one TipTap editor per option
+    options.forEach((opt, i) => {
+      const proposedEl = document.getElementById(`proposal-proposed-${i}`)!;
+      const mountEl = document.getElementById(`proposal-toolbar-mount-${i}`)!;
+      const section = document.getElementById(`proposal-option-section-${i}`) as HTMLElement;
+      optionSections.push(section);
+
+      const editor = new Editor({
+        element: proposedEl,
+        extensions: sharedExtensions,
+        editable: true,
+        content: '',
+        onUpdate: () => {
+          if (activeEditorIndex === i) renderReviewPane();
+        },
+        onFocus: () => {
+          activateOption(i);
+          window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
+        },
+        onBlur: () => {
+          window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: false } }));
+        },
+      });
+      proposedEditors.push(editor);
+
+      // Attach toolbar to this option's mount
+      const toolbar = createFormattingToolbar(editor);
+      mountEl.appendChild(toolbar);
+      toolbar.addEventListener('mousedown', e => {
+        e.preventDefault();
+        activateOption(i, true);
+      });
+
+      // Accept button
+      const acceptBtn = document.getElementById(`proposal-accept-${i}`) as HTMLButtonElement;
+      acceptBtns.push(acceptBtn);
+      acceptBtn.addEventListener('click', () => handleProposalResponse('accept', i));
+
+      editor.commands.setContent(opt.replacement ?? '', { contentType: 'markdown' });
+
+      // Justification
+      const justSection = document.getElementById(`proposal-just-section-${i}`) as HTMLElement;
+      const justContent = document.getElementById(`proposal-just-content-${i}`) as HTMLElement;
+      if (opt.justification) {
+        justContent.innerHTML = renderMarkdownHtml(opt.justification);
+        justSection.style.display = '';
+      }
+
+      section.addEventListener('mousedown', event => {
+        const target = event.target as HTMLElement | null;
+        if (!target) return;
+        if (target.closest('.proposal-option-accept')) return;
+        if (target.closest('.proposal-pane-wrap-review')) return;
+        activateOption(i);
+      });
+    });
+
+    const applyPanelHeights = () => {
+      const redlineWrap = root!.querySelector<HTMLElement>('.proposal-redline-wrap');
+      const editWraps = Array.from(root!.querySelectorAll<HTMLElement>('.proposal-edit-wrap'));
+      const justBodies = Array.from(root!.querySelectorAll<HTMLElement>('.proposal-justification-body'));
+      const actionsEl = root!.querySelector<HTMLElement>('.proposal-actions');
+
+      if (!redlineWrap || editWraps.length === 0) return;
+
+      // Clear previous constraints
+      redlineWrap.style.maxHeight = '';
+      editWraps.forEach(w => { w.style.maxHeight = ''; });
+      justBodies.forEach(b => { b.style.maxHeight = ''; b.style.overflow = ''; });
+
+      // Measure natural justification body heights (unconstrained)
+      const totalJustNaturalHeight = justBodies.reduce((s, b) => s + b.scrollHeight, 0);
+
+      // Fixed chrome: actions bar + label/toolbar per section + gaps + padding
+      const actionsHeight = actionsEl?.offsetHeight ?? 40;
+      const numSections = 1 + editWraps.length; // redline + options
+      const chromePerSection = 28; // label row
+      const toolbarHeight = editWraps.length * 34; // toolbar per edit section only
+      const gaps = numSections * 6;
+      const padding = 16;
+      const fixedChrome = actionsHeight + numSections * chromePerSection + toolbarHeight + gaps + padding;
+
+      // Budget for scrollable panel bodies
+      const budget = Math.max(100, window.innerHeight - fixedChrome - totalJustNaturalHeight);
+      const maxPerPanel = Math.floor(budget / numSections);
+      const cappedHeight = Math.max(66, maxPerPanel);
+
+      redlineWrap.style.maxHeight = `${cappedHeight}px`;
+      redlineWrap.style.overflow = 'auto';
+      editWraps.forEach(w => {
+        w.style.maxHeight = `${cappedHeight}px`;
+        w.style.overflow = 'auto';
+      });
+      // Let justification bodies show fully (no max-height constraint)
+    };
+
+    const schedulePanelHeightPasses = () => {
+      requestAnimationFrame(() => {
+        applyPanelHeights();
+        updateOptionOpacity();
+        centerActiveRedlineChange();
+      });
+      setTimeout(() => {
+        applyPanelHeights();
+        updateOptionOpacity();
+        centerActiveRedlineChange();
+      }, 0);
+      setTimeout(() => {
+        applyPanelHeights();
+        updateOptionOpacity();
+        centerActiveRedlineChange();
+      }, 50);
+    };
+
+    schedulePanelHeightPasses();
+    window.addEventListener('resize', applyPanelHeights, { passive: true });
   };
-
-  acceptBtn.addEventListener('click', () => handleProposalResponse('accept'));
-  cancelBtn.addEventListener('click', () => handleProposalResponse('skip'));
 
   // --- Handle proposalInit from extension ---
   window.addEventListener('message', (event: MessageEvent) => {
     const msg = event.data;
     if (msg.type !== 'proposalInit') return;
+
     // Apply color settings if provided (same as main editor settingsUpdate)
     if (msg.colors && typeof msg.colors === 'object') {
       (window as any).md4hColors = msg.colors;
       applyColors({ ...DEFAULT_COLORS, ...(msg.colors as object) });
     }
-    // Load content into both editors
+
     currentOriginalMarkdown = msg.original ?? '';
     currentDisplayContextBefore = msg.displayContextBefore ?? '';
     currentDisplayContextAfter = msg.displayContextAfter ?? '';
-    currentJustification = msg.justification ?? '';
-    const justificationSection = document.getElementById('proposal-justification-section')!;
-    const justificationEl = document.getElementById('proposal-justification')!;
-    if (currentJustification) {
-      justificationEl.innerHTML = renderMarkdownHtml(currentJustification);
-      justificationSection.style.display = '';
-    } else {
-      justificationEl.innerHTML = '';
-      justificationSection.style.display = 'none';
-    }
-    proposedEditor.commands.setContent(msg.replacement ?? '', { contentType: 'markdown' });
-    renderReviewPane();
-    updateToolbarStates();
+
+    // options: array of {replacement, justification?}; fall back to legacy single replacement
+    const rawOptions: OptionData[] = Array.isArray(msg.options) && msg.options.length > 0
+      ? msg.options.slice(0, 3)
+      : [{ replacement: msg.replacement ?? '', justification: msg.justification ?? null }];
+
+    buildLayout(rawOptions);
+    // Render after setContent rAF fires so redline reflects actual content
+    requestAnimationFrame(() => {
+      renderReviewPane();
+      updateToolbarStates();
+    });
+
     // Reset timer
     hasPendingHandoff = false;
     hasCopiedResumePrompt = false;
@@ -3016,3 +3184,5 @@ function initializeProposalMode() {
   // Signal ready to extension host
   vscode.postMessage({ type: 'proposalReady' });
 }
+
+

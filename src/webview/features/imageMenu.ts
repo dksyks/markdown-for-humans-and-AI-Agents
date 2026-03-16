@@ -14,6 +14,9 @@
  * - Show In Workspace (local images only)
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import type { Editor } from '@tiptap/core';
 
 // Track currently open menu to close on outside click
@@ -160,7 +163,7 @@ export function showImageMenu(
         if ((window as any).showImageRenameDialog) {
           (window as any).showImageRenameDialog(img, vscodeApi);
         } else {
-          console.warn('[MD4H] Rename dialog not available yet');
+          console.warn(`${BUILD_TAG} Rename dialog not available yet`);
         }
       } else if (action === 'openInFinder') {
         hideImageMenu(menu);

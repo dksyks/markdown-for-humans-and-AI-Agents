@@ -13,6 +13,9 @@
  * This enables pasting from Word, Google Docs, Notion, web pages, AND raw markdown.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import TurndownService from 'turndown';
 import MarkdownIt from 'markdown-it';
 
@@ -106,7 +109,7 @@ export function htmlToMarkdown(html: string): string {
         .trim()
     );
   } catch (error) {
-    console.error('[MD4H] Error converting HTML to markdown:', error);
+    console.error(`${BUILD_TAG} Error converting HTML to markdown:`, error);
     // Return empty string on error - caller should fall back to plain text
     throw error;
   }

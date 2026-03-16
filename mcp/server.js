@@ -11,17 +11,151 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const SELECTION_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Selection.json');
 const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.json');
-const RESPONSE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Response.json');
-const PROPOSAL_STATE_DIR = path.join(os.tmpdir(), 'MarkdownForHumans-ProposalState');
 const SELECTION_REVEAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-SelectionReveal.json');
-const SELECTION_REVEAL_RESPONSE_TEMP_FILE = path.join(
-  os.tmpdir(),
-  'MarkdownForHumans-SelectionRevealResponse.json'
-);
+const ACTIVE_INSTANCE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-ActiveInstance.json');
+const INSTANCE_TEMP_DIR_PREFIX = 'MarkdownForHumans-';
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const SELECTION_REVEAL_TIMEOUT_MS = 8000;
+const MCP_RESPONSE_POLL_MS = 100;
+
+function getInstanceTempDir(instanceId) {
+  return path.join(os.tmpdir(), `${INSTANCE_TEMP_DIR_PREFIX}${instanceId}`);
+}
+
+function getSelectionTempFilePath(instanceId) {
+  return path.join(getInstanceTempDir(instanceId), 'Selection.json');
+}
+
+function encodeSelectionFilePath(filePath) {
+  return Buffer.from(filePath, 'utf8').toString('hex');
+}
+
+function getSelectionStateFilePathForDocument(filePath, instanceId) {
+  return path.join(
+    getInstanceTempDir(instanceId),
+    `Selection-${encodeSelectionFilePath(filePath)}.json`
+  );
+}
+
+function getResponseTempFilePath(instanceId) {
+  return path.join(getInstanceTempDir(instanceId), 'Response.json');
+}
+
+function getProposalStateDir(instanceId) {
+  return path.join(getInstanceTempDir(instanceId), 'ProposalState');
+}
+
+function getProposalStateFilePathForInstance(id, instanceId) {
+  return path.join(getProposalStateDir(instanceId), `${id}.json`);
+}
+
+function getSelectionRevealResponseTempFilePath(instanceId) {
+  return path.join(getInstanceTempDir(instanceId), 'SelectionRevealResponse.json');
+}
+
+function readActiveInstanceMetadata() {
+  try {
+    if (!fs.existsSync(ACTIVE_INSTANCE_TEMP_FILE)) {
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(ACTIVE_INSTANCE_TEMP_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function listInstanceIds() {
+  try {
+    return fs.readdirSync(os.tmpdir(), { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && entry.name.startsWith(INSTANCE_TEMP_DIR_PREFIX))
+      .map(entry => entry.name.slice(INSTANCE_TEMP_DIR_PREFIX.length));
+  } catch {
+    return [];
+  }
+}
+
+function readSelectionForActiveInstance() {
+  const active = readActiveInstanceMetadata();
+  if (!active?.instance_id) {
+    return null;
+  }
+
+  const selectionPath = getSelectionTempFilePath(active.instance_id);
+  if (!fs.existsSync(selectionPath)) {
+    return null;
+  }
+
+  return JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
+}
+
+function readSelectionForFile(filePath) {
+  if (!filePath) {
+    return null;
+  }
+
+  for (const instanceId of listInstanceIds()) {
+    const selectionPath = getSelectionStateFilePathForDocument(filePath, instanceId);
+    if (!fs.existsSync(selectionPath)) {
+      continue;
+    }
+
+    try {
+      const data = JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
+      if (data?.file === filePath) {
+        return data;
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+function normalizeSelectionResult(data) {
+  if (!data) {
+    return null;
+  }
+
+  const normalizedData = JSON.parse(JSON.stringify(data).replace(/\u00a0/g, ' '));
+  if ('selected' in normalizedData) {
+    normalizedData.selection = normalizedData.selected;
+    delete normalizedData.selected;
+  }
+  return normalizedData;
+}
+
+function findResponseById(id, kind) {
+  for (const instanceId of listInstanceIds()) {
+    const filePath = kind === 'selectionReveal'
+      ? getSelectionRevealResponseTempFilePath(instanceId)
+      : getResponseTempFilePath(instanceId);
+
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (data.id === id) {
+        return data;
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+function readProposalStateFromAnyInstance(id) {
+  for (const instanceId of listInstanceIds()) {
+    const stateFilePath = getProposalStateFilePathForInstance(id, instanceId);
+    if (!fs.existsSync(stateFilePath)) {
+      continue;
+    }
+
+    try {
+      return JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
+    } catch {}
+  }
+
+  return null;
+}
 
 const server = new McpServer({
   name: 'markdown-for-humans',
@@ -29,24 +163,64 @@ const server = new McpServer({
 });
 
 server.tool(
-  'get_selection',
-  'Get the currently selected text in the Markdown for Humans editor, along with surrounding context and preceding headings. Call this when the user refers to selected text, "this", "here", or similar references that suggest they have something highlighted in the editor.',
+  'get_active_selection',
+  'Get the currently selected text in the active Markdown for Humans editor, along with surrounding context and preceding headings. Call this when the user refers to selected text, "this", "here", or similar references that suggest they have something highlighted in the active editor.',
   {},
   async () => {
     try {
-      if (!fs.existsSync(SELECTION_TEMP_FILE)) {
+      const data = normalizeSelectionResult(readSelectionForActiveInstance());
+      if (!data) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ selection: null, error: 'No selection data available. Open a markdown file in the Markdown for Humans editor first.' }) }],
+          content: [{ type: 'text', text: JSON.stringify({ selection: null, error: 'No active selection data available. Open a markdown file in the Markdown for Humans editor first.' }) }],
         };
       }
-      const raw = fs.readFileSync(SELECTION_TEMP_FILE, 'utf8');
-      // Normalize non-breaking spaces (\u00a0) to regular spaces so that
-      // the returned text can be used as an exact match against the file.
-      const data = JSON.parse(raw.replace(/\u00a0/g, ' '));
-      // Rename 'selected' field to 'selection' in the returned data
-      if ('selected' in data) {
-        data.selection = data.selected;
-        delete data.selected;
+      return {
+        content: [{ type: 'text', text: JSON.stringify(data) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ selection: null, error: String(err) }) }],
+      };
+    }
+  }
+);
+
+server.tool(
+  'get_selection_for_file',
+  'Get the current Markdown for Humans selection metadata for a specific markdown file, if that file is open in any Markdown for Humans instance. Use this only when the caller explicitly wants the selection for a named file.',
+  {
+    file: z.string().describe('Absolute path to the markdown file whose current MFH selection state should be returned'),
+  },
+  async ({ file }) => {
+    try {
+      const data = normalizeSelectionResult(readSelectionForFile(file));
+      if (!data) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ file, selection: null, error: 'No selection data available for that file. Make sure it is open in Markdown for Humans in this VS Code session.' }) }],
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(data) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ file, selection: null, error: String(err) }) }],
+      };
+    }
+  }
+);
+
+server.tool(
+  'get_selection',
+  'Backward-compatible alias for get_active_selection. Returns the currently selected text in the active Markdown for Humans editor, along with surrounding context and preceding headings.',
+  {},
+  async () => {
+    try {
+      const data = normalizeSelectionResult(readSelectionForActiveInstance());
+      if (!data) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ selection: null, error: 'No active selection data available. Open a markdown file in the Markdown for Humans editor first.' }) }],
+        };
       }
       return {
         content: [{ type: 'text', text: JSON.stringify(data) }],
@@ -61,23 +235,28 @@ server.tool(
 
 server.tool(
   'propose_single_replacement',
-  `Show the user a proposed replacement for selected text in the Markdown for Humans editor.
-Opens a popup panel beside the editor showing the selection and proposed text as WYSIWYG.
-The user can Accept, Edit (modify the replacement inline), or Skip.
-The main editor scrolls to and highlights the selection when the popup opens.
-Returns { status, replacement } where status is "accepted_unchanged", "accepted_changed", "skipped", "in_progress", or "timeout".
-On status "accepted_unchanged" or "accepted_changed": apply the returned replacement to the file, replacing the selection.
+  `Show the user one or more proposed replacements for selected text in the Markdown for Humans editor.
+Opens a popup panel beside the editor. Each option has its own Accept button and optional justification.
+The user can Accept any option (applying it), edit the replacement inline, or Skip All.
+The redline diff updates live as the user edits or moves focus between options.
+Returns { status, replacement, selected_option_index } where status is "applied", "accepted_unchanged", "accepted_changed", "skipped", "in_progress", or "timeout".
+Treat only "applied" as authoritative success.
 Use context_before and context_after to locate the correct occurrence if the text appears multiple times.`,
   {
     selection: z.string().describe('The exact text to replace (as returned by get_selection selection field)'),
-    replacement: z.string().describe('The proposed replacement markdown text'),
+    options: z
+      .array(z.object({
+        replacement: z.string().describe('The proposed replacement markdown text'),
+        justification: z.string().optional().describe('Optional markdown explaining the reasoning behind this option. When supplied, displayed above the replacement editor.'),
+      }))
+      .min(1)
+      .describe('Ordered list of replacement alternatives (max 3; extras ignored). Each has a replacement and optional justification.'),
     file: z.string().optional().describe('Absolute path to the markdown file (file from get_selection)'),
     context_before: z.string().optional().describe('Text immediately before the selection (context_before from get_selection)'),
     context_after: z.string().optional().describe('Text immediately after the selection (context_after from get_selection)'),
     headings_before: z.array(z.string()).optional().describe('Up to 5 headings preceding the selection, closest first (headings_before from get_selection)'),
-    justification: z.string().optional().describe('Optional markdown explaining the reasoning behind this proposed change. When supplied, displayed between the redline and editing panels.'),
   },
-  async ({ selection, replacement, file, context_before, context_after, headings_before, justification }) => {
+  async ({ selection, options, file, context_before, context_after, headings_before }) => {
     try {
       const id = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
@@ -91,7 +270,10 @@ Use context_before and context_after to locate the correct occurrence if the tex
             source_instance_id: selectionMetadata.instance_id ?? null,
           }
         : { file: file ?? null };
-      clearFileIfExists(RESPONSE_TEMP_FILE);
+      const cappedOptions = options.slice(0, 3).map(o => ({
+        replacement: o.replacement,
+        justification: o.justification ?? null,
+      }));
       // Write proposal for extension to pick up
       fs.writeFileSync(
         PROPOSAL_TEMP_FILE,
@@ -99,17 +281,16 @@ Use context_before and context_after to locate the correct occurrence if the tex
           id,
           ...routingMetadata,
           original: selection,
-          replacement,
+          options: cappedOptions,
           context_before: context_before ?? null,
           context_after: context_after ?? null,
           headings_before: headings_before ?? null,
-          justification: justification ?? null,
         }),
         'utf8'
       );
 
       const result = await waitForResponse(id, TIMEOUT_MS, {
-        responseFilePath: RESPONSE_TEMP_FILE,
+        responseKind: 'proposal',
         timeoutResult: {
           id,
           status: 'timeout',
@@ -118,7 +299,7 @@ Use context_before and context_after to locate the correct occurrence if the tex
       });
       const finalResult = await applyServerFallbackIfNeeded(result, {
         original: selection,
-        replacement,
+        replacement: result.replacement,
         context_before: context_before ?? null,
         context_after: context_after ?? null,
       });
@@ -182,7 +363,13 @@ Pass file when available so the extension can target the correct open markdown d
           selection: z
             .string()
             .describe('The exact text to replace for this step'),
-          replacement: z.string().describe('The proposed replacement markdown text for this step'),
+          options: z
+            .array(z.object({
+              replacement: z.string().describe('The proposed replacement markdown text'),
+              justification: z.string().optional().describe('Optional markdown explaining the reasoning behind this option.'),
+            }))
+            .min(1)
+            .describe('Ordered list of replacement alternatives for this step (max 3; extras ignored).'),
           context_before: z
             .string()
             .optional()
@@ -195,10 +382,6 @@ Pass file when available so the extension can target the correct open markdown d
             .array(z.string())
             .optional()
             .describe('Up to 5 headings preceding this selection, closest first (headings_before from get_selection)'),
-          justification: z
-            .string()
-            .optional()
-            .describe('Optional markdown explaining the reasoning behind this proposed change. When supplied, displayed between the redline and editing panels.'),
         })
       )
       .min(1)
@@ -209,8 +392,6 @@ Pass file when available so the extension can target the correct open markdown d
       const id = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
       const routingMetadata = buildBatchRoutingMetadata(selectionMetadata, file ?? null);
-      clearFileIfExists(RESPONSE_TEMP_FILE);
-
       fs.writeFileSync(
         PROPOSAL_TEMP_FILE,
         JSON.stringify({
@@ -218,18 +399,20 @@ Pass file when available so the extension can target the correct open markdown d
           ...routingMetadata,
           proposals: changes.map(change => ({
             original: change.selection,
-            replacement: change.replacement,
+            options: change.options.slice(0, 3).map(o => ({
+              replacement: o.replacement,
+              justification: o.justification ?? null,
+            })),
             context_before: change.context_before ?? null,
             context_after: change.context_after ?? null,
             headings_before: change.headings_before ?? null,
-            justification: change.justification ?? null,
           })),
         }),
         'utf8'
       );
 
       const result = await waitForResponse(id, TIMEOUT_MS, {
-        responseFilePath: RESPONSE_TEMP_FILE,
+        responseKind: 'proposal',
         timeoutResult: {
           id,
           file: routingMetadata.file ?? null,
@@ -241,7 +424,7 @@ Pass file when available so the extension can target the correct open markdown d
         file: routingMetadata.file ?? null,
         changes: changes.map(change => ({
           original: change.selection,
-          replacement: change.replacement,
+          replacement: change.options[0]?.replacement ?? '',
           context_before: change.context_before ?? null,
           context_after: change.context_after ?? null,
         })),
@@ -330,7 +513,6 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
         context_after: context_after ?? null,
       }, file ?? null);
 
-      clearFileIfExists(SELECTION_REVEAL_RESPONSE_TEMP_FILE);
       fs.writeFileSync(
         SELECTION_REVEAL_TEMP_FILE,
         JSON.stringify({
@@ -345,7 +527,7 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
       );
 
       const result = await waitForResponse(id, SELECTION_REVEAL_TIMEOUT_MS, {
-        responseFilePath: SELECTION_REVEAL_RESPONSE_TEMP_FILE,
+        responseKind: 'selectionReveal',
         timeoutResult: {
           id,
           status: 'error',
@@ -407,11 +589,7 @@ function normalizeForMatching(markdown) {
 
 function readSelectionMetadata() {
   try {
-    if (!fs.existsSync(SELECTION_TEMP_FILE)) {
-      return null;
-    }
-
-    return JSON.parse(fs.readFileSync(SELECTION_TEMP_FILE, 'utf8'));
+    return readSelectionForActiveInstance();
   } catch {
     return null;
   }
@@ -598,21 +776,8 @@ function clearFileIfExists(filePath) {
   } catch {}
 }
 
-function getProposalStateFilePath(id) {
-  return path.join(PROPOSAL_STATE_DIR, `${id}.json`);
-}
-
 function readProposalState(id) {
-  const stateFilePath = getProposalStateFilePath(id);
-  if (!fs.existsSync(stateFilePath)) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
-  } catch {
-    return null;
-  }
+  return readProposalStateFromAnyInstance(id);
 }
 
 function isFinalProposalState(state) {
@@ -721,16 +886,18 @@ async function applyServerBatchFallbackIfNeeded(result, batch) {
  * Uses fs.watch with a polling fallback. Resolves on response or timeout.
  */
 function waitForResponse(id, timeoutMs, options) {
-  const { responseFilePath, timeoutResult } = options;
+  const { responseKind, timeoutResult } = options;
 
   return new Promise((resolve) => {
     let watcher;
     let resolved = false;
+    let iv;
 
     const finish = (value) => {
       if (resolved) return;
       resolved = true;
       try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
       resolve(value);
     };
 
@@ -740,24 +907,24 @@ function waitForResponse(id, timeoutMs, options) {
 
     const check = () => {
       try {
-        if (!fs.existsSync(responseFilePath)) return;
-        const data = JSON.parse(fs.readFileSync(responseFilePath, 'utf8'));
-        if (data.id !== id) return;
+        const data = findResponseById(id, responseKind);
+        if (!data) return;
         clearTimeout(deadline);
         finish(data);
       } catch {}
     };
 
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, MCP_RESPONSE_POLL_MS);
+
     try {
-      watcher = fs.watch(path.dirname(responseFilePath), (_event, filename) => {
-        if (filename && filename.includes('Response')) check();
+      watcher = fs.watch(os.tmpdir(), (_event, filename) => {
+        if (filename && filename.startsWith(INSTANCE_TEMP_DIR_PREFIX)) check();
       });
     } catch {
-      // Fallback to polling if fs.watch is unavailable
-      const iv = setInterval(() => {
-        if (resolved) { clearInterval(iv); return; }
-        check();
-      }, 1000);
+      // Polling is already active above.
     }
 
     check(); // Check immediately in case file already exists
@@ -766,16 +933,17 @@ function waitForResponse(id, timeoutMs, options) {
 
 function waitForProposalState(id, options = {}) {
   const { pendingResult } = options;
-  const stateFilePath = getProposalStateFilePath(id);
 
   return new Promise((resolve) => {
     let watcher;
     let resolved = false;
+    let iv;
 
     const finish = (value) => {
       if (resolved) return;
       resolved = true;
       try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
       resolve(value);
     };
 
@@ -793,29 +961,23 @@ function waitForProposalState(id, options = {}) {
       return false;
     };
 
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, MCP_RESPONSE_POLL_MS);
+
     if (check()) {
       return;
     }
 
-    const stateDir = path.dirname(stateFilePath);
     try {
-      watcher = fs.watch(stateDir, (_event, filename) => {
-        if (filename && filename.includes(`${id}.json`)) {
+      watcher = fs.watch(os.tmpdir(), (_event, filename) => {
+        if (filename && filename.startsWith(INSTANCE_TEMP_DIR_PREFIX)) {
           check();
         }
       });
     } catch {
-      // Fallback to polling if fs.watch is unavailable
-      const iv = setInterval(() => {
-        if (resolved) {
-          clearInterval(iv);
-          return;
-        }
-
-        if (check()) {
-          clearInterval(iv);
-        }
-      }, 1000);
+      // Polling is already active above.
     }
 
     setTimeout(() => {

@@ -12,6 +12,9 @@
  * @module BubbleMenuView
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import { MERMAID_TEMPLATES } from './mermaidTemplates';
 import { showTableInsertDialog } from './features/tableInsert';
 import { showLinkDialog } from './features/linkDialog';
@@ -513,11 +516,11 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         const vscodeApi = window.vscode;
         if (vscodeApi && editor) {
           showImageInsertDialog(editor, vscodeApi).catch(error => {
-            console.error('[MD4H] Failed to show image insert dialog:', error);
+            console.error(`${BUILD_TAG} Failed to show image insert dialog:`, error);
           });
         } else {
           console.warn(
-            '[MD4H] Cannot show image insert dialog: vscode API or editor not available'
+            `${BUILD_TAG} Cannot show image insert dialog: vscode API or editor not available`
           );
         }
       },

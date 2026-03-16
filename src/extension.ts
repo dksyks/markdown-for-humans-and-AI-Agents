@@ -5,7 +5,7 @@
  */
 
 import * as vscode from 'vscode';
-import { MarkdownEditorProvider } from './editor/MarkdownEditorProvider';
+import { cleanupStaleMcpMetadataOnActivate, MarkdownEditorProvider } from './editor/MarkdownEditorProvider';
 import { WordCountFeature } from './features/wordCount';
 import { getActiveWebviewPanel } from './activeWebview';
 import { outlineViewProvider } from './features/outlineView';
@@ -13,6 +13,8 @@ import { startProposalWatcher } from './features/proposalWatcher';
 import { startSelectionRevealWatcher } from './features/selectionRevealWatcher';
 
 export function activate(context: vscode.ExtensionContext) {
+  cleanupStaleMcpMetadataOnActivate();
+
   // Register the custom editor provider
   const { disposable, provider } = MarkdownEditorProvider.register(context);
   context.subscriptions.push(disposable);

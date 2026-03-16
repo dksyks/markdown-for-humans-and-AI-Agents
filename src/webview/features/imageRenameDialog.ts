@@ -52,7 +52,7 @@ export function showImageRenameDialog(img: HTMLImageElement, vscodeApi: VsCodeAp
     imagePath.startsWith('https://') ||
     imagePath.startsWith('data:')
   ) {
-    console.warn('[MD4H] Cannot rename external images');
+    console.warn(`${BUILD_TAG} Cannot rename external images`);
     return;
   }
 
@@ -520,7 +520,7 @@ export function showImageRenameDialog(img: HTMLImageElement, vscodeApi: VsCodeAp
         }
       })
       .catch(error => {
-        console.warn('[MD4H] Failed to fetch image references:', error);
+        console.warn(`${BUILD_TAG} Failed to fetch image references:`, error);
         impactLoading.textContent = 'References unavailable';
       });
   } else {

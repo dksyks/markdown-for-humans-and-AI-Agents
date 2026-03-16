@@ -4,6 +4,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for details.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -17,13 +20,17 @@ import {
 import { applyProposalReplacement } from './proposalReplacement';
 import { findProposalMatch } from './proposalReplacement';
 
+export interface ProposalOption {
+  replacement: string;
+  justification?: string | null;
+}
+
 export interface Proposal {
   original: string;
-  replacement: string;
+  options: ProposalOption[];
   context_before: string | null;
   context_after: string | null;
   headings_before?: string[] | null;
-  justification?: string | null;
 }
 
 export interface ProposalBatchRequest {
@@ -46,6 +53,7 @@ interface ProposalResult {
   context_after: string | null;
   status: string;
   replacement: string | null;
+  selected_option_index?: number | null;
 }
 
 interface ProposalStatePayload {
@@ -60,6 +68,7 @@ interface ProposalStatePayload {
   context_before?: string | null;
   context_after?: string | null;
   replacement?: string | null;
+  selected_option_index?: number | null;
   progress?: {
     current: number;
     total: number;
@@ -214,7 +223,7 @@ export class ProposalPanel {
     const fullMarkdown = doc.getText();
     const match = findProposalMatch(fullMarkdown, {
       original: this._proposal.original,
-      replacement: this._proposal.replacement,
+      replacement: this._proposal.options[0]?.replacement ?? '',
       context_before: this._proposal.context_before,
       context_after: this._proposal.context_after,
     });
@@ -237,13 +246,15 @@ export class ProposalPanel {
     }
 
     if (msg.type === 'proposalResponse') {
-      const { status, replacement } = msg as { status: string; replacement: string | null };
+      const { status, replacement, selected_option_index } = msg as { status: string; replacement: string | null; selected_option_index?: number | null };
 
       let appliedStatus = status;
 
       if (status === 'accept' && replacement) {
         const applied = await this._applyReplacement(replacement);
-        const unchanged = replacement === this._proposal.replacement;
+        const optionIndex = selected_option_index ?? 0;
+        const originalOptionReplacement = this._proposal.options[optionIndex]?.replacement ?? '';
+        const unchanged = replacement === originalOptionReplacement;
         appliedStatus = applied ? 'applied' : (unchanged ? 'accept_unchanged' : 'accept_changed');
         await vscode.env.clipboard.writeText(replacement);
       } else if (status === 'timeout' && replacement) {
@@ -254,6 +265,7 @@ export class ProposalPanel {
         ...this._proposal,
         status: appliedStatus,
         replacement: replacement ?? null,
+        selected_option_index: selected_option_index ?? null,
       });
 
       if (this._shouldAdvanceToNextProposal(appliedStatus)) {
@@ -277,7 +289,7 @@ export class ProposalPanel {
         this._writeResponsePayload(payload);
         this._writeProposalState(payload);
       } catch (err) {
-        console.warn('[MD4H] Failed to write response temp file:', err);
+        console.warn(`${BUILD_TAG} Failed to write response temp file:`, err);
       }
 
       this._panel.dispose();
@@ -296,7 +308,7 @@ export class ProposalPanel {
         this._writeResponsePayload(payload);
         this._writeProposalState(payload);
       } catch (err) {
-        console.warn('[MD4H] Failed to write pending proposal state:', err);
+        console.warn(`${BUILD_TAG} Failed to write pending proposal state:`, err);
       }
       return;
     }
@@ -321,6 +333,7 @@ export class ProposalPanel {
         context_after: this._proposal.context_after,
         status: finalStatus,
         replacement: this._proposalResults[0]?.replacement ?? null,
+        selected_option_index: this._proposalResults[0]?.selected_option_index ?? null,
       };
     }
 
@@ -335,6 +348,7 @@ export class ProposalPanel {
         context_before: result.context_before,
         context_after: result.context_after,
         replacement: result.replacement,
+        selected_option_index: result.selected_option_index ?? null,
       })),
     };
   }
@@ -389,7 +403,7 @@ export class ProposalPanel {
         'utf8'
       );
     } catch (err) {
-      console.warn('[MD4H] Failed to write proposal state file:', err);
+      console.warn(`${BUILD_TAG} Failed to write proposal state file:`, err);
     }
   }
 
@@ -406,7 +420,7 @@ export class ProposalPanel {
   private async _applyReplacement(replacement: string): Promise<boolean> {
     const doc = this._sourceDocument;
     if (!doc) {
-      console.warn('[MD4H] _applyReplacement: no source document');
+      console.warn(`${BUILD_TAG} _applyReplacement: no source document`);
       return false;
     }
 
@@ -420,7 +434,7 @@ export class ProposalPanel {
 
     if (!appliedReplacement) {
       vscode.window.showWarningMessage(
-        '[MD4H] Could not locate original text in file â€” replacement not applied. Text was copied to clipboard.'
+        `${BUILD_TAG} Could not locate original text in file \u2014 replacement not applied. Text was copied to clipboard.`
       );
       return false;
     }
@@ -433,12 +447,12 @@ export class ProposalPanel {
       const success = await vscode.workspace.applyEdit(edit);
       if (!success) {
         vscode.window.showWarningMessage(
-          '[MD4H] Failed to apply replacement â€” text was copied to clipboard.'
+          `${BUILD_TAG} Failed to apply replacement \u2014 text was copied to clipboard.`
         );
       }
       return success;
     } catch (err) {
-      console.warn('[MD4H] _applyReplacement error:', err);
+      console.warn(`${BUILD_TAG} _applyReplacement error:`, err);
       return false;
     }
   }
@@ -538,7 +552,7 @@ function resolveProposalSourceContext(proposal: ProposalRequest): {
     for (const openWebview of getOpenWebviews()) {
       const match = findProposalMatch(openWebview.document.getText(), {
         original: primaryProposal.original,
-        replacement: primaryProposal.replacement,
+        replacement: primaryProposal.options[0]?.replacement ?? '',
         context_before: primaryProposal.context_before,
         context_after: primaryProposal.context_after,
       });
@@ -563,10 +577,9 @@ function normalizeProposalQueue(request: ProposalRequest): Proposal[] {
   return [
     {
       original: request.original,
-      replacement: request.replacement,
+      options: (request.options ?? []).slice(0, 3),
       context_before: request.context_before,
       context_after: request.context_after,
-      justification: request.justification,
     },
   ];
 }

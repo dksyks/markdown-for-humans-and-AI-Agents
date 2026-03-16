@@ -4,6 +4,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for details.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -23,20 +26,34 @@ export function readPendingProposal(
 
   const data = JSON.parse(fs.readFileSync(proposalFilePath, 'utf8')) as ProposalRequest;
   if (!data.id) return null;
-  if (!Array.isArray(data.proposals) && (!data.original || typeof data.replacement !== 'string')) {
+  if (!Array.isArray(data.proposals) && (!data.original || (!Array.isArray(data.options) || data.options.length === 0))) {
     return null;
   }
   if (Array.isArray(data.proposals) && data.proposals.length === 0) {
     return null;
   }
 
-  try {
-    fs.unlinkSync(proposalFilePath);
-  } catch {
-    // Ignore cleanup failures; the proposal has already been read.
+  return data;
+}
+
+export function consumePendingProposal(
+  proposalId: string,
+  proposalFilePath: string = PROPOSAL_TEMP_FILE
+): boolean {
+  if (!fs.existsSync(proposalFilePath)) {
+    return false;
   }
 
-  return data;
+  try {
+    const data = JSON.parse(fs.readFileSync(proposalFilePath, 'utf8')) as ProposalRequest;
+    if (data.id !== proposalId) {
+      return false;
+    }
+    fs.unlinkSync(proposalFilePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function shouldHandleProposal(proposal: ProposalRequest): boolean {
@@ -66,7 +83,7 @@ function doesDocumentMatchProposal(fullMarkdown: string, proposal: ProposalReque
     !!primaryProposal.original &&
     findProposalMatch(fullMarkdown, {
       original: primaryProposal.original,
-      replacement: primaryProposal.replacement,
+      replacement: primaryProposal.options?.[0]?.replacement ?? '',
       context_before: primaryProposal.context_before,
       context_after: primaryProposal.context_after,
     }) !== null
@@ -86,6 +103,7 @@ export function startProposalWatcher(context: vscode.ExtensionContext): vscode.D
       if (!data) return;
       if (!data.id || data.id === lastId) return;
       if (!shouldHandleProposal(data)) return;
+      if (!consumePendingProposal(data.id)) return;
       lastId = data.id;
       ProposalPanel.show(context, data);
     } catch {
@@ -99,7 +117,7 @@ export function startProposalWatcher(context: vscode.ExtensionContext): vscode.D
       if (filename && filename.includes('Proposal')) check();
     });
   } catch (err) {
-    console.warn('[MD4H] proposalWatcher: fs.watch unavailable, changes will not be detected automatically', err);
+    console.warn(`${BUILD_TAG} proposalWatcher: fs.watch unavailable, changes will not be detected automatically`, err);
   }
 
   check(); // Check on startup in case a proposal was written before extension activated

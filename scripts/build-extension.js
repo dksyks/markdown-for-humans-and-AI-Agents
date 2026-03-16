@@ -20,6 +20,8 @@ const args = process.argv.slice(2);
 const isProduction = args.includes('--prod') || process.env.NODE_ENV === 'production';
 const isWatch = args.includes('--watch');
 const noSourcemap = args.includes('--no-sourcemap');
+const buildDate = new Date();
+const buildTime = `${String(buildDate.getHours()).padStart(2, '0')}:${String(buildDate.getMinutes()).padStart(2, '0')}`;
 
 const buildOptions = {
   entryPoints: ['src/extension.ts'],
@@ -33,6 +35,9 @@ const buildOptions = {
   treeShaking: true,
   // Remove console.log/debug/info calls in production bundles (keep warn/error)
   pure: isProduction ? ['console.log', 'console.debug', 'console.info'] : [],
+  define: {
+    __BUILD_TIME__: JSON.stringify(buildTime),
+  },
 };
 
 async function build() {

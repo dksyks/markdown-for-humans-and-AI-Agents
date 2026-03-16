@@ -10,6 +10,9 @@
  * Applies export theme settings and embeds Mermaid diagrams as high-quality images.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -151,14 +154,14 @@ export async function exportDocument(
               }
             } catch (error) {
               // Log error but don't fail export - opening is a convenience feature
-              console.warn('[MD4H] Failed to open PDF:', error);
+              console.warn(`${BUILD_TAG} Failed to open PDF:`, error);
             }
           }
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         vscode.window.showErrorMessage(`Export failed: ${errorMessage}`);
-        console.error('[MD4H] Export error:', error);
+        console.error(`${BUILD_TAG} Export error:`, error);
       }
     }
   );
@@ -498,7 +501,7 @@ async function exportToPDF(
     try {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
     } catch (cleanupError) {
-      console.warn('[MD4H] Failed to clean up temporary export directory:', cleanupError);
+      console.warn(`${BUILD_TAG} Failed to clean up temporary export directory:`, cleanupError);
     }
   }
 }
@@ -982,7 +985,7 @@ async function parseParagraphChildren(
               // security concerns with fetching arbitrary remote resources.
               // Workaround: Download images locally before exporting to Word.
               // TODO: Consider adding a user-facing warning when document contains remote images.
-              console.warn(`[MD4H] Word export: Skipping remote image: ${resolvableSrc}`);
+              console.warn(`${BUILD_TAG} Word export: Skipping remote image: ${resolvableSrc}`);
             } else {
               // Local file or vscode-webview://
               let absolutePath = resolvableSrc;
@@ -1024,7 +1027,7 @@ async function parseParagraphChildren(
                   }
                 }
               } catch (e) {
-                console.warn('[MD4H] Failed to get image dimensions:', e);
+                console.warn(`${BUILD_TAG} Failed to get image dimensions:`, e);
               }
 
               runs.push(
@@ -1035,7 +1038,7 @@ async function parseParagraphChildren(
               );
             }
           } catch (e) {
-            console.error('[MD4H] Failed to process image in paragraph:', e);
+            console.error(`${BUILD_TAG} Failed to process image in paragraph:`, e);
           }
         }
       } else if (tagName === 'strong' || tagName === 'b') {

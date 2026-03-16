@@ -4,6 +4,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for details.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
@@ -20,33 +23,232 @@ import {
 } from '../activeWebview';
 import { buildResizeBackupLocation, resolveBackupPathWithCollisionDetection } from './imageBackups';
 
-export const SELECTION_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Selection.json');
 export const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.json');
-export const RESPONSE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Response.json');
-export const PROPOSAL_STATE_DIR = path.join(os.tmpdir(), 'MarkdownForHumans-ProposalState');
 export const SELECTION_REVEAL_TEMP_FILE = path.join(
   os.tmpdir(),
   'MarkdownForHumans-SelectionReveal.json'
 );
-export const SELECTION_REVEAL_RESPONSE_TEMP_FILE = path.join(
+export const ACTIVE_INSTANCE_TEMP_FILE = path.join(
   os.tmpdir(),
-  'MarkdownForHumans-SelectionRevealResponse.json'
+  'MarkdownForHumans-ActiveInstance.json'
 );
+export const INSTANCE_TEMP_DIR_PREFIX = 'MarkdownForHumans-';
+
+export function getInstanceTempDir(instanceId: string = getEditorHostInstanceId()): string {
+  return path.join(os.tmpdir(), `${INSTANCE_TEMP_DIR_PREFIX}${instanceId}`);
+}
+
+export const SELECTION_TEMP_FILE = getSelectionTempFilePath();
+export const RESPONSE_TEMP_FILE = getResponseTempFilePath();
+export const PROPOSAL_STATE_DIR = getProposalStateDir();
+export const SELECTION_REVEAL_RESPONSE_TEMP_FILE = getSelectionRevealResponseTempFilePath();
+
+export function getSelectionTempFilePath(instanceId: string = getEditorHostInstanceId()): string {
+  return path.join(getInstanceTempDir(instanceId), 'Selection.json');
+}
+
+function encodeSelectionFilePath(documentPath: string): string {
+  return Buffer.from(documentPath, 'utf8').toString('hex');
+}
+
+export function getSelectionStateFilePathForDocument(
+  documentPath: string,
+  instanceId: string = getEditorHostInstanceId()
+): string {
+  return path.join(
+    getInstanceTempDir(instanceId),
+    `Selection-${encodeSelectionFilePath(documentPath)}.json`
+  );
+}
+
+export function getResponseTempFilePath(instanceId: string = getEditorHostInstanceId()): string {
+  return path.join(getInstanceTempDir(instanceId), 'Response.json');
+}
+
+export function getProposalStateDir(instanceId: string = getEditorHostInstanceId()): string {
+  return path.join(getInstanceTempDir(instanceId), 'ProposalState');
+}
+
+export function getSelectionRevealResponseTempFilePath(
+  instanceId: string = getEditorHostInstanceId()
+): string {
+  return path.join(getInstanceTempDir(instanceId), 'SelectionRevealResponse.json');
+}
+
+function ensureInstanceTempDir(instanceId: string = getEditorHostInstanceId()): string {
+  const dir = getInstanceTempDir(instanceId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 function writeSelectionToTempFile(data: object): void {
   try {
-    fs.writeFileSync(SELECTION_TEMP_FILE, JSON.stringify(data, null, 2), 'utf8');
+    ensureInstanceTempDir();
+    fs.writeFileSync(getSelectionTempFilePath(), JSON.stringify(data, null, 2), 'utf8');
   } catch (err) {
-    console.warn('[MD4H] Failed to write selection temp file:', err);
+    console.warn(`${BUILD_TAG} Failed to write selection temp file:`, err);
   }
+}
+
+function writeSelectionStateForDocument(documentPath: string, data: object): void {
+  try {
+    ensureInstanceTempDir();
+    fs.writeFileSync(
+      getSelectionStateFilePathForDocument(documentPath),
+      JSON.stringify(data, null, 2),
+      'utf8'
+    );
+  } catch (err) {
+    console.warn(`${BUILD_TAG} Failed to write selection state file for ${documentPath}:`, err);
+  }
+}
+
+function buildSelectionPayload(
+  documentPath: string,
+  message: {
+    selected?: unknown;
+    context_before?: unknown;
+    context_after?: unknown;
+    headings_before?: unknown;
+  }
+): {
+  instance_id: string;
+  file: string;
+  selected: string | null;
+  context_before: string | null;
+  context_after: string | null;
+  headings_before: string[];
+} {
+  return {
+    instance_id: getEditorHostInstanceId(),
+    file: documentPath,
+    selected: (message.selected as string | null | undefined) ?? null,
+    context_before: (message.context_before as string | null | undefined) ?? null,
+    context_after: (message.context_after as string | null | undefined) ?? null,
+    headings_before: Array.isArray(message.headings_before)
+      ? (message.headings_before as string[])
+      : [],
+  };
 }
 
 function writeSelectionRevealResponse(data: object): void {
   try {
-    fs.writeFileSync(SELECTION_REVEAL_RESPONSE_TEMP_FILE, JSON.stringify(data, null, 2), 'utf8');
+    ensureInstanceTempDir();
+    fs.writeFileSync(
+      getSelectionRevealResponseTempFilePath(),
+      JSON.stringify(data, null, 2),
+      'utf8'
+    );
   } catch (err) {
-    console.warn('[MD4H] Failed to write selection reveal response temp file:', err);
+    console.warn(`${BUILD_TAG} Failed to write selection reveal response temp file:`, err);
   }
+}
+
+function clearFileIfExists(filePath: string): void {
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {}
+}
+
+function clearFileIfExistsWithDebug(filePath: string, reason: string): void {
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      console.log(`${BUILD_TAG} Removed stale temp file (${reason}): ${filePath}`);
+    }
+  } catch (err) {
+    console.warn(`${BUILD_TAG} Failed to remove stale temp file (${reason}): ${filePath}`, err);
+  }
+}
+
+function readSelectionTempFile(): {
+  instance_id?: string | null;
+  file?: string | null;
+} | null {
+  try {
+    const filePath = getSelectionTempFilePath();
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function clearSelectionTempFileIfMatches(documentPath: string): void {
+  const selection = readSelectionTempFile();
+  if (!selection) {
+    return;
+  }
+
+  if (
+    selection.instance_id === getEditorHostInstanceId() &&
+    selection.file === documentPath
+  ) {
+    clearFileIfExistsWithDebug(getSelectionTempFilePath(), `dispose ${documentPath}`);
+  }
+}
+
+function clearSelectionStateFileForDocument(documentPath: string): void {
+  clearFileIfExistsWithDebug(
+    getSelectionStateFilePathForDocument(documentPath),
+    `dispose state ${documentPath}`
+  );
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function writeActiveInstanceMetadata(filePath: string | null): void {
+  try {
+    fs.writeFileSync(
+      ACTIVE_INSTANCE_TEMP_FILE,
+      JSON.stringify(
+        {
+          instance_id: getEditorHostInstanceId(),
+          file: filePath,
+          pid: process.pid,
+          updated_at: Date.now(),
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch (err) {
+    console.warn(`${BUILD_TAG} Failed to write active instance temp file:`, err);
+  }
+}
+
+export function cleanupStaleMcpMetadataOnActivate(): void {
+  console.log(`${BUILD_TAG} Checking temp metadata on activate for instance ${getEditorHostInstanceId()}`);
+  try {
+    for (const entry of fs.readdirSync(os.tmpdir(), { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith(INSTANCE_TEMP_DIR_PREFIX)) {
+        continue;
+      }
+
+      const instanceId = entry.name.slice(INSTANCE_TEMP_DIR_PREFIX.length);
+      const pid = Number.parseInt(instanceId.split('-')[0] ?? '', 10);
+      if (Number.isFinite(pid) && !isPidAlive(pid)) {
+        const staleDir = path.join(os.tmpdir(), entry.name);
+        fs.rmSync(staleDir, { recursive: true, force: true });
+        console.log(`${BUILD_TAG} Removed stale instance temp directory: ${staleDir}`);
+      }
+    }
+  } catch {}
+
+  ensureInstanceTempDir();
+  writeActiveInstanceMetadata(null);
 }
 
 /**
@@ -396,6 +598,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     // Track this editor so proposal routing can find the correct document in this window.
     registerWebviewPanel(webviewPanel, document);
     setActiveWebviewPanel(webviewPanel, document);
+    writeActiveInstanceMetadata(document.uri.fsPath);
 
     // Send initial content to webview
     this.updateWebview(document, webviewPanel.webview);
@@ -428,6 +631,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel.onDidChangeViewState(() => {
       if (webviewPanel.active) {
         markWebviewPanelActive(webviewPanel);
+        writeActiveInstanceMetadata(document.uri.fsPath);
+        webviewPanel.webview.postMessage({ type: 'getSelection' });
       } else if (getActiveWebviewPanel() === webviewPanel) {
         setActiveWebviewPanel(undefined);
       }
@@ -440,6 +645,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       // Clean up pending edits tracking for this document
       this.pendingEdits.delete(document.uri.toString());
       this.lastWebviewContent.delete(document.uri.toString());
+      clearSelectionTempFileIfMatches(document.uri.fsPath);
+      clearSelectionStateFileForDocument(document.uri.fsPath);
       unregisterWebviewPanel(webviewPanel);
     });
   }
@@ -539,15 +746,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         break;
       }
       case 'selectionPush': {
-        const selectionPayload = {
-          instance_id: getEditorHostInstanceId(),
-          file: document.uri.fsPath,
-          selected: message.selected ?? null,
-          context_before: message.context_before ?? null,
-          context_after: message.context_after ?? null,
-          headings_before: message.headings_before ?? [],
-        };
+        const selectionPayload = buildSelectionPayload(document.uri.fsPath, message);
         writeSelectionToTempFile(selectionPayload);
+        writeSelectionStateForDocument(document.uri.fsPath, selectionPayload);
+        writeActiveInstanceMetadata(document.uri.fsPath);
         break;
       }
       case 'saveImage':
@@ -632,15 +834,11 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         void this.handleOpenImage(message, document);
         break;
       case 'selectionResult': {
+        const selectionResult = buildSelectionPayload(document.uri.fsPath, message);
+        writeSelectionToTempFile(selectionResult);
+        writeSelectionStateForDocument(document.uri.fsPath, selectionResult);
+        writeActiveInstanceMetadata(document.uri.fsPath);
         if (this.pendingSelectionResolve) {
-          const selectionResult = {
-            instance_id: getEditorHostInstanceId(),
-            file: document.uri.fsPath,
-            selected: message.selected ?? null,
-            context_before: message.context_before ?? null,
-            context_after: message.context_after ?? null,
-            headings_before: message.headings_before ?? [],
-          };
           this.pendingSelectionResolve(JSON.stringify(selectionResult));
           this.pendingSelectionResolve = undefined;
         }
@@ -793,12 +991,12 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     const fileName = message.fileName as string;
     const insertPosition = message.insertPosition as number | undefined;
 
-    console.log(`[MD4H] Handling workspace image: ${sourcePath}`);
+    console.log(`${BUILD_TAG} Handling workspace image: ${sourcePath}`);
 
     // Get the document base path
     const basePath = this.getImageBasePath(document);
     if (!basePath) {
-      console.error(`[MD4H] Cannot compute relative path: no base directory available`);
+      console.error(`${BUILD_TAG} Cannot compute relative path: no base directory available`);
       return;
     }
 
@@ -820,7 +1018,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
 
     // If path is invalid or image is outside workspace, copy it to workspace
     if (!isValidPath || !withinWorkspace) {
-      console.log(`[MD4H] Image is outside workspace or has invalid path, copying to workspace...`);
+      console.log(`${BUILD_TAG} Image is outside workspace or has invalid path, copying to workspace...`);
 
       try {
         // Read the source image
@@ -895,7 +1093,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           copiedRelativePath = './' + copiedRelativePath;
         }
 
-        console.log(`[MD4H] Image copied to workspace. Path: ${copiedRelativePath}`);
+        console.log(`${BUILD_TAG} Image copied to workspace. Path: ${copiedRelativePath}`);
 
         // Extract alt text from filename (remove extension)
         const altText = fileName.replace(/\.[^.]+$/, '');
@@ -910,7 +1108,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[MD4H] Failed to copy workspace image: ${errorMessage}`);
+        console.error(`${BUILD_TAG} Failed to copy workspace image: ${errorMessage}`);
         vscode.window.showErrorMessage(`Failed to copy image: ${errorMessage}`);
       }
       return;
@@ -922,7 +1120,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       relativePath = './' + relativePath;
     }
 
-    console.log(`[MD4H] Computed relative path: ${relativePath}`);
+    console.log(`${BUILD_TAG} Computed relative path: ${relativePath}`);
 
     // Extract alt text from filename (remove extension)
     const altText = fileName.replace(/\.[^.]+$/, '');
@@ -967,7 +1165,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     }
     const imagesDir = path.join(saveBasePath, imageFolderName);
 
-    console.log(`[MD4H] Saving image "${name}" to folder: ${imagesDir}`);
+    console.log(`${BUILD_TAG} Saving image "${name}" to folder: ${imagesDir}`);
 
     try {
       // Create folder if needed
@@ -1025,7 +1223,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         relativePath = './' + relativePath;
       }
 
-      console.log(`[MD4H] Image saved successfully. Path: ${relativePath}`);
+      console.log(`${BUILD_TAG} Image saved successfully. Path: ${relativePath}`);
 
       webview.postMessage({
         type: 'imageSaved',
@@ -1065,7 +1263,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     const originalHeight = message.originalHeight as number | undefined;
     const imageData = message.imageData as string; // base64 data URL
 
-    console.log(`[MD4H] Resizing image: ${imagePath} to ${newWidth}x${newHeight}`);
+    console.log(`${BUILD_TAG} Resizing image: ${imagePath} to ${newWidth}x${newHeight}`);
 
     try {
       // If absolute path provided (edit in place), use it directly
@@ -1121,7 +1319,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       );
 
       await vscode.workspace.fs.writeFile(vscode.Uri.file(finalBackupPath), originalData);
-      console.log(`[MD4H] Backup created: ${finalBackupPath}`);
+      console.log(`${BUILD_TAG} Backup created: ${finalBackupPath}`);
 
       // Convert base64 data URL to buffer
       const base64Data = imageData.split(',')[1]; // Remove data:image/png;base64, prefix
@@ -1129,7 +1327,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
 
       // Overwrite the original file in place (path remains unchanged).
       await vscode.workspace.fs.writeFile(imageUri, buffer);
-      console.log(`[MD4H] Image resized in-place: ${absolutePath}`);
+      console.log(`${BUILD_TAG} Image resized in-place: ${absolutePath}`);
 
       const relativeBackupPath = path.relative(basePath, finalBackupPath).replace(/\\/g, '/');
       const normalizedBackupPath =
@@ -1148,7 +1346,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to resize image: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to resize image: ${errorMessage}`);
       vscode.window.showErrorMessage(`Failed to resize image: ${errorMessage}`);
       webview.postMessage({
         type: 'imageResized',
@@ -1170,7 +1368,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     const imagePath = message.imagePath as string;
     const backupPath = message.backupPath as string;
 
-    console.log(`[MD4H] Undoing resize: restoring ${imagePath} from ${backupPath}`);
+    console.log(`${BUILD_TAG} Undoing resize: restoring ${imagePath} from ${backupPath}`);
 
     try {
       // Resolve paths using base path
@@ -1196,7 +1394,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       // Restore from backup
       const backupData = await vscode.workspace.fs.readFile(backupUri);
       await vscode.workspace.fs.writeFile(imageUri, backupData);
-      console.log(`[MD4H] Image restored from backup`);
+      console.log(`${BUILD_TAG} Image restored from backup`);
 
       webview.postMessage({
         type: 'imageUndoResized',
@@ -1205,7 +1403,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to undo resize: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to undo resize: ${errorMessage}`);
       vscode.window.showErrorMessage(`Failed to undo resize: ${errorMessage}`);
       webview.postMessage({
         type: 'imageUndoResized',
@@ -1229,7 +1427,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     const newHeight = message.newHeight as number;
     const imageData = message.imageData as string;
 
-    console.log(`[MD4H] Redoing resize: ${imagePath} to ${newWidth}x${newHeight}`);
+    console.log(`${BUILD_TAG} Redoing resize: ${imagePath} to ${newWidth}x${newHeight}`);
 
     try {
       // Resolve image path using base path
@@ -1247,7 +1445,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
 
       // Save resized image
       await vscode.workspace.fs.writeFile(imageUri, buffer);
-      console.log(`[MD4H] Image resize redone successfully`);
+      console.log(`${BUILD_TAG} Image resize redone successfully`);
 
       webview.postMessage({
         type: 'imageRedoResized',
@@ -1256,7 +1454,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to redo resize: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to redo resize: ${errorMessage}`);
       vscode.window.showErrorMessage(`Failed to redo resize: ${errorMessage}`);
       webview.postMessage({
         type: 'imageRedoResized',
@@ -1332,7 +1530,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to compute image references: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to compute image references: ${errorMessage}`);
       webview.postMessage({
         type: 'imageReferences',
         requestId,
@@ -1371,7 +1569,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to open file: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to open file: ${errorMessage}`);
       vscode.window.showErrorMessage(`Failed to open file: ${errorMessage}`);
     }
   }
@@ -1441,7 +1639,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         }
       } catch (error) {
         // Skip files that can't be read
-        console.warn(`[MD4H] Failed to read file ${file.fsPath}: ${error}`);
+        console.warn(`${BUILD_TAG} Failed to read file ${file.fsPath}: ${error}`);
       }
     }
 
@@ -1491,7 +1689,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           filesUpdated++;
         }
       } catch (error) {
-        console.warn(`[MD4H] Failed to update file ${file.fsPath}: ${error}`);
+        console.warn(`${BUILD_TAG} Failed to update file ${file.fsPath}: ${error}`);
       }
     }
 
@@ -1553,7 +1751,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to check rename target: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to check rename target: ${errorMessage}`);
       webview.postMessage({
         type: 'imageRenameCheck',
         requestId,
@@ -1579,7 +1777,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     const updateAllReferences = (message.updateAllReferences as boolean) ?? true;
     const allowOverwrite = (message.allowOverwrite as boolean) ?? false;
 
-    console.log(`[MD4H] Renaming image: ${oldPath} to ${newName}`);
+    console.log(`${BUILD_TAG} Renaming image: ${oldPath} to ${newName}`);
 
     try {
       // Resolve the old path
@@ -1635,14 +1833,14 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         try {
           await vscode.workspace.fs.delete(newUri, { useTrash: true });
         } catch (error) {
-          console.warn(`[MD4H] Could not move existing file to trash, deleting directly: ${error}`);
+          console.warn(`${BUILD_TAG} Could not move existing file to trash, deleting directly: ${error}`);
           await vscode.workspace.fs.delete(newUri);
         }
       }
 
       // Rename the file
       await vscode.workspace.fs.rename(oldUri, newUri);
-      console.log(`[MD4H] File renamed to: ${newFilename}`);
+      console.log(`${BUILD_TAG} File renamed to: ${newFilename}`);
 
       // Calculate new relative path for markdown
       const newRelativePath = path.relative(basePath, absoluteNewPath).replace(/\\/g, '/');
@@ -1687,7 +1885,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to rename image: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to rename image: ${errorMessage}`);
       vscode.window.showErrorMessage(`Failed to rename image: ${errorMessage}`);
       webview.postMessage({
         type: 'imageRenamed',
@@ -1762,7 +1960,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to check image in workspace: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to check image in workspace: ${errorMessage}`);
       webview.postMessage({
         type: 'imageWorkspaceCheck',
         requestId,
@@ -1835,7 +2033,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to get image metadata: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to get image metadata: ${errorMessage}`);
       webview.postMessage({
         type: 'imageMetadata',
         requestId,
@@ -1887,7 +2085,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       await vscode.commands.executeCommand('revealFileInOS', fileUri);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to reveal image in OS: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to reveal image in OS: ${errorMessage}`);
       vscode.window.showErrorMessage(`Failed to reveal image: ${errorMessage}`);
     }
   }
@@ -1935,7 +2133,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       await vscode.commands.executeCommand('revealInExplorer', fileUri);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to reveal image in Explorer: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to reveal image in Explorer: ${errorMessage}`);
       vscode.window.showErrorMessage(`Failed to reveal image: ${errorMessage}`);
     }
   }
@@ -1989,10 +2187,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       }) || { all: true };
       const requestId = (message.requestId as number) || 0;
 
-      console.log('[MD4H] File search request:', { query, filters, requestId });
+      console.log(`${BUILD_TAG} File search request:`, { query, filters, requestId });
 
       if (!query || query.trim().length < 1) {
-        console.log('[MD4H] Empty query, returning empty results');
+        console.log(`${BUILD_TAG} Empty query, returning empty results`);
         webview.postMessage({
           type: 'fileSearchResults',
           results: [],
@@ -2003,7 +2201,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
 
       const workspaceFolders = vscode.workspace.workspaceFolders;
       if (!workspaceFolders || workspaceFolders.length === 0) {
-        console.warn('[MD4H] No workspace folders found');
+        console.warn(`${BUILD_TAG} No workspace folders found`);
         webview.postMessage({
           type: 'fileSearchResults',
           results: [],
@@ -2015,11 +2213,11 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       // More permissive exclude pattern - only exclude truly unnecessary directories
       const excludePattern =
         '{**/node_modules/**,**/.git/**,**/.vscode/**,**/dist/**,**/build/**,**/.next/**,**/coverage/**}';
-      console.log('[MD4H] Searching files with pattern:', excludePattern);
+      console.log(`${BUILD_TAG} Searching files with pattern:`, excludePattern);
 
       // Increase max results to ensure we have enough files to search through
       const allFiles = await vscode.workspace.findFiles('**/*', excludePattern, 10000);
-      console.log('[MD4H] Found', allFiles.length, 'files total');
+      console.log(`${BUILD_TAG} Found`, allFiles.length, 'files total');
 
       let filteredFiles = allFiles;
       if (!filters.all) {
@@ -2041,7 +2239,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           const ext = path.extname(uri.fsPath).toLowerCase();
           return allowedExtensions.has(ext);
         });
-        console.log('[MD4H] After filter:', filteredFiles.length, 'files');
+        console.log(`${BUILD_TAG} After filter:`, filteredFiles.length, 'files');
       }
 
       const queryLower = query.toLowerCase().trim();
@@ -2083,7 +2281,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         return false;
       });
 
-      console.log('[MD4H] Found', matchingFiles.length, 'matching files');
+      console.log(`${BUILD_TAG} Found`, matchingFiles.length, 'matching files');
 
       // Sort results: exact filename matches first, then path matches, then partial matches
       const sortedFiles = matchingFiles.sort((a, b) => {
@@ -2129,14 +2327,14 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         };
       });
 
-      console.log('[MD4H] Sending', results.length, 'results to webview');
+      console.log(`${BUILD_TAG} Sending`, results.length, 'results to webview');
       webview.postMessage({
         type: 'fileSearchResults',
         results,
         requestId,
       });
     } catch (error) {
-      console.error('[MD4H] Error searching files:', error);
+      console.error(`${BUILD_TAG} Error searching files:`, error);
       const requestId = (message.requestId as number) || 0;
       webview.postMessage({
         type: 'fileSearchResults',
@@ -2172,25 +2370,25 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   }): Promise<void> {
     try {
       const url = (message.url as string) || '';
-      console.log('[MD4H] handleOpenExternalLink called with URL:', url);
+      console.log(`${BUILD_TAG} handleOpenExternalLink called with URL:`, url);
 
       if (!url) {
-        console.warn('[MD4H] No URL provided for external link');
+        console.warn(`${BUILD_TAG} No URL provided for external link`);
         return;
       }
 
       // Validate URL format
       if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('mailto:')) {
-        console.warn('[MD4H] Invalid external URL format:', url);
+        console.warn(`${BUILD_TAG} Invalid external URL format:`, url);
         return;
       }
 
-      console.log('[MD4H] Opening external link:', url);
+      console.log(`${BUILD_TAG} Opening external link:`, url);
       await vscode.env.openExternal(vscode.Uri.parse(url));
-      console.log('[MD4H] Successfully opened external link');
+      console.log(`${BUILD_TAG} Successfully opened external link`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('[MD4H] Failed to open external link:', errorMessage, error);
+      console.error(`${BUILD_TAG} Failed to open external link:`, errorMessage, error);
       vscode.window.showErrorMessage(`Failed to open link: ${errorMessage}`);
     }
   }
@@ -2204,11 +2402,11 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   ): Promise<void> {
     const imagePath = String(message.path || '');
     if (!imagePath) {
-      console.warn('[MD4H] No image path provided');
+      console.warn(`${BUILD_TAG} No image path provided`);
       return;
     }
 
-    console.log('[MD4H] handleOpenImage called with path:', imagePath);
+    console.log(`${BUILD_TAG} handleOpenImage called with path:`, imagePath);
 
     // Normalize path: remove ./ prefix if present for path resolution
     const normalizedPath = imagePath.startsWith('./') ? imagePath.slice(2) : imagePath;
@@ -2222,23 +2420,23 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     }
 
     if (!baseDir) {
-      console.error('[MD4H] Cannot resolve image path: no base directory');
+      console.error(`${BUILD_TAG} Cannot resolve image path: no base directory`);
       vscode.window.showWarningMessage('Cannot resolve image path');
       return;
     }
 
     let imageFullPath = path.resolve(baseDir, normalizedPath);
     let imageUri = vscode.Uri.file(imageFullPath);
-    console.log('[MD4H] Trying document-relative path:', imageFullPath);
+    console.log(`${BUILD_TAG} Trying document-relative path:`, imageFullPath);
 
     // Check if file exists at document-relative path
     let fileExists = false;
     try {
       await vscode.workspace.fs.stat(imageUri);
       fileExists = true;
-      console.log('[MD4H] Image found at document-relative path');
+      console.log(`${BUILD_TAG} Image found at document-relative path`);
     } catch {
-      console.log('[MD4H] Image not found at document-relative path, trying workspace root');
+      console.log(`${BUILD_TAG} Image not found at document-relative path, trying workspace root`);
 
       // Fallback: try workspace root
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -2246,32 +2444,32 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         const workspacePath = workspaceFolder.uri.fsPath;
         imageFullPath = path.resolve(workspacePath, normalizedPath);
         imageUri = vscode.Uri.file(imageFullPath);
-        console.log('[MD4H] Trying workspace-relative path:', imageFullPath);
+        console.log(`${BUILD_TAG} Trying workspace-relative path:`, imageFullPath);
 
         try {
           await vscode.workspace.fs.stat(imageUri);
           fileExists = true;
-          console.log('[MD4H] Image found at workspace-relative path');
+          console.log(`${BUILD_TAG} Image found at workspace-relative path`);
         } catch {
-          console.log('[MD4H] Image not found at workspace-relative path either');
+          console.log(`${BUILD_TAG} Image not found at workspace-relative path either`);
         }
       }
     }
 
     if (!fileExists) {
       const errorMsg = `Image not found: ${imagePath}`;
-      console.error('[MD4H]', errorMsg);
+      console.error(`${BUILD_TAG}`, errorMsg);
       vscode.window.showErrorMessage(errorMsg);
       return;
     }
 
     try {
-      console.log('[MD4H] Opening image:', imageUri.fsPath);
+      console.log(`${BUILD_TAG} Opening image:`, imageUri.fsPath);
       await vscode.commands.executeCommand('vscode.open', imageUri);
-      console.log('[MD4H] Successfully opened image');
+      console.log(`${BUILD_TAG} Successfully opened image`);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      console.error('[MD4H] Failed to open image:', errorMessage, err);
+      console.error(`${BUILD_TAG} Failed to open image:`, errorMessage, err);
       vscode.window.showErrorMessage(`Failed to open image: ${errorMessage}`);
     }
   }
@@ -2285,10 +2483,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   ): Promise<void> {
     try {
       const filePath = (message.path as string) || '';
-      console.log('[MD4H] handleOpenFileLink called with path:', filePath);
+      console.log(`${BUILD_TAG} handleOpenFileLink called with path:`, filePath);
 
       if (!filePath) {
-        console.warn('[MD4H] No path provided for file link');
+        console.warn(`${BUILD_TAG} No path provided for file link`);
         return;
       }
 
@@ -2299,14 +2497,14 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       const normalizedFilePath = filePath.startsWith('./') ? filePath.slice(2) : filePath;
       const absolutePath = path.resolve(basePath, normalizedFilePath);
       let fileUri = vscode.Uri.file(absolutePath);
-      console.log('[MD4H] Resolved file URI (document-relative):', fileUri.fsPath);
+      console.log(`${BUILD_TAG} Resolved file URI (document-relative):`, fileUri.fsPath);
 
       // Check if file exists
       let fileExists = false;
       try {
         await vscode.workspace.fs.stat(fileUri);
         fileExists = true;
-        console.log('[MD4H] File exists (document-relative):', fileUri.fsPath);
+        console.log(`${BUILD_TAG} File exists (document-relative):`, fileUri.fsPath);
       } catch {
         // File doesn't exist, try to find it in workspace
         const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -2315,15 +2513,15 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           const workspacePath = workspaceFolders[0].uri.fsPath;
           // Use normalized path (already normalized above)
           const workspaceFileUri = vscode.Uri.file(path.resolve(workspacePath, normalizedFilePath));
-          console.log('[MD4H] Trying workspace-relative path:', workspaceFileUri.fsPath);
+          console.log(`${BUILD_TAG} Trying workspace-relative path:`, workspaceFileUri.fsPath);
           try {
             await vscode.workspace.fs.stat(workspaceFileUri);
             fileUri = workspaceFileUri;
             fileExists = true;
-            console.log('[MD4H] File exists (workspace-relative):', fileUri.fsPath);
+            console.log(`${BUILD_TAG} File exists (workspace-relative):`, fileUri.fsPath);
           } catch {
             // Not found in workspace either
-            console.log('[MD4H] File not found in workspace-relative path');
+            console.log(`${BUILD_TAG} File not found in workspace-relative path`);
           }
         }
       }
@@ -2331,7 +2529,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       if (!fileExists) {
         // File not found, show error
         vscode.window.showWarningMessage(`File not found: ${filePath}`);
-        console.warn('[MD4H] File not found:', filePath);
+        console.warn(`${BUILD_TAG} File not found:`, filePath);
         return;
       }
 
@@ -2350,38 +2548,38 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       ];
       const fileExtension = path.extname(fileUri.fsPath).toLowerCase();
       const isImage = imageExtensions.includes(fileExtension);
-      console.log('[MD4H] File extension:', fileExtension, '| Is image:', isImage);
+      console.log(`${BUILD_TAG} File extension:`, fileExtension, '| Is image:', isImage);
 
       if (isImage) {
         // For image files, use vscode.open command directly
         // This automatically opens images in VS Code's image preview
-        console.log('[MD4H] Attempting to open image file with vscode.open command');
+        console.log(`${BUILD_TAG} Attempting to open image file with vscode.open command`);
         try {
           await vscode.commands.executeCommand('vscode.open', fileUri);
-          console.log('[MD4H] Successfully opened image file:', fileUri.fsPath);
+          console.log(`${BUILD_TAG} Successfully opened image file:`, fileUri.fsPath);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
-          console.error('[MD4H] Failed to open image file:', errorMessage, error);
+          console.error(`${BUILD_TAG} Failed to open image file:`, errorMessage, error);
           vscode.window.showErrorMessage(`Failed to open image file: ${errorMessage}`);
         }
       } else {
         // For text files, use openTextDocument
-        console.log('[MD4H] Attempting to open text file with openTextDocument');
+        console.log(`${BUILD_TAG} Attempting to open text file with openTextDocument`);
         try {
           const doc = await vscode.workspace.openTextDocument(fileUri);
           await vscode.window.showTextDocument(doc);
-          console.log('[MD4H] Successfully opened file link:', fileUri.fsPath);
+          console.log(`${BUILD_TAG} Successfully opened file link:`, fileUri.fsPath);
         } catch (error) {
           // If it's not a text file, try vscode.open command as fallback
           const errorMessage = error instanceof Error ? error.message : String(error);
-          console.log('[MD4H] openTextDocument failed, error:', errorMessage);
+          console.log(`${BUILD_TAG} openTextDocument failed, error:`, errorMessage);
           if (errorMessage.includes('Binary') || errorMessage.includes('binary')) {
-            console.log('[MD4H] File is binary, trying vscode.open command as fallback');
+            console.log(`${BUILD_TAG} File is binary, trying vscode.open command as fallback`);
             try {
               await vscode.commands.executeCommand('vscode.open', fileUri);
-              console.log('[MD4H] Opened binary file using vscode.open command');
+              console.log(`${BUILD_TAG} Opened binary file using vscode.open command`);
             } catch (fallbackError) {
-              console.error('[MD4H] Failed to open file:', fallbackError);
+              console.error(`${BUILD_TAG} Failed to open file:`, fallbackError);
               vscode.window.showErrorMessage(`Failed to open file: ${errorMessage}`);
             }
           } else {
@@ -2391,7 +2589,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('[MD4H] Failed to open file link:', errorMessage, error);
+      console.error(`${BUILD_TAG} Failed to open file link:`, errorMessage, error);
       vscode.window.showErrorMessage(`Failed to open file: ${errorMessage}`);
     }
   }
@@ -2408,7 +2606,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     const placeholderId = message.placeholderId as string;
     const targetFolder = (message.targetFolder as string) || 'images';
 
-    console.log(`[MD4H] Copying local image to workspace: ${absolutePath}`);
+    console.log(`${BUILD_TAG} Copying local image to workspace: ${absolutePath}`);
 
     try {
       // Read the source image
@@ -2483,7 +2681,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         relativePath = './' + relativePath;
       }
 
-      console.log(`[MD4H] Local image copied successfully. Path: ${relativePath}`);
+      console.log(`${BUILD_TAG} Local image copied successfully. Path: ${relativePath}`);
 
       webview.postMessage({
         type: 'localImageCopied',
@@ -2493,7 +2691,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to copy local image: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to copy local image: ${errorMessage}`);
       vscode.window.showErrorMessage(`Failed to copy image: ${errorMessage}`);
       webview.postMessage({
         type: 'localImageCopyError',
@@ -2516,7 +2714,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     try {
       const config = vscode.workspace.getConfiguration();
       await config.update(key, value, vscode.ConfigurationTarget.Global);
-      console.log(`[MD4H] Setting updated: ${key} = ${value}`);
+      console.log(`${BUILD_TAG} Setting updated: ${key} = ${value}`);
 
       // Immediately notify webview of the setting change
       // This ensures the setting takes effect right away without waiting for next update
@@ -2535,7 +2733,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[MD4H] Failed to update setting: ${errorMessage}`);
+      console.error(`${BUILD_TAG} Failed to update setting: ${errorMessage}`);
     }
   }
 
@@ -2575,7 +2773,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       if (!success) {
         const errorMsg = 'Failed to save changes. The file may be read-only or locked.';
         vscode.window.showErrorMessage(errorMsg);
-        console.error('[MD4H] applyEdit failed:', { uri: docUri });
+        console.error(`${BUILD_TAG} applyEdit failed:`, { uri: docUri });
       }
       return success;
     } catch (error) {
@@ -2584,7 +2782,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           ? `Failed to save changes: ${error.message}`
           : 'Failed to save changes: Unknown error';
       vscode.window.showErrorMessage(errorMsg);
-      console.error('[MD4H] applyEdit exception:', error);
+      console.error(`${BUILD_TAG} applyEdit exception:`, error);
       return false;
     }
   }

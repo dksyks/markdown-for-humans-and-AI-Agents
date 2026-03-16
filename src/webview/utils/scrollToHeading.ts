@@ -4,6 +4,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for details.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import { Editor } from '@tiptap/core';
 
 export function scrollToPos(editor: Editor, pos: number) {
@@ -35,7 +38,7 @@ export function scrollToPos(editor: Editor, pos: number) {
         scrollContainer.scrollTop = currentScrollTop + targetRect.bottom - window.innerHeight + 16;
       }
     } catch (error) {
-      console.warn('[MD4H] Could not scroll to position:', error);
+      console.warn(`${BUILD_TAG} Could not scroll to position:`, error);
     }
   });
 }

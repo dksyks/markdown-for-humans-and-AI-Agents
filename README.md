@@ -211,21 +211,27 @@ Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI
 
 #### How routing works
 
-When the user selects text in a Markdown for Humans editor, the extension writes a temp file containing `file`, `instance_id`, `selection`, `context_before`, and `context_after`. When the agent calls a tool, the MCP server reads that temp file and automatically routes the request to the correct editor instance. Passing `file` and context parameters explicitly improves routing accuracy when the user may have moved focus since the last `get_selection` call.
+When the user selects text in a Markdown for Humans editor, the extension writes per-instance temp metadata containing `file`, `instance_id`, `selection`, `context_before`, and `context_after`. It also keeps per-file selection state for open Markdown for Humans files within that instance. The MCP server uses the active-instance pointer for active-selection calls and can also look up the last saved selection metadata for a specific open file when explicitly asked. Passing `file` and context parameters explicitly improves routing accuracy when the user may have moved focus since the last selection lookup.
+
+Important: selection temp metadata is a routing hint, not proof that the referenced file is still open in Markdown for Humans. `get_active_selection` only describes the currently active MFH tab. `get_selection_for_file` can return the last saved selection for a specific open MFH file even when that tab is inactive. Before using a prior `file` value to drive `scroll_to_selection` or proposal tools, verify that the target file is currently open in Markdown for Humans or provide the intended `file` explicitly from the document being edited.
 
 #### MCP tools
 
-Once configured, your AI assistant has access to 6 tools (server: `markdown-for-humans`):
+Once configured, your AI assistant has access to 8 tools (server: `markdown-for-humans`):
 
-**`get_selection`** — Returns the currently selected text in the editor, with surrounding context and heading structure. Returns: `file`, `selection`, `context_before`, `context_after`, `headings_before`, `instance_id`.
+**`get_active_selection`** — Returns the currently selected text in the active editor only, with surrounding context and heading structure. Returns: `file`, `selection`, `context_before`, `context_after`, `headings_before`, `instance_id`. This is the default selection lookup tool.
+
+**`get_selection_for_file`** — Returns the last saved selection metadata for a specific markdown file if that file is currently open in any Markdown for Humans instance, even when that tab is inactive. Use this only when the caller explicitly wants the selection for a named file.
+
+**`get_selection`** — Backward-compatible alias for `get_active_selection`.
 
 **`scroll_to_selection`** — Scrolls the editor to a specific passage and selects it. Parameters: `selection` (required), `file`, `context_before`, `context_after`, `headings_before` (all optional). Returns: `{ status, file }` where status is `"revealed"`, `"timeout"`, or `"error"`.
 
-**`propose_single_replacement`** — Opens a WYSIWYG side-by-side proposal panel. The user can Accept, Edit, or Skip. Parameters: `selection`, `replacement` (required); `file`, `context_before`, `context_after`, `headings_before`, `justification` (all optional). When `justification` is supplied, a third panel is shown between the redline and editing panels with the agent's reasoning rendered as markdown. Returns `status` of `"applied"`, `"accepted_unchanged"`, `"accepted_changed"`, `"skipped"`, `"in_progress"`, `"timeout"`, or `"error"`, plus `session_id` when status is `"in_progress"`. Treat only `"applied"` as authoritative success.
+**`propose_single_replacement`** — Opens a WYSIWYG proposal panel with up to 3 alternative replacements displayed vertically. The extension automatically scrolls the main editor to the target passage — no prior `get_selection` call needed. A shared redline at the top updates to reflect the focused option; each option has its own editable pane, optional collapsible justification panel, and Accept button. Parameters: `selection` (required — the exact text to replace, read from the file), `options` array (required, 1–3 items each with `replacement` and optional `justification`); `file`, `context_before`, `context_after`, `headings_before` (all optional). Returns `status` of `"applied"`, `"accepted_unchanged"`, `"accepted_changed"`, `"skipped"`, `"in_progress"`, `"timeout"`, or `"error"`, plus `session_id` when status is `"in_progress"` and `selected_option_index` indicating which alternative was accepted. Treat only `"applied"` as authoritative success.
 
 **`resume_single_replacement`** — Resumes a proposal panel that returned `"in_progress"`. Parameter: `session_id` (from the `"in_progress"` response).
 
-**`propose_sequential_replacements`** — Queues multiple replacements for the same file and presents them in one uninterrupted review flow. Parameters: `file` (optional), `changes` array (required) — each item has `selection`, `replacement`, and optional `context_before`, `context_after`, `headings_before`, `justification`. When `justification` is supplied for a step, the reasoning panel is shown for that step. Returns one aggregated result with per-step statuses, plus `session_id` when status is `"in_progress"`.
+**`propose_sequential_replacements`** — Queues multiple replacements for the same file and presents them in one uninterrupted review flow. Parameters: `file` (optional), `changes` array (required) — each item has `selection` and `options` array (1–3 alternatives with `replacement` and optional `justification`), plus optional `context_before`, `context_after`, `headings_before`. Returns one aggregated result with per-step statuses (including `selected_option_index` per step), plus `session_id` when status is `"in_progress"`.
 
 **`resume_sequential_replacements`** — Resumes a sequential review session that returned `"in_progress"`. Parameter: `session_id` (from the `"in_progress"` response).
 

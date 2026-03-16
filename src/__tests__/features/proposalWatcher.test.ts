@@ -6,15 +6,19 @@ import {
   registerWebviewPanel,
   resetActiveWebviewStateForTests,
 } from '../../activeWebview';
-import { readPendingProposal, shouldHandleProposal } from '../../features/proposalWatcher';
+import {
+  consumePendingProposal,
+  readPendingProposal,
+  shouldHandleProposal,
+} from '../../features/proposalWatcher';
 import type { ProposalRequest } from '../../features/proposalPanel';
 
-describe('readPendingProposal', () => {
+describe('pending proposal file handling', () => {
   beforeEach(() => {
     resetActiveWebviewStateForTests();
   });
 
-  it('returns the proposal and deletes the temp file after reading it', () => {
+  it('returns the proposal without deleting the temp file during read', () => {
     const proposalFilePath = path.join(
       os.tmpdir(),
       `md4h-proposal-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
@@ -25,7 +29,7 @@ describe('readPendingProposal', () => {
       JSON.stringify({
         id: 'proposal-1',
         original: '**Note:** Test',
-        replacement: 'Note: Test',
+        options: [{ replacement: 'Note: Test' }],
         context_before: null,
         context_after: null,
       }),
@@ -37,11 +41,11 @@ describe('readPendingProposal', () => {
     expect(proposal).toEqual({
       id: 'proposal-1',
       original: '**Note:** Test',
-      replacement: 'Note: Test',
+      options: [{ replacement: 'Note: Test' }],
       context_before: null,
       context_after: null,
     });
-    expect(fs.existsSync(proposalFilePath)).toBe(false);
+    expect(fs.existsSync(proposalFilePath)).toBe(true);
   });
 
   it('retains routing metadata used to target the correct window', () => {
@@ -57,7 +61,7 @@ describe('readPendingProposal', () => {
         file: '/workspace/docs/target.md',
         source_instance_id: 'window-2',
         original: 'Old text',
-        replacement: 'New text',
+        options: [{ replacement: 'New text' }],
         context_before: 'Before',
         context_after: 'After',
       }),
@@ -71,13 +75,13 @@ describe('readPendingProposal', () => {
       file: '/workspace/docs/target.md',
       source_instance_id: 'window-2',
       original: 'Old text',
-      replacement: 'New text',
+      options: [{ replacement: 'New text' }],
       context_before: 'Before',
       context_after: 'After',
     });
   });
 
-  it('returns a queued proposal batch and deletes the temp file after reading it', () => {
+  it('returns a queued proposal batch without deleting the temp file during read', () => {
     const proposalFilePath = path.join(
       os.tmpdir(),
       `md4h-proposal-batch-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
@@ -128,6 +132,30 @@ describe('readPendingProposal', () => {
         },
       ],
     });
+    expect(fs.existsSync(proposalFilePath)).toBe(true);
+  });
+
+  it('consumes the temp file only for the matching proposal id', () => {
+    const proposalFilePath = path.join(
+      os.tmpdir(),
+      `md4h-proposal-consume-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+    );
+
+    fs.writeFileSync(
+      proposalFilePath,
+      JSON.stringify({
+        id: 'proposal-3',
+        original: 'Old text',
+        options: [{ replacement: 'New text' }],
+        context_before: null,
+        context_after: null,
+      }),
+      'utf8'
+    );
+
+    expect(consumePendingProposal('other-id', proposalFilePath)).toBe(false);
+    expect(fs.existsSync(proposalFilePath)).toBe(true);
+    expect(consumePendingProposal('proposal-3', proposalFilePath)).toBe(true);
     expect(fs.existsSync(proposalFilePath)).toBe(false);
   });
 });
@@ -167,7 +195,7 @@ describe('shouldHandleProposal', () => {
       file: '/workspace/docs/target.md',
       source_instance_id: getEditorHostInstanceId(),
       original: 'Old text',
-      replacement: 'New text',
+      options: [{ replacement: 'New text' }],
       context_before: null,
       context_after: null,
       ...overrides,
@@ -207,7 +235,7 @@ describe('shouldHandleProposal', () => {
           proposals: [
             {
               original: 'Old text',
-              replacement: 'New text',
+              options: [{ replacement: 'New text' }],
               context_before: null,
               context_after: null,
             },
@@ -226,8 +254,10 @@ describe('shouldHandleProposal', () => {
           file: undefined,
           original:
             'Each Beneficiary is responsible for investing assets held in the Personal Accounts.',
-          replacement:
-            'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
+          options: [{
+            replacement:
+              'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
+          }],
         })
       )
     ).toBe(false);
@@ -248,8 +278,10 @@ describe('shouldHandleProposal', () => {
         buildProposal({
           file: undefined,
           original: 'Each Beneficiary is responsible for investing assets held in the Personal Accounts.',
-          replacement:
-            'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
+          options: [{
+            replacement:
+              'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
+          }],
         })
       )
     ).toBe(true);

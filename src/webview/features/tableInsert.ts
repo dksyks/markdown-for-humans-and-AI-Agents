@@ -9,6 +9,9 @@
  * @description Provides a modal dialog for inserting tables with customizable rows and columns.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import type { Editor } from '@tiptap/core';
 
 /**
@@ -36,7 +39,7 @@ function focusEditor(editor: Editor | null) {
       maybeFocused.run();
     }
   } catch (error) {
-    console.warn('[MD4H] Failed to restore focus to editor after table dialog', error);
+    console.warn(`${BUILD_TAG} Failed to restore focus to editor after table dialog`, error);
   }
 }
 

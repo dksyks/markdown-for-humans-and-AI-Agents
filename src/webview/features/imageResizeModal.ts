@@ -14,6 +14,9 @@
  * - Sticky positioning (stays at bottom-right)
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 import { Editor } from '@tiptap/core';
 import { showImageResizeWarning } from './imageResizeWarning';
 import { showLocalImageOutsideRepoDialog } from './localImageOutsideRepoDialog';
@@ -187,7 +190,7 @@ async function copyLocalImageToWorkspace(
     // Return placeholder ID to track this copy
     return placeholderId;
   } catch (error) {
-    console.error('[MD4H] Failed to copy local image:', error);
+    console.error(`${BUILD_TAG} Failed to copy local image:`, error);
     return null;
   }
 }
@@ -214,7 +217,7 @@ export async function showImageResizeModal(
   const isExternal = isExternalImage(imageSrc);
 
   if (isExternal) {
-    console.log('[MD4H] External image detected, cannot resize:', imageSrc);
+    console.log(`${BUILD_TAG} External image detected, cannot resize:`, imageSrc);
 
     // Show info message - cannot resize external images
     vscodeApi.postMessage({
@@ -247,7 +250,7 @@ export async function showImageResizeModal(
       };
 
       const timer = window.setTimeout(() => {
-        console.warn('[MD4H] checkImageInWorkspace timed out; showing resize modal anyway');
+        console.warn(`${BUILD_TAG} checkImageInWorkspace timed out; showing resize modal anyway`);
         settle({ inWorkspace: true });
       }, timeoutMs);
 
@@ -264,7 +267,7 @@ export async function showImageResizeModal(
         });
       } catch (error) {
         clearTimeout(timer);
-        console.error('[MD4H] Failed to post checkImageInWorkspace:', error);
+        console.error(`${BUILD_TAG} Failed to post checkImageInWorkspace:`, error);
         settle({ inWorkspace: true });
       }
     });
@@ -837,7 +840,7 @@ function showResizeModalForLocalImage(
         }
       })
       .catch(error => {
-        console.warn('[MD4H] Failed to fetch image references:', error);
+        console.warn(`${BUILD_TAG} Failed to fetch image references:`, error);
         impactLoading.textContent = 'References unavailable';
       });
   } else {
@@ -964,7 +967,7 @@ function showResizeModalForLocalImage(
     const vscodeApi = currentVscodeApi;
 
     if (!img || !vscodeApi) {
-      console.warn('[MD4H] Cannot resize: image or vscodeApi is null');
+      console.warn(`${BUILD_TAG} Cannot resize: image or vscodeApi is null`);
       return;
     }
 
@@ -1034,7 +1037,7 @@ function showResizeModalForLocalImage(
       // Close modal
       hideImageResizeModal();
     } catch (error) {
-      console.error('[MD4H] Failed to resize image:', error);
+      console.error(`${BUILD_TAG} Failed to resize image:`, error);
       // Restore original size on error
       handleCancel();
     }
@@ -1232,7 +1235,7 @@ export function redoImageResize(img: HTMLImageElement, vscodeApi: VsCodeApi): vo
   const entry = state.history[state.historyIndex];
   const imagePath = img.getAttribute('data-markdown-src') || img.getAttribute('src') || '';
   if (!entry.imageData || !entry.imageData.startsWith('data:')) {
-    console.warn('[MD4H] Cannot redo resize: missing image data URL');
+    console.warn(`${BUILD_TAG} Cannot redo resize: missing image data URL`);
     return;
   }
 
