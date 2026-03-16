@@ -2758,8 +2758,8 @@ function initializeProposalMode() {
         </div>
       </div>
       <div class="proposal-actions">
-        <button id="proposal-accept" class="proposal-btn proposal-btn-primary">Accept</button>
-        <button id="proposal-cancel" class="proposal-btn">Skip</button>
+        <button id="proposal-accept" class="proposal-btn proposal-btn-primary" title="Apply this change to the document">Accept</button>
+        <button id="proposal-cancel" class="proposal-btn" title="Dismiss without applying">Skip</button>
         <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Review in progress">Review in progress</button>
       </div>
     </div>
