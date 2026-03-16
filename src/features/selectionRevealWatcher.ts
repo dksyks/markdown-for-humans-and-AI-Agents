@@ -27,6 +27,7 @@ export interface SelectionRevealRequest {
   original: string;
   context_before: string | null;
   context_after: string | null;
+  headings_before?: string[] | null;
 }
 
 export function readPendingSelectionRevealRequest(
@@ -113,6 +114,7 @@ function scheduleSelectionRevealPosts(
           original: request.original,
           context_before: request.context_before,
           context_after: request.context_after,
+          headings_before: request.headings_before ?? null,
         });
 
         void Promise.resolve(postResult)

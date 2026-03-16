@@ -22,6 +22,7 @@ export interface Proposal {
   replacement: string;
   context_before: string | null;
   context_after: string | null;
+  headings_before?: string[] | null;
 }
 
 export interface ProposalBatchRequest {
@@ -221,7 +222,8 @@ export class ProposalPanel {
 
       if (status === 'accept' && replacement) {
         const applied = await this._applyReplacement(replacement);
-        appliedStatus = applied ? 'applied' : 'accept';
+        const unchanged = replacement === this._proposal.replacement;
+        appliedStatus = applied ? 'applied' : (unchanged ? 'accept_unchanged' : 'accept_changed');
         await vscode.env.clipboard.writeText(replacement);
       } else if (status === 'timeout' && replacement) {
         await vscode.env.clipboard.writeText(replacement);
@@ -427,6 +429,7 @@ export class ProposalPanel {
         original: this._proposal.original,
         context_before: this._proposal.context_before,
         context_after: this._proposal.context_after,
+        headings_before: this._proposal.headings_before ?? null,
       });
     }
   }

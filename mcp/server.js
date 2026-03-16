@@ -1,7 +1,7 @@
 /**
  * MCP server for Markdown for Humans VS Code extension.
  * Exposes the current editor selection to Claude Code and other MCP clients.
- * Also supports proposing text replacements via the propose_selection_replacement tool.
+ * Also supports proposing text replacements via the propose_single_replacement tool.
  */
 
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
@@ -29,60 +29,67 @@ const server = new McpServer({
 });
 
 server.tool(
-  'get_markdown_selection',
+  'get_selection',
   'Get the currently selected text in the Markdown for Humans editor, along with surrounding context and preceding headings. Call this when the user refers to selected text, "this", "here", or similar references that suggest they have something highlighted in the editor.',
   {},
   async () => {
     try {
       if (!fs.existsSync(SELECTION_TEMP_FILE)) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ selected: null, error: 'No selection data available. Open a markdown file in the Markdown for Humans editor first.' }) }],
+          content: [{ type: 'text', text: JSON.stringify({ selection: null, error: 'No selection data available. Open a markdown file in the Markdown for Humans editor first.' }) }],
         };
       }
       const raw = fs.readFileSync(SELECTION_TEMP_FILE, 'utf8');
       // Normalize non-breaking spaces (\u00a0) to regular spaces so that
       // the returned text can be used as an exact match against the file.
-      const data = raw.replace(/\u00a0/g, ' ');
+      const data = JSON.parse(raw.replace(/\u00a0/g, ' '));
+      // Rename 'selected' field to 'selection' in the returned data
+      if ('selected' in data) {
+        data.selection = data.selected;
+        delete data.selected;
+      }
       return {
-        content: [{ type: 'text', text: data }],
+        content: [{ type: 'text', text: JSON.stringify(data) }],
       };
     } catch (err) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ selected: null, error: String(err) }) }],
+        content: [{ type: 'text', text: JSON.stringify({ selection: null, error: String(err) }) }],
       };
     }
   }
 );
 
 server.tool(
-  'propose_selection_replacement',
+  'propose_single_replacement',
   `Show the user a proposed replacement for selected text in the Markdown for Humans editor.
-Opens a popup panel beside the editor showing the original and proposed text as WYSIWYG.
-The user can Accept, Edit (modify the replacement inline), or Cancel.
-The main editor scrolls to and highlights the original text when the popup opens.
-Returns { status, replacement } where status is "accept", "edit", "cancelled", "pending", or "timeout".
-On status "accept" or "edit": apply the returned replacement to the file, replacing the original text.
+Opens a popup panel beside the editor showing the selection and proposed text as WYSIWYG.
+The user can Accept, Edit (modify the replacement inline), or Skip.
+The main editor scrolls to and highlights the selection when the popup opens.
+Returns { status, replacement } where status is "accepted_unchanged", "accepted_changed", "skipped", "in_progress", or "timeout".
+On status "accepted_unchanged" or "accepted_changed": apply the returned replacement to the file, replacing the selection.
 Use context_before and context_after to locate the correct occurrence if the text appears multiple times.`,
   {
-    original: z.string().describe('The exact original text to replace (as returned by get_markdown_selection selected field)'),
+    selection: z.string().describe('The exact text to replace (as returned by get_selection selection field)'),
     replacement: z.string().describe('The proposed replacement markdown text'),
-    context_before: z.string().optional().describe('Text immediately before the selection (context_before from get_markdown_selection)'),
-    context_after: z.string().optional().describe('Text immediately after the selection (context_after from get_markdown_selection)'),
+    file: z.string().optional().describe('Absolute path to the markdown file (file from get_selection)'),
+    context_before: z.string().optional().describe('Text immediately before the selection (context_before from get_selection)'),
+    context_after: z.string().optional().describe('Text immediately after the selection (context_after from get_selection)'),
+    headings_before: z.array(z.string()).optional().describe('Up to 5 headings preceding the selection, closest first (headings_before from get_selection)'),
   },
-  async ({ original, replacement, context_before, context_after }) => {
+  async ({ selection, replacement, file, context_before, context_after, headings_before }) => {
     try {
       const id = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
       const routingMetadata = proposalMatchesSelection(selectionMetadata, {
-        original,
+        selection,
         context_before: context_before ?? null,
         context_after: context_after ?? null,
       })
         ? {
-            file: selectionMetadata.file ?? null,
+            file: selectionMetadata.file ?? file ?? null,
             source_instance_id: selectionMetadata.instance_id ?? null,
           }
-        : {};
+        : { file: file ?? null };
       clearFileIfExists(RESPONSE_TEMP_FILE);
       // Write proposal for extension to pick up
       fs.writeFileSync(
@@ -90,10 +97,11 @@ Use context_before and context_after to locate the correct occurrence if the tex
         JSON.stringify({
           id,
           ...routingMetadata,
-          original,
+          original: selection,
           replacement,
           context_before: context_before ?? null,
           context_after: context_after ?? null,
+          headings_before: headings_before ?? null,
         }),
         'utf8'
       );
@@ -107,12 +115,12 @@ Use context_before and context_after to locate the correct occurrence if the tex
         },
       });
       const finalResult = await applyServerFallbackIfNeeded(result, {
-        original,
+        original: selection,
         replacement,
         context_before: context_before ?? null,
         context_after: context_after ?? null,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(normalizeResultStatus(finalResult)) }] };
     } catch (err) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
@@ -122,20 +130,20 @@ Use context_before and context_after to locate the correct occurrence if the tex
 );
 
 server.tool(
-  'resume_proposal_review',
+  'resume_single_replacement',
   `Resume a pending single proposed change review in the Markdown for Humans editor.
-Use this after propose_selection_replacement returned status "pending" and the user later says they are done editing.
-Returns the final review result when available, or "pending" again if the review is still open.`,
+Use this after propose_single_replacement returned status "in_progress" and the user later says they are done editing.
+Returns the final review result when available, or "in_progress" again if the review is still open.`,
   {
-    review_id: z.string().describe('The review_id returned by propose_selection_replacement when status was pending'),
+    session_id: z.string().describe('The session_id returned by propose_single_replacement when status was in_progress'),
   },
-  async ({ review_id }) => {
+  async ({ session_id }) => {
     try {
-      const result = await waitForProposalState(review_id, {
+      const result = await waitForProposalState(session_id, {
         pendingResult: {
-          id: review_id,
-          review_id,
-          status: 'pending',
+          id: session_id,
+          session_id,
+          status: 'in_progress',
           message: 'Review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
         },
       });
@@ -146,7 +154,7 @@ Returns the final review result when available, or "pending" again if the review
         context_before: result.context_before ?? null,
         context_after: result.context_after ?? null,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(normalizeResultStatus(finalResult)) }] };
     } catch (err) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
@@ -156,7 +164,7 @@ Returns the final review result when available, or "pending" again if the review
 );
 
 server.tool(
-  'propose_sequential_selection_replacements',
+  'propose_sequential_replacements',
   `Show a queued series of proposed replacements for the same markdown file in the Markdown for Humans editor.
 Opens the same review panel and advances through each proposal without returning control to the MCP client between steps.
 Returns one aggregated result after the sequence completes or times out.
@@ -169,9 +177,9 @@ Pass file when available so the extension can target the correct open markdown d
     changes: z
       .array(
         z.object({
-          original: z
+          selection: z
             .string()
-            .describe('The exact original text to replace for this step'),
+            .describe('The exact text to replace for this step'),
           replacement: z.string().describe('The proposed replacement markdown text for this step'),
           context_before: z
             .string()
@@ -181,6 +189,10 @@ Pass file when available so the extension can target the correct open markdown d
             .string()
             .optional()
             .describe('Text immediately after this selection'),
+          headings_before: z
+            .array(z.string())
+            .optional()
+            .describe('Up to 5 headings preceding this selection, closest first (headings_before from get_selection)'),
         })
       )
       .min(1)
@@ -199,10 +211,11 @@ Pass file when available so the extension can target the correct open markdown d
           id,
           ...routingMetadata,
           proposals: changes.map(change => ({
-            original: change.original,
+            original: change.selection,
             replacement: change.replacement,
             context_before: change.context_before ?? null,
             context_after: change.context_after ?? null,
+            headings_before: change.headings_before ?? null,
           })),
         }),
         'utf8'
@@ -220,13 +233,13 @@ Pass file when available so the extension can target the correct open markdown d
       const finalResult = await applyServerBatchFallbackIfNeeded(result, {
         file: routingMetadata.file ?? null,
         changes: changes.map(change => ({
-          original: change.original,
+          original: change.selection,
           replacement: change.replacement,
           context_before: change.context_before ?? null,
           context_after: change.context_after ?? null,
         })),
       });
-      return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(normalizeBatchResultStatus(finalResult)) }] };
     } catch (err) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
@@ -236,12 +249,12 @@ Pass file when available so the extension can target the correct open markdown d
 );
 
 server.tool(
-  'resume_sequential_proposal_review',
+  'resume_sequential_replacements',
   `Resume a pending sequential proposal review session in the Markdown for Humans editor.
-Use this after propose_sequential_selection_replacements returned status "pending" and the user later says they are done editing.
-Returns the final aggregated result when available, or "pending" again if the session is still open.`,
+Use this after propose_sequential_replacements returned status "in_progress" and the user later says they are done editing.
+Returns the final aggregated result when available, or "in_progress" again if the session is still open.`,
   {
-    session_id: z.string().describe('The session_id returned by propose_sequential_selection_replacements when status was pending'),
+    session_id: z.string().describe('The session_id returned by propose_sequential_replacements when status was in_progress'),
   },
   async ({ session_id }) => {
     try {
@@ -249,7 +262,7 @@ Returns the final aggregated result when available, or "pending" again if the se
         pendingResult: {
           id: session_id,
           session_id,
-          status: 'pending',
+          status: 'in_progress',
           message: 'Sequential review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
         },
       });
@@ -265,7 +278,7 @@ Returns the final aggregated result when available, or "pending" again if the se
             }))
           : [],
       });
-      return { content: [{ type: 'text', text: JSON.stringify(finalResult) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(normalizeBatchResultStatus(finalResult)) }] };
     } catch (err) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
@@ -275,32 +288,40 @@ Returns the final aggregated result when available, or "pending" again if the se
 );
 
 server.tool(
-  'scroll_to_markdown_selection',
-  `Select and scroll to a markdown selection in the Markdown for Humans editor.
-Use the exact selected markdown from get_markdown_selection, plus context_before/context_after when available, so the editor can locate the correct occurrence if the text appears multiple times.
+  'scroll_to_selection',
+  `Select and scroll to a passage in the Markdown for Humans editor.
+Use the exact selection text from get_selection, plus context_before/context_after when available, so the editor can locate the correct occurrence if the text appears multiple times.
 Returns { status, file } where status is "revealed", "timeout", or "error".`,
   {
-    original: z
+    selection: z
       .string()
-      .describe('The exact selected markdown to reveal (as returned by get_markdown_selection selected field)'),
+      .describe('The exact text to reveal (as returned by get_selection selection field)'),
+    file: z
+      .string()
+      .optional()
+      .describe('Absolute path to the markdown file (file from get_selection)'),
     context_before: z
       .string()
       .optional()
-      .describe('Text immediately before the selection (context_before from get_markdown_selection)'),
+      .describe('Text immediately before the selection (context_before from get_selection)'),
     context_after: z
       .string()
       .optional()
-      .describe('Text immediately after the selection (context_after from get_markdown_selection)'),
+      .describe('Text immediately after the selection (context_after from get_selection)'),
+    headings_before: z
+      .array(z.string())
+      .optional()
+      .describe('Up to 5 headings preceding the selection, closest first (headings_before from get_selection)'),
   },
-  async ({ original, context_before, context_after }) => {
+  async ({ selection, file, context_before, context_after, headings_before }) => {
     try {
       const id = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
       const routingMetadata = buildSelectionRoutingMetadata(selectionMetadata, {
-        original,
+        selection,
         context_before: context_before ?? null,
         context_after: context_after ?? null,
-      });
+      }, file ?? null);
 
       clearFileIfExists(SELECTION_REVEAL_RESPONSE_TEMP_FILE);
       fs.writeFileSync(
@@ -308,9 +329,10 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
         JSON.stringify({
           id,
           ...routingMetadata,
-          original,
+          original: selection,
           context_before: context_before ?? null,
           context_after: context_after ?? null,
+          headings_before: headings_before ?? null,
         }),
         'utf8'
       );
@@ -333,6 +355,45 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
   }
 );
 
+function normalizeResultStatus(result) {
+  if (!result || typeof result !== 'object') return result;
+  const statusMap = { accept: 'accepted_unchanged', accept_unchanged: 'accepted_unchanged', accept_changed: 'accepted_changed', cancelled: 'skipped', pending: 'in_progress' };
+  const normalized = { ...result };
+  if (normalized.status in statusMap) {
+    normalized.status = statusMap[normalized.status];
+  }
+  // Rename 'original' back to 'selection' in return value
+  if ('original' in normalized) {
+    normalized.selection = normalized.original;
+    delete normalized.original;
+  }
+  return normalized;
+}
+
+function normalizeBatchResultStatus(result) {
+  if (!result || typeof result !== 'object') return result;
+  const statusMap = { accept: 'accepted_unchanged', accept_unchanged: 'accepted_unchanged', accept_changed: 'accepted_changed', cancelled: 'skipped', pending: 'in_progress' };
+  const normalized = { ...result };
+  if (normalized.status in statusMap) {
+    normalized.status = statusMap[normalized.status];
+  }
+  if (Array.isArray(normalized.results)) {
+    normalized.results = normalized.results.map(item => {
+      if (!item || typeof item !== 'object') return item;
+      const r = { ...item };
+      if (r.status in statusMap) {
+        r.status = statusMap[r.status];
+      }
+      if ('original' in r) {
+        r.selection = r.original;
+        delete r.original;
+      }
+      return r;
+    });
+  }
+  return normalized;
+}
+
 function normalizeForMatching(markdown) {
   return markdown.replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ');
 }
@@ -354,7 +415,9 @@ function proposalMatchesSelection(selection, proposal) {
     return false;
   }
 
-  if (selection.selected !== proposal.original) {
+  // Support both legacy 'selected' field and new 'selection' field in temp file
+  const selectionText = selection.selection ?? selection.selected ?? null;
+  if (selectionText !== proposal.selection) {
     return false;
   }
 
@@ -364,13 +427,14 @@ function proposalMatchesSelection(selection, proposal) {
   );
 }
 
-function buildSelectionRoutingMetadata(selectionMetadata, selection) {
-  return proposalMatchesSelection(selectionMetadata, selection)
-    ? {
-        file: selectionMetadata.file ?? null,
-        source_instance_id: selectionMetadata.instance_id ?? null,
-      }
-    : {};
+function buildSelectionRoutingMetadata(selectionMetadata, selection, file) {
+  if (proposalMatchesSelection(selectionMetadata, selection)) {
+    return {
+      file: selectionMetadata.file ?? file ?? null,
+      source_instance_id: selectionMetadata.instance_id ?? null,
+    };
+  }
+  return { file: file ?? null };
 }
 
 function buildBatchRoutingMetadata(selectionMetadata, file) {
@@ -750,7 +814,7 @@ function waitForProposalState(id, options = {}) {
     setTimeout(() => {
       finish(readProposalState(id) ?? pendingResult ?? {
         id,
-        status: 'pending',
+        status: 'in_progress',
         message: 'Review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
       });
     }, TIMEOUT_MS);

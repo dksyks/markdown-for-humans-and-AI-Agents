@@ -209,102 +209,37 @@ Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI
    }
    ```
 
-Once configured, your AI assistant can call:
+#### How routing works
 
-- `get_markdown_selection` to read whatever text you have selected in the editor, with surrounding context and heading structure
-- `scroll_to_markdown_selection` to reselect a previously captured markdown span and scroll it into view in the editor
-- `propose_selection_replacement` to show a side-by-side WYSIWYG proposal panel and, when accepted, apply the replacement back to the markdown file
-- `propose_sequential_selection_replacements` to review multiple proposed replacements for the same markdown file in one queued session and return a single aggregated result
-- `resume_proposal_review` to resume a single proposal review that previously returned `status: "pending"`
-- `resume_sequential_proposal_review` to resume a queued multi-edit review session that previously returned `status: "pending"`
+When the user selects text in a Markdown for Humans editor, the extension writes a temp file containing `file`, `instance_id`, `selection`, `context_before`, and `context_after`. When the agent calls a tool, the MCP server reads that temp file and automatically routes the request to the correct editor instance. Passing `file` and context parameters explicitly improves routing accuracy when the user may have moved focus since the last `get_selection` call.
 
-**Telling your AI agent when to use the MCP tools**
+#### MCP tools
 
-The MCP tool is available but your AI assistant won't use it automatically—you need to tell it when and how. Add instructions to your agent's system prompt or configuration file (e.g., `CLAUDE.md` for Claude Code):
+Once configured, your AI assistant has access to 6 tools (server: `markdown-for-humans`):
 
-```markdown
-## Markdown for Humans Editor (VS Code Extension)
+**`get_selection`** — Returns the currently selected text in the editor, with surrounding context and heading structure. Returns: `file`, `selection`, `context_before`, `context_after`, `headings_before`, `instance_id`.
 
-When the user is editing a markdown file in VS Code, their current selection
-is available via the MCP tool `get_markdown_selection` (server: markdown-for-humans).
+**`scroll_to_selection`** — Scrolls the editor to a specific passage and selects it. Parameters: `selection` (required), `file`, `context_before`, `context_after`, `headings_before` (all optional). Returns: `{ status, file }` where status is `"revealed"`, `"timeout"`, or `"error"`.
 
-Call this tool when the user refers to selected text, "this", "here", or similar
-references suggesting they have something highlighted in the editor.
+**`propose_single_replacement`** — Opens a WYSIWYG side-by-side proposal panel. The user can Accept, Edit, or Skip. Parameters: `selection`, `replacement` (required); `file`, `context_before`, `context_after`, `headings_before` (all optional). Returns `status` of `"applied"`, `"accepted_unchanged"`, `"accepted_changed"`, `"skipped"`, `"in_progress"`, `"timeout"`, or `"error"`, plus `session_id` when status is `"in_progress"`. Treat only `"applied"` as authoritative success.
 
-Use the tools based on how the task starts:
+**`resume_single_replacement`** — Resumes a proposal panel that returned `"in_progress"`. Parameter: `session_id` (from the `"in_progress"` response).
 
-- If the user is actively selecting text in the editor and referring to "this",
-  "here", or similar, call `get_markdown_selection` to capture the current
-  editor selection.
-- If the agent is working from raw markdown or file edits and the user wants to
-  see a specific passage in the WYSIWYG editor, call
-  `scroll_to_markdown_selection` with the exact markdown span and available
-  `context_before` / `context_after` values.
-- If the user wants an in-editor suggested rewrite for the current selection,
-  call `propose_selection_replacement` with the selected text and context from
-  `get_markdown_selection`.
-- If the user wants to review several rewrites for the same markdown file in one
-  uninterrupted pass, call `propose_sequential_selection_replacements` with the
-  file path from `get_markdown_selection` and an ordered `changes` array.
-- If either proposal tool returns `status: "pending"`, tell the user the review
-  is still open in Markdown for Humans and, when they are done editing, call
-  `resume_proposal_review` or `resume_sequential_proposal_review` with the
-  returned `review_id` or `session_id`.
+**`propose_sequential_replacements`** — Queues multiple replacements for the same file and presents them in one uninterrupted review flow. Parameters: `file` (optional), `changes` array (required) — each item has `selection`, `replacement`, and optional `context_before`, `context_after`, `headings_before`. Returns one aggregated result with per-step statuses, plus `session_id` when status is `"in_progress"`.
 
-The tool returns a JSON string with:
-- `file`: absolute path to the markdown file
-- `selected`: the selected text as markdown (null if nothing selected)
-- `context_before`: up to 500 characters before the selection
-- `context_after`: up to 500 characters after the selection
-- `headings_before`: up to 5 headings preceding the selection, closest first
+**`resume_sequential_replacements`** — Resumes a sequential review session that returned `"in_progress"`. Parameter: `session_id` (from the `"in_progress"` response).
 
-`propose_selection_replacement` opens a review panel in VS Code. If the user
-accepts the proposal, Markdown for Humans attempts to apply the change directly
-to the source file and returns the final status to the AI assistant. Some MCP
-clients time out before the editor review is finished. In that case the tool
-may return `status: "pending"` with a `review_id` while the review panel
-remains open in VS Code. When the user finishes editing, call
-`resume_proposal_review` with that `review_id`.
+#### Telling your AI agent when to use the MCP tools
 
-`propose_sequential_selection_replacements` reuses that same review panel, but
-queues each proposal and advances to the next one without returning control to
-the MCP client between steps. It returns one JSON result containing the per-step
-statuses after the queue completes or times out. If the client times out first,
-the tool may return `status: "pending"` with a `session_id`. When the user
-finishes the queued review, call `resume_sequential_proposal_review` with that
-`session_id`.
+The MCP tools are available but your AI assistant won't use them automatically—you need to tell it when and how.
 
-`scroll_to_markdown_selection` is meant for revealing a known passage to the
-user when the agent is working from file context. It is not intended as a
-normal immediate follow-up to `get_markdown_selection`, because the selection is
-already visible in that workflow.
+A ready-to-use instruction file is included at [`examples/CLAUDE.md`](examples/CLAUDE.md). Copy it to your project as:
 
-`scroll_to_markdown_selection` reuses the same selection-matching logic as
-proposal targeting, so the editor can find the right occurrence even when the
-same text appears multiple times.
+- `CLAUDE.md` — for Claude Code (place in your project root or `~/.claude/CLAUDE.md` for global use)
+- `AGENTS.md` — for Cursor, Codex, or other agents that read this file
+- Any system prompt or `instructions.md` file your agent reads at startup
 
-Examples:
-
-- User-selected text workflow:
-  The user highlights a paragraph in the editor and says, "rewrite this more clearly."
-  The agent should call `get_markdown_selection`, then call
-  `propose_selection_replacement` with the returned `selected`,
-  `context_before`, and `context_after` values.
-
-- Batched review workflow:
-  The agent has identified several edits for the same markdown file and the user
-  wants to review them in one pass. The agent should call
-  `propose_sequential_selection_replacements` with the file path and an ordered
-  list of `{ original, replacement, context_before, context_after }` objects.
-
-- Agent-driven raw file workflow:
-  The agent is reviewing markdown from the file directly, identifies a specific
-  passage, and the user says, "show me that section in the editor."
-  The agent should call `scroll_to_markdown_selection` with the exact markdown
-  span and available surrounding context so the editor can select and reveal it.
-```
-
-For Claude Code, place this in `~/.claude/CLAUDE.md` (applies globally to all projects) or `.claude/CLAUDE.md` in your project root.
+The file contains the full tool reference — when to call each tool, what parameters to pass, and how to handle every return status.
 
 ---
 

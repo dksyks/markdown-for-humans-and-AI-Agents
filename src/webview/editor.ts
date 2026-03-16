@@ -189,6 +189,7 @@ let pendingSelectionRevealMessage:
       original?: string;
       context_before?: string | null;
       context_after?: string | null;
+      headings_before?: string[] | null;
     }
   | null = null;
 let lastProposalSelectionTarget:
@@ -606,7 +607,8 @@ function resolveProposalSelectionTarget(
   editor: Editor,
   original: string,
   ctxBefore: string | null,
-  ctxAfter: string | null
+  ctxAfter: string | null,
+  headingsBefore?: string[] | null
 ) {
   const fullMarkdown = getEditorMarkdownForSync(editor);
   const gitHubAlertRange = resolveSelectionRangeFromGitHubAlerts(editor, original, {
@@ -660,7 +662,7 @@ function resolveProposalSelectionTarget(
   }
 
   let bestMarkdownIdx = occurrences[0] ?? 0;
-  if (occurrences.length > 1 && (ctxBefore || ctxAfter)) {
+  if (occurrences.length > 1 && (ctxBefore || ctxAfter || (headingsBefore && headingsBefore.length > 0))) {
     let bestScore = -1;
     for (const idx of occurrences) {
       let score = 0;
@@ -674,6 +676,18 @@ function resolveProposalSelectionTarget(
           idx + original.length + ctxAfter.length
         );
         score += commonPrefixLength(after, ctxAfter);
+      }
+      if (headingsBefore && headingsBefore.length > 0) {
+        // Find the nearest heading before this occurrence and check if it
+        // matches the closest expected heading (headingsBefore[0]).
+        const textBefore = fullMarkdown.slice(0, idx);
+        const headingMatches = [...textBefore.matchAll(/^#{1,6}\s+(.+)$/gm)];
+        if (headingMatches.length > 0) {
+          const nearestHeading = headingMatches[headingMatches.length - 1][1].trim();
+          if (nearestHeading === headingsBefore[0].trim()) {
+            score += 500;
+          }
+        }
       }
       if (score > bestScore) {
         bestScore = score;
@@ -930,6 +944,7 @@ function handleSelectionRevealMessage(
         original: string;
         context_before: string | null;
         context_after: string | null;
+        headings_before?: string[] | null;
       }
     | {
         type: 'revealCurrentProposalSelection';
@@ -971,9 +986,10 @@ function handleSelectionRevealMessage(
 
   try {
     const { original, context_before: ctxBefore, context_after: ctxAfter, request_id: requestId } = message;
+    const headingsBefore = 'headings_before' in message ? (message.headings_before ?? null) : null;
     const selectionKey = getProposalSelectionKey(original, ctxBefore, ctxAfter);
     const normalizedBlocks = getNormalizedSelectionBlocks(original);
-    const target = resolveProposalSelectionTarget(editor, original, ctxBefore, ctxAfter);
+    const target = resolveProposalSelectionTarget(editor, original, ctxBefore, ctxAfter, headingsBefore);
     if (!target) {
       if (message.type === 'scrollAndSelect' && requestId) {
         vscode.postMessage({
@@ -2332,6 +2348,7 @@ window.addEventListener('message', (event: MessageEvent) => {
             original: string;
             context_before: string | null;
             context_after: string | null;
+            headings_before?: string[] | null;
           };
           break;
         }
@@ -2341,6 +2358,7 @@ window.addEventListener('message', (event: MessageEvent) => {
           original: string;
           context_before: string | null;
           context_after: string | null;
+          headings_before?: string[] | null;
         });
         break;
       }
@@ -2741,7 +2759,7 @@ function initializeProposalMode() {
       </div>
       <div class="proposal-actions">
         <button id="proposal-accept" class="proposal-btn proposal-btn-primary">Accept</button>
-        <button id="proposal-cancel" class="proposal-btn">Cancel</button>
+        <button id="proposal-cancel" class="proposal-btn">Skip</button>
         <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Review in progress">Review in progress</button>
       </div>
     </div>
@@ -2919,17 +2937,17 @@ function initializeProposalMode() {
   const acceptBtn = document.getElementById('proposal-accept') as HTMLButtonElement;
   const cancelBtn = document.getElementById('proposal-cancel') as HTMLButtonElement;
 
-  const handleProposalResponse = (status: 'accept' | 'cancel' | 'timeout' | 'cancelled') => {
+  const handleProposalResponse = (status: 'accept' | 'skip' | 'timeout' | 'skipped') => {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-    const normalizedStatus = status === 'cancel' ? 'cancelled' : status;
-    const replacementMd = normalizedStatus === 'cancelled'
+    const normalizedStatus = status === 'skip' ? 'skipped' : status;
+    const replacementMd = normalizedStatus === 'skipped'
       ? null
       : getEditorMarkdownForSync(proposedEditor);
     vscode.postMessage({ type: 'proposalResponse', status: normalizedStatus, replacement: replacementMd });
   };
 
   acceptBtn.addEventListener('click', () => handleProposalResponse('accept'));
-  cancelBtn.addEventListener('click', () => handleProposalResponse('cancel'));
+  cancelBtn.addEventListener('click', () => handleProposalResponse('skip'));
 
   // --- Handle proposalInit from extension ---
   window.addEventListener('message', (event: MessageEvent) => {
