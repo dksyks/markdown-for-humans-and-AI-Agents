@@ -96,6 +96,7 @@ Opens a WYSIWYG popup panel showing the original and up to 3 alternative replace
 - `"accepted_unchanged_but_not_applied"`: the user accepted the proposed replacement unchanged, but it was not applied to the file
 - `"accepted_changed_but_not_applied"`: the user changed a proposed replacement and accepted that edited version, but it was not applied to the file
 - `"skipped"`: user declined (Skip This / Skip These)
+- `"rejected"`: user rejected the proposal, indicating no change is wanted (Reject This / Reject These)
 - `"in_progress"`: review panel is still open  -  resume with `resume_single_replacement`
 - `"error"`: workflow failed
 
@@ -156,7 +157,7 @@ Proposes multiple replacements for the same file in one uninterrupted review flo
 **Returns** `{ status, message, error_type, error, propose_sequential_replacements_session_id, file, results }` where:
 - `status` is `"completed"`, `"in_progress"`, or `"error"`
 - `propose_sequential_replacements_session_id` is present when status is `"in_progress"`  -  pass it to `resume_sequential_replacements`
-- `results` is an ordered array; each item has the same fields as a `propose_single_replacement` return value (including `selected_option_index`, per-step `"applied"`, `"accepted_unchanged_but_not_applied"`, `"accepted_changed_but_not_applied"`, `"skipped"`, etc.). If the user clicks "Skip Remaining", the current and all remaining unreviewed steps are marked `"skipped"` and the overall status is `"completed"`.
+- `results` is an ordered array; each item has the same fields as a `propose_single_replacement` return value (including `selected_option_index`, per-step `"applied"`, `"accepted_unchanged_but_not_applied"`, `"accepted_changed_but_not_applied"`, `"skipped"`, `"rejected"`, etc.). If the user clicks "Skip Remaining", the current and all remaining unreviewed steps are marked `"skipped"` and the overall status is `"completed"`.
 
 Treat a step as successful only when that step's status is `"applied"`.
 

@@ -2919,6 +2919,7 @@ function initializeProposalMode() {
   let acceptBtns: HTMLButtonElement[] = [];
   let cancelBtn: HTMLButtonElement;
   let skipRemainingBtn: HTMLButtonElement | null = null;
+  let rejectBtn: HTMLButtonElement | null = null;
   let timerBtn: HTMLButtonElement;
 
   // --- Timer state ---
@@ -3020,11 +3021,11 @@ function initializeProposalMode() {
   };
 
   // --- Response handler (shared by Accept buttons, skip buttons, and timer) ---
-  const handleProposalResponse = (status: 'accept' | 'skip' | 'timeout' | 'skipped', optionIndex?: number) => {
+  const handleProposalResponse = (status: 'accept' | 'skip' | 'reject' | 'timeout' | 'skipped', optionIndex?: number) => {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-    const normalizedStatus = status === 'skip' ? 'skipped' : status;
+    const normalizedStatus = status === 'skip' ? 'skipped' : status === 'reject' ? 'rejected' : status;
     const resolvedIndex = optionIndex ?? activeEditorIndex;
-    const replacementMd = normalizedStatus === 'skipped'
+    const replacementMd = normalizedStatus === 'skipped' || normalizedStatus === 'rejected'
       ? null
       : getEditorMarkdownForSync(proposedEditors[resolvedIndex]);
     vscode.postMessage({
@@ -3111,6 +3112,7 @@ function initializeProposalMode() {
         <div class="proposal-actions">
           <button id="proposal-cancel" class="proposal-btn" title="${multiOption ? 'Skip these proposal options without making changes.' : 'Skip this proposal and make no changes.'}">${multiOption ? 'Skip These' : 'Skip This'}</button>
           ${hasRemaining ? '<button id="proposal-skip-remaining" class="proposal-btn" title="Skip this proposal and all remaining proposals and make no more changes.">Skip Remaining</button>' : ''}
+          <button id="proposal-reject" class="proposal-btn" title="${multiOption ? 'Decline these proposal options as no change is wanted.' : 'Decline this proposal as no change is wanted.'}">${multiOption ? 'Reject These' : 'Reject This'}</button>
           <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Review in progress">Review in progress</button>
         </div>
       </div>
@@ -3122,9 +3124,11 @@ function initializeProposalMode() {
     numOptions = options.length;
     cancelBtn = document.getElementById('proposal-cancel') as HTMLButtonElement;
     skipRemainingBtn = document.getElementById('proposal-skip-remaining') as HTMLButtonElement | null;
+    rejectBtn = document.getElementById('proposal-reject') as HTMLButtonElement | null;
     timerBtn = document.getElementById('proposal-timer') as HTMLButtonElement;
 
     cancelBtn.addEventListener('click', () => handleProposalResponse('skip'));
+    rejectBtn?.addEventListener('click', () => handleProposalResponse('reject'));
     skipRemainingBtn?.addEventListener('click', () => {
       if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
       vscode.postMessage({ type: 'proposalSkipRemaining' });

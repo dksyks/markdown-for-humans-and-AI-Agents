@@ -269,7 +269,7 @@ Opens a popup panel beside the editor. Each option has its own Accept button and
 The user can Accept any option (applying it), edit the replacement inline, or Skip All.
 The redline diff updates live as the user edits or moves focus between options.
 The arguments before replacement_options are the same as for scroll_to_selection.
-Returns { status, message, error_type, error, propose_single_replacement_session_id, selection, selection_replacement, selected_option_index, file, context_before, context_after, headings_before } where status is "applied", "accepted_unchanged_but_not_applied", "accepted_changed_but_not_applied", "skipped", "in_progress", or "error".
+Returns { status, message, error_type, error, propose_single_replacement_session_id, selection, selection_replacement, selected_option_index, file, context_before, context_after, headings_before } where status is "applied", "accepted_unchanged_but_not_applied", "accepted_changed_but_not_applied", "skipped", "rejected", "in_progress", or "error".
 Treat only "applied" as authoritative success.
 Use context_before and context_after to locate the correct occurrence if the text appears multiple times.`,
   {
@@ -881,7 +881,7 @@ function normalizeSingleProposalResult(result, fallback = {}) {
   delete normalized.applied_by;
   delete normalized.fallback_error;
 
-  if (normalized.status === 'skipped' || normalized.status === 'in_progress' || normalized.status === 'error') {
+  if (normalized.status === 'skipped' || normalized.status === 'rejected' || normalized.status === 'in_progress' || normalized.status === 'error') {
     normalized.selection_replacement = normalized.selection_replacement ?? null;
     normalized.selected_option_index = normalized.selected_option_index ?? null;
   }
@@ -902,6 +902,10 @@ function normalizeSingleProposalResult(result, fallback = {}) {
     normalized.error = null;
   } else if (normalized.status === 'skipped') {
     normalized.message = 'The user declined all proposals.';
+    normalized.error_type = null;
+    normalized.error = null;
+  } else if (normalized.status === 'rejected') {
+    normalized.message = 'The user rejected the proposal, indicating no change is wanted.';
     normalized.error_type = null;
     normalized.error = null;
   } else if (normalized.status === 'in_progress') {
