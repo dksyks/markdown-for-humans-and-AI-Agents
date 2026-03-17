@@ -99,7 +99,8 @@ describe('selectionRevealResult handling', () => {
         type: 'selectionRevealResult',
         id: 'reveal-ack-1',
         status: 'error',
-        error: 'Could not resolve the requested selection in the active editor.',
+        error:
+          'The file is open in Markdown for Humans, but the requested selection could not be found. The file contents may have changed, or the provided context may not match.',
         debug: {
           phase: 'resolveProposalSelectionTarget',
         },
@@ -110,10 +111,12 @@ describe('selectionRevealResult handling', () => {
 
     const response = JSON.parse(fs.readFileSync(originalResponsePath, 'utf8'));
     expect(response).toEqual({
+      selection_request_id: 'reveal-ack-1',
       id: 'reveal-ack-1',
       status: 'error',
       file: '/workspace/docs/target.md',
-      error: 'Could not resolve the requested selection in the active editor.',
+      error:
+        'The file is open in Markdown for Humans, but the requested selection could not be found. The file contents may have changed, or the provided context may not match.',
       debug: {
         phase: 'resolveProposalSelectionTarget',
       },

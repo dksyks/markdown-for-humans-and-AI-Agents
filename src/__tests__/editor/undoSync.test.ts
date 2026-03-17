@@ -191,12 +191,17 @@ describe('MarkdownEditorProvider undo/redo safety', () => {
 
     expect(webview.postMessage).toHaveBeenCalledTimes(1);
     const payload = (webview.postMessage as jest.Mock).mock.calls[0][0];
-    expect(payload).toEqual({
+    expect(payload).toMatchObject({
       type: 'update',
       content: 'fresh content',
       skipResizeWarning: false,
       imagePath: 'images',
       imagePathBase: 'relativeToDocument',
+      colors: expect.objectContaining({
+        h1: '#1560c1',
+        bold: '#bc0101',
+        labelOpacity: 0.1,
+      }),
     });
   });
 });

@@ -1051,7 +1051,8 @@ function handleSelectionRevealMessage(
           type: 'selectionRevealResult',
           id: requestId,
           status: 'error',
-          error: 'Could not resolve the requested selection in the active editor.',
+          error:
+            'The file is open in Markdown for Humans, but the requested selection could not be found. The file contents may have changed, or the provided context may not match.',
           debug: {
             phase: 'resolveProposalSelectionTarget',
             original_length: original.length,
@@ -2602,6 +2603,11 @@ window.addEventListener('navigateForward', () => {
   navIsJumping = false;
 });
 
+window.addEventListener('navRecordPosition', (e: Event) => {
+  const { pos, immediate } = (e as CustomEvent<{ pos: number; immediate: boolean }>).detail;
+  navRecordPosition(pos, immediate ?? false);
+});
+
 // Handle custom event for TOC toggle from toolbar button
 window.addEventListener('toggleTocOutline', () => {
   if (editor) {
@@ -2912,6 +2918,7 @@ function initializeProposalMode() {
   let optionSections: HTMLElement[] = [];
   let acceptBtns: HTMLButtonElement[] = [];
   let cancelBtn: HTMLButtonElement;
+  let skipRemainingBtn: HTMLButtonElement | null = null;
   let timerBtn: HTMLButtonElement;
 
   // --- Timer state ---
@@ -3012,7 +3019,7 @@ function initializeProposalMode() {
     }
   };
 
-  // --- Response handler (shared by Accept buttons and Skip All / timer) ---
+  // --- Response handler (shared by Accept buttons, skip buttons, and timer) ---
   const handleProposalResponse = (status: 'accept' | 'skip' | 'timeout' | 'skipped', optionIndex?: number) => {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     const normalizedStatus = status === 'skip' ? 'skipped' : status;
@@ -3062,7 +3069,7 @@ function initializeProposalMode() {
   // --- Build dynamic layout from options array ---
   interface OptionData { replacement: string; justification?: string | null; }
 
-  const buildLayout = (options: OptionData[]) => {
+  const buildLayout = (options: OptionData[], hasRemaining = false) => {
     // Destroy any previous editors
     proposedEditors.forEach(ed => ed.destroy());
     proposedEditors.length = 0;
@@ -3102,7 +3109,8 @@ function initializeProposalMode() {
         </div>
         ${optionSectionsHtml}
         <div class="proposal-actions">
-          <button id="proposal-cancel" class="proposal-btn" title="Dismiss without applying">${multiOption ? 'Skip All Options' : 'Skip'}</button>
+          <button id="proposal-cancel" class="proposal-btn" title="${multiOption ? 'Skip these proposal options without making changes.' : 'Skip this proposal and make no changes.'}">${multiOption ? 'Skip These' : 'Skip This'}</button>
+          ${hasRemaining ? '<button id="proposal-skip-remaining" class="proposal-btn" title="Skip this proposal and all remaining proposals and make no more changes.">Skip Remaining</button>' : ''}
           <button id="proposal-timer" class="proposal-btn proposal-btn-timer" title="Review in progress">Review in progress</button>
         </div>
       </div>
@@ -3113,9 +3121,14 @@ function initializeProposalMode() {
     redlineTitleEl = document.getElementById('proposal-redline-title')!;
     numOptions = options.length;
     cancelBtn = document.getElementById('proposal-cancel') as HTMLButtonElement;
+    skipRemainingBtn = document.getElementById('proposal-skip-remaining') as HTMLButtonElement | null;
     timerBtn = document.getElementById('proposal-timer') as HTMLButtonElement;
 
     cancelBtn.addEventListener('click', () => handleProposalResponse('skip'));
+    skipRemainingBtn?.addEventListener('click', () => {
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      vscode.postMessage({ type: 'proposalSkipRemaining' });
+    });
     timerBtn.addEventListener('click', () => {
       if (!hasPendingHandoff) return;
       hasCopiedResumePrompt = true;
@@ -3262,7 +3275,9 @@ function initializeProposalMode() {
       ? msg.options.slice(0, 3)
       : [{ replacement: msg.replacement ?? '', justification: msg.justification ?? null }];
 
-    buildLayout(rawOptions);
+    const hasRemaining = typeof msg.queueTotal === 'number' && typeof msg.queueIndex === 'number'
+      && msg.queueIndex < msg.queueTotal - 1;
+    buildLayout(rawOptions, hasRemaining);
     // Render after setContent rAF fires so redline reflects actual content
     requestAnimationFrame(() => {
       renderReviewPane();

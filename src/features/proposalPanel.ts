@@ -20,6 +20,11 @@ import {
 import { applyProposalReplacement } from './proposalReplacement';
 import { findProposalMatch } from './proposalReplacement';
 
+const PROPOSAL_SELECTION_NOT_FOUND_ERROR =
+  'The file is open in Markdown for Humans, but the selection for the proposal could not be found. The file contents may have changed, or the provided context may not match.';
+const PROPOSAL_INTERNAL_ERROR =
+  'The file is open in Markdown for Humans, but the proposal could not be completed due to an internal extension error.';
+
 export interface ProposalOption {
   replacement: string;
   justification?: string | null;
@@ -51,6 +56,7 @@ interface ProposalResult {
   original: string;
   context_before: string | null;
   context_after: string | null;
+  headings_before?: string[] | null;
   status: string;
   replacement: string | null;
   selected_option_index?: number | null;
@@ -62,11 +68,14 @@ interface ProposalStatePayload {
   review_kind: 'single' | 'sequential';
   status: string;
   message?: string;
-  review_id?: string;
-  session_id?: string;
+  error_type?: string | null;
+  error?: string | null;
+  propose_single_replacement_session_id?: string;
+  propose_sequential_replacements_session_id?: string;
   original?: string;
   context_before?: string | null;
   context_after?: string | null;
+  headings_before?: string[] | null;
   replacement?: string | null;
   selected_option_index?: number | null;
   progress?: {
@@ -74,11 +83,13 @@ interface ProposalStatePayload {
     total: number;
   };
   results?: Array<{
-    status: string;
-    original: string;
-    context_before: string | null;
-    context_after: string | null;
-    replacement: string | null;
+      status: string;
+      original: string;
+      context_before: string | null;
+      context_after: string | null;
+      headings_before?: string[] | null;
+      replacement: string | null;
+      selected_option_index?: number | null;
   }>;
 }
 
@@ -90,21 +101,52 @@ export class ProposalPanel {
   static currentPanel: ProposalPanel | undefined;
 
   static show(context: vscode.ExtensionContext, request: ProposalRequest) {
-    const sourceContext = resolveProposalSourceContext(request);
-    const doc = sourceContext.document;
-    const sourcePanel = sourceContext.panel;
-    const filename = doc?.uri.fsPath
-      ? path.basename(doc.uri.fsPath)
-      : request.file
-        ? path.basename(request.file)
-        : 'document';
+    try {
+      const sourceContext = resolveProposalSourceContext(request);
+      const doc = sourceContext.document;
+      const sourcePanel = sourceContext.panel;
 
-    if (ProposalPanel.currentPanel) {
-      ProposalPanel.currentPanel._update(request, filename, doc, sourcePanel);
-      ProposalPanel.currentPanel._panel.reveal(vscode.ViewColumn.Beside, true);
-      return;
+      if (!doc) {
+        ProposalPanel._writeImmediateError(
+          request,
+          null,
+          'proposal_internal_error',
+          PROPOSAL_INTERNAL_ERROR
+        );
+        return;
+      }
+
+      if (!doesDocumentMatchProposal(doc.getText(), request)) {
+        ProposalPanel._writeImmediateError(
+          request,
+          doc,
+          'proposal_selection_not_found',
+          PROPOSAL_SELECTION_NOT_FOUND_ERROR
+        );
+        return;
+      }
+
+      const filename = doc.uri.fsPath
+        ? path.basename(doc.uri.fsPath)
+        : request.file
+          ? path.basename(request.file)
+          : 'document';
+
+      if (ProposalPanel.currentPanel) {
+        ProposalPanel.currentPanel._update(request, filename, doc, sourcePanel);
+        ProposalPanel.currentPanel._panel.reveal(vscode.ViewColumn.Beside, true);
+        return;
+      }
+      new ProposalPanel(context, request, filename, doc, sourcePanel);
+    } catch (err) {
+      console.warn(`${BUILD_TAG} Failed to open proposal review panel:`, err);
+      ProposalPanel._writeImmediateError(
+        request,
+        null,
+        'proposal_internal_error',
+        PROPOSAL_INTERNAL_ERROR
+      );
     }
-    new ProposalPanel(context, request, filename, doc, sourcePanel);
   }
 
   private _panel: vscode.WebviewPanel;
@@ -195,6 +237,8 @@ export class ProposalPanel {
       ...this._proposal,
       ...this._getDisplayContext(),
       colors: this._getColors(),
+      queueTotal: this._proposalQueue.length,
+      queueIndex: this._proposalIndex,
     });
     this._scrollMainEditorWithRetries();
   }
@@ -235,11 +279,14 @@ export class ProposalPanel {
 
   private async _handleMessage(msg: any) {
     if (msg.type === 'proposalReady') {
+      this._writeProposalState(this._buildReadyPayload());
       this._panel.webview.postMessage({
         type: 'proposalInit',
         ...this._proposal,
         ...this._getDisplayContext(),
         colors: this._getColors(),
+        queueTotal: this._proposalQueue.length,
+        queueIndex: this._proposalIndex,
       });
       this._scrollMainEditorWithRetries();
       return;
@@ -279,6 +326,8 @@ export class ProposalPanel {
           ...this._proposal,
           ...this._getDisplayContext(),
           colors: this._getColors(),
+          queueTotal: this._proposalQueue.length,
+          queueIndex: this._proposalIndex,
         });
         this._scrollMainEditorWithRetries();
         return;
@@ -292,6 +341,34 @@ export class ProposalPanel {
         console.warn(`${BUILD_TAG} Failed to write response temp file:`, err);
       }
 
+      this._panel.dispose();
+      return;
+    }
+
+    if (msg.type === 'proposalSkipRemaining') {
+      // Mark current proposal as skipped
+      this._proposalResults.push({
+        ...this._proposal,
+        status: 'skipped',
+        replacement: null,
+        selected_option_index: null,
+      });
+      // Mark all remaining proposals as skipped
+      for (let i = this._proposalIndex + 1; i < this._proposalQueue.length; i++) {
+        this._proposalResults.push({
+          ...this._proposalQueue[i],
+          status: 'skipped',
+          replacement: null,
+          selected_option_index: null,
+        });
+      }
+      try {
+        const payload = this._buildResponsePayload('skipped');
+        this._writeResponsePayload(payload);
+        this._writeProposalState(payload);
+      } catch (err) {
+        console.warn(`${BUILD_TAG} Failed to write skip-remaining response:`, err);
+      }
       this._panel.dispose();
       return;
     }
@@ -331,6 +408,7 @@ export class ProposalPanel {
         original: this._proposal.original,
         context_before: this._proposal.context_before,
         context_after: this._proposal.context_after,
+        headings_before: this._proposal.headings_before ?? null,
         status: finalStatus,
         replacement: this._proposalResults[0]?.replacement ?? null,
         selected_option_index: this._proposalResults[0]?.selected_option_index ?? null,
@@ -347,6 +425,7 @@ export class ProposalPanel {
         original: result.original,
         context_before: result.context_before,
         context_after: result.context_after,
+        headings_before: result.headings_before ?? null,
         replacement: result.replacement,
         selected_option_index: result.selected_option_index ?? null,
       })),
@@ -359,7 +438,7 @@ export class ProposalPanel {
       file: this._sourceDocument?.uri.fsPath ?? null,
       review_kind: this._proposalQueue.length === 1 ? 'single' : 'sequential',
       status: 'pending',
-      message: 'Review still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
+      message: 'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".',
       progress: {
         current: this._proposalIndex + 1,
         total: this._proposalQueue.length,
@@ -369,28 +448,48 @@ export class ProposalPanel {
     if (this._proposalQueue.length === 1) {
       return {
         ...basePayload,
-        review_id: this._requestId,
+        propose_single_replacement_session_id: this._requestId,
         original: this._proposal.original,
         context_before: this._proposal.context_before,
         context_after: this._proposal.context_after,
+        headings_before: this._proposal.headings_before ?? null,
         replacement: null,
+        selected_option_index: null,
       };
     }
 
     return {
       ...basePayload,
-      session_id: this._requestId,
+      propose_sequential_replacements_session_id: this._requestId,
       results: this._proposalResults.map(result => ({
         status: result.status,
         original: result.original,
         context_before: result.context_before,
         context_after: result.context_after,
+        headings_before: result.headings_before ?? null,
         replacement: result.replacement,
+        selected_option_index: result.selected_option_index ?? null,
       })),
     };
   }
 
+  private _buildReadyPayload(): ProposalStatePayload {
+    return {
+      id: this._requestId,
+      file: this._sourceDocument?.uri.fsPath ?? null,
+      review_kind: this._proposalQueue.length === 1 ? 'single' : 'sequential',
+      status: 'ready',
+      original: this._proposal.original,
+      context_before: this._proposal.context_before,
+      context_after: this._proposal.context_after,
+      headings_before: this._proposal.headings_before ?? null,
+      replacement: null,
+      selected_option_index: null,
+    };
+  }
+
   private _writeResponsePayload(payload: object) {
+    fs.mkdirSync(path.dirname(RESPONSE_TEMP_FILE), { recursive: true });
     fs.writeFileSync(RESPONSE_TEMP_FILE, JSON.stringify(payload, null, 2), 'utf8');
   }
 
@@ -415,6 +514,53 @@ export class ProposalPanel {
     try {
       fs.unlinkSync(ProposalPanel._getProposalStateFilePath(this._requestId));
     } catch {}
+  }
+
+  private static _writeImmediateError(
+    request: ProposalRequest,
+    sourceDocument: vscode.TextDocument | null,
+    errorType: string,
+    error: string
+  ) {
+    const queue = normalizeProposalQueue(request);
+    const primaryProposal = queue[0];
+    if (!primaryProposal) {
+      return;
+    }
+
+    const payload: ProposalStatePayload = {
+      id: request.id,
+      file: sourceDocument?.uri.fsPath ?? request.file ?? null,
+      review_kind: queue.length === 1 ? 'single' : 'sequential',
+      status: 'error',
+      message: error,
+      error_type: errorType,
+      error,
+      original: primaryProposal.original,
+      context_before: primaryProposal.context_before,
+      context_after: primaryProposal.context_after,
+      headings_before: primaryProposal.headings_before ?? null,
+      replacement: null,
+      selected_option_index: null,
+    };
+
+    try {
+      fs.mkdirSync(path.dirname(RESPONSE_TEMP_FILE), { recursive: true });
+      fs.writeFileSync(RESPONSE_TEMP_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    } catch (err) {
+      console.warn(`${BUILD_TAG} Failed to write immediate proposal response:`, err);
+    }
+
+    try {
+      fs.mkdirSync(PROPOSAL_STATE_DIR, { recursive: true });
+      fs.writeFileSync(
+        ProposalPanel._getProposalStateFilePath(request.id),
+        JSON.stringify(payload, null, 2),
+        'utf8'
+      );
+    } catch (err) {
+      console.warn(`${BUILD_TAG} Failed to write immediate proposal state:`, err);
+    }
   }
 
   private async _applyReplacement(replacement: string): Promise<boolean> {
@@ -569,6 +715,23 @@ function resolveProposalSourceContext(proposal: ProposalRequest): {
   };
 }
 
+function doesDocumentMatchProposal(fullMarkdown: string, proposal: ProposalRequest): boolean {
+  const primaryProposal =
+    Array.isArray(proposal.proposals) && proposal.proposals.length > 0
+      ? proposal.proposals[0]
+      : proposal;
+
+  return (
+    !!primaryProposal.original &&
+    findProposalMatch(fullMarkdown, {
+      original: primaryProposal.original,
+      replacement: primaryProposal.options?.[0]?.replacement ?? '',
+      context_before: primaryProposal.context_before,
+      context_after: primaryProposal.context_after,
+    }) !== null
+  );
+}
+
 function normalizeProposalQueue(request: ProposalRequest): Proposal[] {
   if (Array.isArray(request.proposals) && request.proposals.length > 0) {
     return request.proposals;
@@ -580,6 +743,7 @@ function normalizeProposalQueue(request: ProposalRequest): Proposal[] {
       options: (request.options ?? []).slice(0, 3),
       context_before: request.context_before,
       context_after: request.context_after,
+      headings_before: request.headings_before ?? null,
     },
   ];
 }

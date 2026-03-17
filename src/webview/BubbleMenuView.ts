@@ -1420,8 +1420,11 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
   document.body.appendChild(overflowMenu);
   bodyMenus.push(overflowMenu);
 
-  const resizeObserver = new ResizeObserver(() => updateOverflow());
-  resizeObserver.observe(toolbar);
+  const resizeObserver =
+    typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(() => updateOverflow());
+  resizeObserver?.observe(toolbar);
 
   // Initial measurement after the toolbar is inserted into the DOM
   requestAnimationFrame(() => updateOverflow());
@@ -1447,7 +1450,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
 
   // Clean up listeners when editor is destroyed
   editor.on('destroy', () => {
-    resizeObserver.disconnect();
+    resizeObserver?.disconnect();
     if (focusChangeListener) {
       window.removeEventListener('editorFocusChange', focusChangeListener);
       focusChangeListener = null;

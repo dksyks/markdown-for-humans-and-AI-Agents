@@ -1,3 +1,5 @@
+/** @jest-environment jsdom */
+
 /**
  * Regression tests for webview undo/redo guards.
  *
@@ -70,30 +72,15 @@ type TestingModule = {
 
 describe('webview undo/redo guards', () => {
   let testing: TestingModule;
+  const originalReadyStateDescriptor = Object.getOwnPropertyDescriptor(document, 'readyState');
 
   const setupModule = async () => {
     jest.resetModules();
 
-    // Minimal globals to satisfy editor.ts on import without creating the editor
-    (
-      global as unknown as { document: { readyState: string; addEventListener: jest.Mock } }
-    ).document = {
-      readyState: 'loading',
-      addEventListener: jest.fn(),
-    };
-    (
-      global as unknown as {
-        window: {
-          setTimeout: typeof setTimeout;
-          clearTimeout: typeof clearTimeout;
-          addEventListener: jest.Mock;
-        };
-      }
-    ).window = {
-      setTimeout,
-      clearTimeout,
-      addEventListener: jest.fn(),
-    };
+    Object.defineProperty(document, 'readyState', {
+      configurable: true,
+      value: 'loading',
+    });
     (
       global as unknown as {
         acquireVsCodeApi: () => {
@@ -107,9 +94,10 @@ describe('webview undo/redo guards', () => {
       getState: jest.fn(),
       setState: jest.fn(),
     }));
-    (global as unknown as { performance: { now: () => number } }).performance = {
-      now: () => 0,
-    };
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    }) as typeof requestAnimationFrame;
 
     const mod = await import('../../webview/editor');
     testing = mod.__testing;
@@ -118,6 +106,12 @@ describe('webview undo/redo guards', () => {
   beforeEach(async () => {
     await setupModule();
     testing.resetSyncState();
+  });
+
+  afterAll(() => {
+    if (originalReadyStateDescriptor) {
+      Object.defineProperty(document, 'readyState', originalReadyStateDescriptor);
+    }
   });
 
   it('skips update when content matches recently sent hash', () => {

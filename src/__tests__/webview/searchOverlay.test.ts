@@ -202,8 +202,8 @@ describe('Search Overlay', () => {
       const editor = createMockEditor('aaaa');
       const result = findMatches(editor as any, 'aa');
 
-      // Should find matches at positions 0, 1, 2
-      expect(result).toHaveLength(3);
+      // Search uses regex-style non-overlapping matching within each text node
+      expect(result).toHaveLength(2);
     });
 
     it('should return empty array when no matches found', () => {
@@ -288,8 +288,10 @@ describe('Search Overlay', () => {
       const longContent = 'test '.repeat(1000);
       const editor = createMockEditor(longContent);
       const result = findMatches(editor as any, 'test');
+      const uncappedResult = findMatches(editor as any, 'test', 1000);
 
-      expect(result).toHaveLength(1000);
+      expect(result).toHaveLength(500);
+      expect(uncappedResult).toHaveLength(1000);
     });
 
     it('should handle special regex characters safely', () => {
@@ -313,17 +315,27 @@ describe('Search Overlay', () => {
 
 describe('Search Overlay UI behaviors', () => {
   let editor: MockEditor;
+  let originalRequestAnimationFrame: typeof requestAnimationFrame;
 
   beforeEach(() => {
+    jest.useFakeTimers();
     // Clean DOM between tests
     document.body.innerHTML = '';
     // Mock window.scrollTo (not implemented in jsdom)
     window.scrollTo = jest.fn();
+    originalRequestAnimationFrame = window.requestAnimationFrame;
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    }) as typeof requestAnimationFrame;
     editor = createMockEditorWithView('hello hello');
   });
 
   afterEach(() => {
     hideSearchOverlay(editor as unknown as Editor, false);
+    window.requestAnimationFrame = originalRequestAnimationFrame;
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
   });
 
   it('focuses the search input when shown', () => {
@@ -353,6 +365,7 @@ describe('Search Overlay UI behaviors', () => {
     const input = document.querySelector('.search-overlay-input') as HTMLInputElement;
     input.value = 'hello';
     input.dispatchEvent(new Event('input', { bubbles: true }));
+    jest.runOnlyPendingTimers();
 
     // First match selected on initial search
     const firstSelection = editor.commands.setTextSelection.mock.calls.at(-1)?.[0];

@@ -17,6 +17,8 @@ export interface ColorSettings {
   labelOpacity: number;
 }
 
+type ColorKey = Exclude<keyof ColorSettings, 'labelOpacity'>;
+
 export const DEFAULT_COLORS: ColorSettings = {
   h1: '#1560c1',
   h2: '#1560c1',
@@ -30,7 +32,7 @@ export const DEFAULT_COLORS: ColorSettings = {
   labelOpacity: 0.10,
 };
 
-const COLOR_ROWS: Array<{ key: keyof ColorSettings; label: string }> = [
+const COLOR_ROWS: Array<{ key: ColorKey; label: string }> = [
   { key: 'h1', label: 'Heading 1' },
   { key: 'h2', label: 'Heading 2' },
   { key: 'h3', label: 'Heading 3' },
@@ -119,7 +121,6 @@ export function showColorSettingsPanel() {
 
   // Track input elements for "apply to all headings" logic
   const headingColorInputs: HTMLInputElement[] = [];
-  const headingHexInputs: HTMLInputElement[] = [];
 
   COLOR_ROWS.forEach(({ key, label }) => {
     const row = document.createElement('div');
@@ -193,7 +194,6 @@ export function showColorSettingsPanel() {
 
     if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(key)) {
       headingColorInputs.push(colorInput);
-      headingHexInputs.push(hexInput);
     }
   });
 

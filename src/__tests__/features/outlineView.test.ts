@@ -37,8 +37,9 @@ describe('OutlineViewProvider', () => {
       provider.setOutline([{ level: 1, text: '', pos: 0, sectionEnd: 10 }]);
 
       const roots = await provider.getChildren();
-      // When not active/ancestor, label is plain string
-      expect(roots?.[0]?.label).toBe('(Untitled)');
+      expect(roots?.[0]?.label).toMatchObject({
+        label: '(Untitled)',
+      });
     });
 
     it('handles multiple root-level headings', async () => {

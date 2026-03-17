@@ -43,9 +43,10 @@ describe('proposalRedline', () => {
     expect(removedIndex).toBeGreaterThanOrEqual(0);
     expect(addedIndex).toBeGreaterThan(removedIndex);
     expect(html).toContain('>open, welcoming, and</span>');
-    expect(html).toContain('>inclusive, diverse, or thriving</span>');
+    expect(html).toContain('inclusive, diverse, or thriving');
     expect(html).not.toContain('>open, welcoming, and community.</span>');
     expect(html).not.toContain('>inclusive, diverse, or thriving community.</span>');
+    expect(html).toContain('</span>community.');
     expect(html).toContain('community.');
   });
 
@@ -60,21 +61,26 @@ describe('proposalRedline', () => {
     );
 
     expect(html).toContain('<h1>');
-    expect(html).toContain('Financial Accounts');
+    expect(html).toContain('proposal-redline-added');
+    expect(html).toContain('Financial');
+    expect(html).toContain('Accounts');
     expect(html).toContain('and Their Relationships');
     expect(html).not.toContain('<p><span class="proposal-context-ghost"># ');
+    expect(html).not.toContain('proposal-context-ghost"> </span>');
   });
 
   it('preserves heading presentation while redlining the heading text', () => {
     const html = renderProposalRedlineHtml('## Project Goals', '## Implementation Plan');
+    const removedIndex = html.indexOf('proposal-redline-removed');
+    const addedIndex = html.indexOf('proposal-redline-added');
 
     expect(html).toContain('<h2>');
-    expect(html).toContain('proposal-redline-removed');
-    expect(html).toContain('>Project</span>');
-    expect(html).toContain('>Goals</span>');
-    expect(html).toContain('proposal-redline-added');
-    expect(html).toContain('>Implementation</span>');
-    expect(html).toContain('>Plan</span>');
+    expect(removedIndex).toBeGreaterThanOrEqual(0);
+    expect(addedIndex).toBeGreaterThan(removedIndex);
+    expect(html).toContain('Project Goals');
+    expect(html).toContain('Implementation Plan');
+    expect(html).not.toContain('## Project Goals');
+    expect(html).not.toContain('## Implementation Plan');
   });
 
   it('renders structural block replacements as inline review blocks instead of cards', () => {
@@ -181,6 +187,20 @@ describe('proposalRedline', () => {
     expect(html).toContain('proposal-redline-removed');
     expect(html).not.toContain('proposal-redline-block-removed');
     expect(html).not.toContain('proposal-redline-block-added');
+  });
+
+  it('preserves unchanged prose between separate inline change groups', () => {
+    const html = renderProposalRedlineHtml(
+      'Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at [support@concret.io](mailto:support@concret.io). All complaints will be reviewed and investigated promptly and fairly.',
+      'Instances of abusive, harassing, or otherwise unacceptable behavior should be reported to the community leaders responsible for enforcement at [support@concret.io](mailto:support@concret.io). All complaints will be reviewed promptly and handled fairly.'
+    );
+
+    expect(html).toContain('proposal-redline-added');
+    expect(html).toContain('proposal-redline-removed');
+    expect(html).toContain('community leaders responsible for enforcement');
+    expect(html).toContain('href="mailto:support@concret.io"');
+    expect(html).toContain('All complaints will be reviewed');
+    expect(html).toContain('promptly and');
   });
 
   it('escapes html inside diffed text segments', () => {

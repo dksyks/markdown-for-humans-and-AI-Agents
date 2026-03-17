@@ -22,7 +22,7 @@ describe('readPendingSelectionRevealRequest', () => {
     resetActiveWebviewStateForTests();
   });
 
-  it('returns the request and deletes the temp file after reading it', () => {
+  it('returns the request without consuming the temp file', () => {
     const requestFilePath = path.join(
       os.tmpdir(),
       `md4h-selection-reveal-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
@@ -31,7 +31,7 @@ describe('readPendingSelectionRevealRequest', () => {
     fs.writeFileSync(
       requestFilePath,
       JSON.stringify({
-        id: 'reveal-1',
+        selection_request_id: 'reveal-1',
         original: '**Note:** Test',
         context_before: 'Before',
         context_after: 'After',
@@ -42,12 +42,12 @@ describe('readPendingSelectionRevealRequest', () => {
     const request = readPendingSelectionRevealRequest(requestFilePath);
 
     expect(request).toEqual({
-      id: 'reveal-1',
+      selection_request_id: 'reveal-1',
       original: '**Note:** Test',
       context_before: 'Before',
       context_after: 'After',
     });
-    expect(fs.existsSync(requestFilePath)).toBe(false);
+    expect(fs.existsSync(requestFilePath)).toBe(true);
   });
 });
 
@@ -69,9 +69,9 @@ describe('shouldHandleSelectionRevealRequest', () => {
 
   function buildRequest(overrides: Partial<SelectionRevealRequest> = {}): SelectionRevealRequest {
     return {
-      id: 'reveal-1',
+      selection_request_id: 'reveal-1',
       file: '/workspace/docs/target.md',
-      source_instance_id: getEditorHostInstanceId(),
+      instance_id: getEditorHostInstanceId(),
       original: 'Old text',
       context_before: null,
       context_after: null,
@@ -91,7 +91,7 @@ describe('shouldHandleSelectionRevealRequest', () => {
     expect(
       shouldHandleSelectionRevealRequest(
         buildRequest({
-          source_instance_id: 'other-window',
+          instance_id: 'other-window',
         })
       )
     ).toBe(false);
@@ -127,9 +127,9 @@ describe('processSelectionRevealRequest', () => {
 
     const handled = processSelectionRevealRequest(
       {
-        id: 'reveal-2',
+        selection_request_id: 'reveal-2',
         file: '/workspace/docs/target.md',
-        source_instance_id: getEditorHostInstanceId(),
+        instance_id: getEditorHostInstanceId(),
         original: 'Selected text',
         context_before: 'Before',
         context_after: 'After',
@@ -146,6 +146,7 @@ describe('processSelectionRevealRequest', () => {
       original: 'Selected text',
       context_before: 'Before',
       context_after: 'After',
+      headings_before: null,
     });
     expect(fs.existsSync(responseFilePath)).toBe(false);
   });
@@ -182,7 +183,7 @@ describe('processSelectionRevealRequest', () => {
 
     const handled = processSelectionRevealRequest(
       {
-        id: 'reveal-3',
+        selection_request_id: 'reveal-3',
         original: '## Our Responsibilities',
         context_before:
           '- Other conduct which could reasonably be considered inappropriate in a professional setting\n\n',
@@ -204,6 +205,7 @@ describe('processSelectionRevealRequest', () => {
         '- Other conduct which could reasonably be considered inappropriate in a professional setting\n\n',
       context_after:
         '\n\nProject maintainers are responsible for clarifying and enforcing our standards of acceptable behavior and will take appropriate and fair corrective action in response to any behavior that they deem inappropriate, threatening, offensive, or harmful.\n',
+      headings_before: null,
     });
     expect(fs.existsSync(responseFilePath)).toBe(false);
   });
@@ -229,9 +231,9 @@ describe('processSelectionRevealRequest', () => {
 
     const handled = processSelectionRevealRequest(
       {
-        id: 'reveal-4',
+        selection_request_id: 'reveal-4',
         file: '/workspace/docs/target.md',
-        source_instance_id: getEditorHostInstanceId(),
+        instance_id: getEditorHostInstanceId(),
         original: 'Selected text',
         context_before: null,
         context_after: null,
@@ -245,6 +247,7 @@ describe('processSelectionRevealRequest', () => {
 
     const response = JSON.parse(fs.readFileSync(responseFilePath, 'utf8'));
     expect(response).toEqual({
+      selection_request_id: 'reveal-4',
       id: 'reveal-4',
       status: 'error',
       error: 'Failed to deliver reveal request to the Markdown for Humans webview: Error: webview unavailable',
@@ -271,9 +274,9 @@ describe('processSelectionRevealRequest', () => {
 
     const handled = processSelectionRevealRequest(
       {
-        id: 'reveal-5',
+        selection_request_id: 'reveal-5',
         file: '/workspace/docs/target.md',
-        source_instance_id: getEditorHostInstanceId(),
+        instance_id: getEditorHostInstanceId(),
         original: 'Selected text',
         context_before: null,
         context_after: null,
@@ -287,6 +290,7 @@ describe('processSelectionRevealRequest', () => {
 
     const response = JSON.parse(fs.readFileSync(responseFilePath, 'utf8'));
     expect(response).toEqual({
+      selection_request_id: 'reveal-5',
       id: 'reveal-5',
       status: 'error',
       error: 'Markdown for Humans did not accept the reveal request message.',

@@ -39,6 +39,7 @@ describe('ProposalPanel', () => {
 
     panel._proposal = {
       original,
+      options: [{ replacement }],
       context_before: null,
       context_after: null,
     };
@@ -67,6 +68,7 @@ describe('ProposalPanel', () => {
 
     panel._proposal = {
       original: '**Note:** Test',
+      options: [{ replacement: '**Note:** Revised Test' }],
       context_before: 'Before',
       context_after: 'After',
     };
@@ -88,6 +90,7 @@ describe('ProposalPanel', () => {
       original: '**Note:** Test',
       context_before: 'Before',
       context_after: 'After',
+      headings_before: null,
     });
     expect(postMessage).toHaveBeenNthCalledWith(2, {
       type: 'revealCurrentProposalSelection',
@@ -100,6 +103,7 @@ describe('ProposalPanel', () => {
       original: '**Note:** Test',
       context_before: 'Before',
       context_after: 'After',
+      headings_before: null,
     });
   });
 
@@ -112,9 +116,11 @@ describe('ProposalPanel', () => {
     } as unknown as vscode.WebviewPanel;
     const alphaDocument = {
       uri: vscode.Uri.file('/workspace/docs/alpha.md'),
+      getText: () => 'Alpha document content',
     } as unknown as vscode.TextDocument;
     const betaDocument = {
       uri: vscode.Uri.file('/workspace/docs/beta.md'),
+      getText: () => 'Old text',
     } as unknown as vscode.TextDocument;
 
     registerWebviewPanel(alphaPanel, alphaDocument);
@@ -145,7 +151,7 @@ describe('ProposalPanel', () => {
         file: '/workspace/docs/beta.md',
         source_instance_id: 'window-1',
         original: 'Old text',
-        replacement: 'New text',
+        options: [{ replacement: 'New text' }],
         context_before: null,
         context_after: null,
       }
@@ -207,8 +213,10 @@ describe('ProposalPanel', () => {
       {
         id: 'proposal-2',
         original: 'Each Beneficiary is responsible for investing assets held in the Personal Accounts.',
-        replacement:
-          'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
+        options: [{
+          replacement:
+            'Each Beneficiary is responsible for investing assets held in the Personal Accounts and related subaccounts.',
+        }],
         context_before: null,
         context_after: null,
       }
@@ -247,20 +255,20 @@ describe('ProposalPanel', () => {
     panel._requestId = 'batch-1';
     panel._proposal = {
       original: 'Old text',
-      replacement: 'New text',
+      options: [{ replacement: 'New text' }],
       context_before: null,
       context_after: null,
     };
     panel._proposalQueue = [
       {
         original: 'Old text',
-        replacement: 'New text',
+        options: [{ replacement: 'New text' }],
         context_before: null,
         context_after: null,
       },
       {
         original: 'Second old text',
-        replacement: 'Second new text',
+        options: [{ replacement: 'Second new text' }],
         context_before: 'Section break',
         context_after: 'Conclusion',
       },
@@ -278,14 +286,16 @@ describe('ProposalPanel', () => {
     });
 
     expect(vscode.workspace.applyEdit).toHaveBeenCalledTimes(1);
-    expect(proposalWebview.postMessage).toHaveBeenCalledWith({
+    expect(proposalWebview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: 'proposalInit',
       original: 'Second old text',
-      replacement: 'Second new text',
+      options: [{ replacement: 'Second new text' }],
       context_before: 'Section break',
       context_after: 'Conclusion',
+      displayContextBefore: '',
+      displayContextAfter: '',
       colors: expect.any(Object),
-    });
+    }));
     expect(proposalHostPanel.dispose).not.toHaveBeenCalled();
     expect(fs.existsSync(RESPONSE_TEMP_FILE)).toBe(false);
 
@@ -314,14 +324,18 @@ describe('ProposalPanel', () => {
           original: 'Old text',
           context_before: null,
           context_after: null,
+          headings_before: null,
           replacement: 'New text',
+          selected_option_index: null,
         },
         {
           status: 'cancelled',
           original: 'Second old text',
           context_before: 'Section break',
           context_after: 'Conclusion',
+          headings_before: null,
           replacement: null,
+          selected_option_index: null,
         },
       ],
     });
@@ -341,14 +355,14 @@ describe('ProposalPanel', () => {
     panel._requestId = 'pending-1';
     panel._proposal = {
       original: 'Old text',
-      replacement: 'New text',
+      options: [{ replacement: 'New text' }],
       context_before: null,
       context_after: null,
     };
     panel._proposalQueue = [
       {
         original: 'Old text',
-        replacement: 'New text',
+        options: [{ replacement: 'New text' }],
         context_before: null,
         context_after: null,
       },
@@ -369,7 +383,7 @@ describe('ProposalPanel', () => {
 
     const payload = JSON.parse(fs.readFileSync(RESPONSE_TEMP_FILE, 'utf8')) as {
       id: string;
-      review_id: string;
+      propose_single_replacement_session_id: string;
       status: string;
       message: string;
       review_kind: string;
@@ -380,13 +394,15 @@ describe('ProposalPanel', () => {
       file: '/test/CHANGELOG.md',
       review_kind: 'single',
       status: 'pending',
-      message: 'Review still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
+      message: 'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".',
       progress: { current: 1, total: 1 },
-      review_id: 'pending-1',
+      propose_single_replacement_session_id: 'pending-1',
       original: 'Old text',
       context_before: null,
       context_after: null,
+      headings_before: null,
       replacement: null,
+      selected_option_index: null,
     });
 
     const stateFilePath = ProposalPanel._getProposalStateFilePath('pending-1');

@@ -65,20 +65,16 @@ describe('createFormattingToolbar', () => {
 
   it('adds icons to dropdown menu items (when configured)', () => {
     const { editor } = createMockEditor();
-    const toolbar = createFormattingToolbar(editor);
+    createFormattingToolbar(editor);
 
-    const tableDropdown = Array.from(toolbar.querySelectorAll('.toolbar-dropdown')).find(
-      dropdown => {
-        const button = dropdown.querySelector('button');
-        return button?.getAttribute('aria-label')?.toLowerCase().includes('table');
-      }
+    const tableMenu = Array.from(document.querySelectorAll('.toolbar-dropdown-menu')).find(menu =>
+      menu.textContent?.includes('Insert Table')
     );
 
-    expect(tableDropdown).toBeTruthy();
+    expect(tableMenu).toBeTruthy();
 
-    const items = tableDropdown?.querySelectorAll('.toolbar-dropdown-item') ?? [];
-    const itemIcons =
-      tableDropdown?.querySelectorAll('.toolbar-dropdown-item .toolbar-dropdown-icon') ?? [];
+    const items = tableMenu?.querySelectorAll('.toolbar-dropdown-item') ?? [];
+    const itemIcons = tableMenu?.querySelectorAll('.toolbar-dropdown-item .toolbar-dropdown-icon') ?? [];
 
     expect(items.length).toBeGreaterThan(0);
     expect(itemIcons.length).toBe(items.length);

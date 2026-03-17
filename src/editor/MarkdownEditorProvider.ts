@@ -106,6 +106,7 @@ function writeSelectionStateForDocument(documentPath: string, data: object): voi
 function buildSelectionPayload(
   documentPath: string,
   message: {
+    type?: unknown;
     selected?: unknown;
     context_before?: unknown;
     context_after?: unknown;
@@ -142,14 +143,6 @@ function writeSelectionRevealResponse(data: object): void {
   } catch (err) {
     console.warn(`${BUILD_TAG} Failed to write selection reveal response temp file:`, err);
   }
-}
-
-function clearFileIfExists(filePath: string): void {
-  try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-  } catch {}
 }
 
 function clearFileIfExistsWithDebug(filePath: string, reason: string): void {
@@ -599,6 +592,9 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     registerWebviewPanel(webviewPanel, document);
     setActiveWebviewPanel(webviewPanel, document);
     writeActiveInstanceMetadata(document.uri.fsPath);
+    const initialSelectionPayload = buildSelectionPayload(document.uri.fsPath, {});
+    writeSelectionToTempFile(initialSelectionPayload);
+    writeSelectionStateForDocument(document.uri.fsPath, initialSelectionPayload);
 
     // Send initial content to webview
     this.updateWebview(document, webviewPanel.webview);
@@ -846,6 +842,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       }
       case 'selectionRevealResult': {
         writeSelectionRevealResponse({
+          selection_request_id: message.id,
           id: message.id,
           status: message.status === 'revealed' ? 'revealed' : 'error',
           file: document.uri.fsPath,

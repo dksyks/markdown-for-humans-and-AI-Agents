@@ -211,7 +211,7 @@ function detectInlineHeadingContext(
   }
 
   const level = match[1].length;
-  const displayBefore = beforeLine.replace(/^#{1,6}/, '');
+  const displayBefore = beforeLine.replace(/^#{1,6}\s*/, '');
   return {
     level,
     displayBefore,
@@ -363,7 +363,7 @@ function normalizeSimilarityTokens(markdown: string): string[] {
     .match(/[a-z0-9]+/g) ?? [];
 }
 
-function canRenderInlineRedline(left: MarkdownBlock, right: MarkdownBlock): boolean {
+export function canRenderInlineRedline(left: MarkdownBlock, right: MarkdownBlock): boolean {
   if (!(left.kind === right.kind && isInlineRenderableBlock(left))) {
     return false;
   }
@@ -839,9 +839,9 @@ function absorbSpacesIntoDiffRuns(parts: DiffPart[]): DiffPart[] {
 }
 
 /**
- * Reorder parts so all deletions for a change group appear before insertions.
- * Collects all contiguous non-equal parts (dels and ins mixed with equals between
- * them) and re-emits them as: all deletes, then all inserts, then the trailing equal.
+ * Reorder only truly contiguous change runs so deletions appear before insertions.
+ * Equal parts that survive absorption are meaningful unchanged prose and must stay
+ * in place between separate change groups.
  */
 function ensureDeleteBeforeInsert(parts: DiffPart[]): DiffPart[] {
   const result: DiffPart[] = [];
@@ -852,36 +852,17 @@ function ensureDeleteBeforeInsert(parts: DiffPart[]): DiffPart[] {
       i++;
       continue;
     }
-    // Collect a run of change parts (del/ins) possibly separated by equal segments
-    // Stop when we hit an equal that is NOT between two change parts
     const dels: DiffPart[] = [];
     const ins: DiffPart[] = [];
-    const pendingEquals: DiffPart[] = [];
-    while (i < parts.length) {
+    while (i < parts.length && parts[i].type !== 'equal') {
       if (parts[i].type === 'delete') {
         dels.push(parts[i]);
-        pendingEquals.length = 0;
-        i++;
-      } else if (parts[i].type === 'insert') {
-        ins.push(parts[i]);
-        pendingEquals.length = 0;
-        i++;
       } else {
-        // equal — peek ahead: if next non-equal is a change, keep collecting
-        let j = i + 1;
-        while (j < parts.length && parts[j].type === 'equal') j++;
-        if (j < parts.length && parts[j].type !== 'equal') {
-          // there's more changes ahead — hold this equal as pending
-          pendingEquals.push(parts[i]);
-          i++;
-        } else {
-          // no more changes — stop here, leave equal for next iteration
-          break;
-        }
+        ins.push(parts[i]);
       }
+      i++;
     }
-    // Emit: all deletes, then all inserts, then any pending equals
-    result.push(...dels, ...ins, ...pendingEquals);
+    result.push(...dels, ...ins);
   }
   return result;
 }
@@ -939,15 +920,29 @@ function normalizeChangePair(deletePart: DiffPart, insertPart: DiffPart): DiffPa
     sharedSuffixLength += 1;
   }
 
-  const prefix = deleteTokens.slice(0, sharedPrefixLength).join('');
-  const suffix =
+  let prefix = deleteTokens.slice(0, sharedPrefixLength).join('');
+  let suffix =
     sharedSuffixLength > 0 ? deleteTokens.slice(deleteTokens.length - sharedSuffixLength).join('') : '';
-  const trimmedDelete = deleteTokens
+  let trimmedDelete = deleteTokens
     .slice(sharedPrefixLength, deleteTokens.length - sharedSuffixLength)
     .join('');
-  const trimmedInsert = insertTokens
+  let trimmedInsert = insertTokens
     .slice(sharedPrefixLength, insertTokens.length - sharedSuffixLength)
     .join('');
+
+  const leadingWhitespace = getSharedLeadingWhitespace(trimmedDelete, trimmedInsert);
+  if (leadingWhitespace) {
+    prefix += leadingWhitespace;
+    trimmedDelete = trimmedDelete.slice(leadingWhitespace.length);
+    trimmedInsert = trimmedInsert.slice(leadingWhitespace.length);
+  }
+
+  const trailingWhitespace = getSharedTrailingWhitespace(trimmedDelete, trimmedInsert);
+  if (trailingWhitespace) {
+    trimmedDelete = trimmedDelete.slice(0, -trailingWhitespace.length);
+    trimmedInsert = trimmedInsert.slice(0, -trailingWhitespace.length);
+    suffix = trailingWhitespace + suffix;
+  }
 
   const normalized: DiffPart[] = [];
   if (prefix) {
@@ -963,6 +958,18 @@ function normalizeChangePair(deletePart: DiffPart, insertPart: DiffPart): DiffPa
     normalized.push({ type: 'equal', value: suffix });
   }
   return normalized;
+}
+
+function getSharedLeadingWhitespace(left: string, right: string): string {
+  const leftWhitespace = left.match(/^\s+/)?.[0] ?? '';
+  const rightWhitespace = right.match(/^\s+/)?.[0] ?? '';
+  return leftWhitespace.slice(0, Math.min(leftWhitespace.length, rightWhitespace.length));
+}
+
+function getSharedTrailingWhitespace(left: string, right: string): string {
+  const leftWhitespace = left.match(/\s+$/)?.[0] ?? '';
+  const rightWhitespace = right.match(/\s+$/)?.[0] ?? '';
+  return leftWhitespace.slice(leftWhitespace.length - Math.min(leftWhitespace.length, rightWhitespace.length));
 }
 
 function mergeAdjacentParts(parts: DiffPart[]): DiffPart[] {

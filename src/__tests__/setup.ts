@@ -11,6 +11,10 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const globalObj = globalThis as any;
 
+if (typeof globalObj.__BUILD_TIME__ === 'undefined') {
+  globalObj.__BUILD_TIME__ = 'test';
+}
+
 // Ensure Blob is available (Node 18+ has it globally)
 let BlobConstructor: any = globalObj.Blob;
 

@@ -249,7 +249,6 @@ function scrollToMatch(editor: Editor, match: { from: number; to: number }) {
 
   if (shouldRefocusInput) {
     const replaceInput = searchOverlayElement?.querySelector('.search-overlay-replace-input') as HTMLInputElement | null;
-    const searchInput = searchOverlayElement?.querySelector('.search-overlay-input') as HTMLInputElement | null;
     const activeIsReplace = document.activeElement === replaceInput;
     if (isReplaceVisible && activeIsReplace) {
       replaceInput?.focus();
@@ -431,7 +430,19 @@ function performSearch(editor: Editor, query: string) {
     }
 
     currentMatches = findMatches(editor, query);
-    currentMatchIndex = currentMatches.length > 0 ? 0 : -1;
+
+    // Start at the first match at or after the pre-search cursor position
+    const anchorPos = savedSelection?.from ?? 0;
+    let wrapped = false;
+    if (currentMatches.length === 0) {
+      currentMatchIndex = -1;
+    } else {
+      currentMatchIndex = currentMatches.findIndex(m => m.from >= anchorPos);
+      if (currentMatchIndex === -1) {
+        currentMatchIndex = 0;
+        wrapped = true;
+      }
+    }
 
     applySearchDecorations(editor, currentMatches, currentMatchIndex);
 
@@ -442,6 +453,7 @@ function performSearch(editor: Editor, query: string) {
 
     if (currentMatches.length > 0) {
       scrollToMatch(editor, currentMatches[currentMatchIndex]);
+      if (wrapped) setWrapIndicator('Wrapped to top');
     }
 
     showGutter(editor);
@@ -585,6 +597,9 @@ function replaceCurrentMatch(editor: Editor): void {
   const replaceInputEl = getReplaceInput();
   const replacement = replaceInputEl?.value ?? '';
 
+  // Record breadcrumb at the replacement site before applying
+  window.dispatchEvent(new CustomEvent('navRecordPosition', { detail: { pos: match.from, immediate: true } }));
+
   // Apply the replacement
   const { tr } = editor.state;
   if (replacement.length > 0) {
@@ -619,6 +634,22 @@ function replaceCurrentMatch(editor: Editor): void {
   }
 }
 
+let wrapIndicatorTimer: ReturnType<typeof setTimeout> | null = null;
+
+function setWrapIndicator(text: string) {
+  const el = searchOverlayElement?.querySelector('.search-overlay-counter') as HTMLElement | null;
+  if (!el) return;
+  if (wrapIndicatorTimer !== null) { clearTimeout(wrapIndicatorTimer); wrapIndicatorTimer = null; }
+  if (text) {
+    el.textContent = text;
+    wrapIndicatorTimer = setTimeout(() => {
+      wrapIndicatorTimer = null;
+      const searchInput = searchOverlayElement?.querySelector('.search-overlay-input') as HTMLInputElement | null;
+      if (searchInput) updateMatchCounter(searchInput);
+    }, 1500);
+  }
+}
+
 function setReplaceCounter(text: string) {
   const el = searchOverlayElement?.querySelector('.search-overlay-replace-counter') as HTMLElement | null;
   if (el) el.textContent = text;
@@ -627,6 +658,8 @@ function setReplaceCounter(text: string) {
 function replaceAllMatches(editor: Editor): void {
   if (currentMatches.length === 0) return;
   setReplaceCounter('');
+  // Record breadcrumb at current position before replacing all
+  window.dispatchEvent(new CustomEvent('navRecordPosition', { detail: { pos: editor.state.selection.from, immediate: true } }));
   const count = currentMatches.length;
   const replacement = getReplaceInput()?.value ?? '';
   // Replace in reverse order to preserve positions
@@ -901,6 +934,13 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
     if (e.key === 'Escape') {
       e.preventDefault();
       hideSearchOverlay(editor);
+    } else if (e.key === 'Enter' && !isMod) {
+      e.preventDefault();
+      if (e.shiftKey) {
+        goToPreviousMatch(editor);
+      } else {
+        goToNextMatch(editor);
+      }
     } else if (e.key === 'Tab' && !e.shiftKey && isReplaceVisible) {
       e.preventDefault();
       replaceInput.focus();
@@ -978,6 +1018,7 @@ export function showSearchOverlay(editor: Editor, openReplace = false): void {
 
   const { from, to } = editor.state.selection;
   savedSelection = { from, to };
+  window.dispatchEvent(new CustomEvent('navRecordPosition', { detail: { pos: from, immediate: true } }));
 
   const selectedText = editor.state.doc.textBetween(from, to, ' ');
 
@@ -1006,19 +1047,17 @@ export function showSearchOverlay(editor: Editor, openReplace = false): void {
     performSearch(editor, selectedText);
   }
 
-  setTimeout(() => {
-    if (openReplace && isReplaceVisible) {
-      const replaceInput = searchOverlayElement?.querySelector(
-        '.search-overlay-replace-input'
-      ) as HTMLInputElement | null;
-      replaceInput?.focus();
-    } else {
-      focusSearchInput();
-    }
-  }, 50);
+  if (openReplace && isReplaceVisible) {
+    const replaceInput = searchOverlayElement?.querySelector(
+      '.search-overlay-replace-input'
+    ) as HTMLInputElement | null;
+    replaceInput?.focus();
+  } else {
+    focusSearchInput();
+  }
 }
 
-export function hideSearchOverlay(editor: Editor, restorePosition = true): void {
+export function hideSearchOverlay(editor: Editor, restorePosition = false): void {
   if (!searchOverlayElement) return;
 
   searchOverlayElement.classList.remove('visible');
@@ -1057,11 +1096,13 @@ export function hideSearchOverlay(editor: Editor, restorePosition = true): void 
   }
 
   editor.commands.focus();
+  // Record final landing position as breadcrumb
+  window.dispatchEvent(new CustomEvent('navRecordPosition', { detail: { pos: editor.state.selection.from, immediate: true } }));
 }
 
 export function toggleSearchOverlay(editor: Editor): void {
   if (isVisible) {
-    hideSearchOverlay(editor, true, false);
+    hideSearchOverlay(editor, true);
     showSearchOverlay(editor, false);
   } else {
     showSearchOverlay(editor, false);

@@ -16,8 +16,30 @@ const SELECTION_REVEAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Sel
 const ACTIVE_INSTANCE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-ActiveInstance.json');
 const INSTANCE_TEMP_DIR_PREFIX = 'MarkdownForHumans-';
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-const SELECTION_REVEAL_TIMEOUT_MS = 8000;
+const PROPOSAL_CLAIM_TIMEOUT_MS = 500;
+const PROPOSAL_STARTUP_TIMEOUT_MS = 3000;
+const PROPOSAL_RESUME_SESSION_LOOKUP_TIMEOUT_MS = 500;
+const SELECTION_REVEAL_CLAIM_TIMEOUT_MS = 500;
+const SELECTION_REVEAL_COMPLETION_TIMEOUT_MS = 3000;
 const MCP_RESPONSE_POLL_MS = 100;
+const PROPOSAL_REQUEST_UNCLAIMED_ERROR =
+  'No instance of the Markdown for Humans extension acknowledged the proposal request within 500ms. The file may not be open in Markdown for Humans, or the extension may be busy.';
+const PROPOSAL_SELECTION_NOT_FOUND_ERROR =
+  'The file is open in Markdown for Humans, but the selection for the proposal could not be found. The file contents may have changed, or the provided context may not match.';
+const PROPOSAL_INTERNAL_ERROR =
+  'The file is open in Markdown for Humans, but the proposal could not be completed due to an internal extension error.';
+const PROPOSAL_SESSION_NOT_FOUND_ERROR =
+  'No open Markdown for Humans proposal review matched the provided propose_single_replacement_session_id within 500ms. The review may have been closed, the session id may be wrong, or the extension may be busy.';
+const PROPOSAL_SEQUENTIAL_SESSION_NOT_FOUND_ERROR =
+  'No open Markdown for Humans sequential proposal review matched the provided propose_sequential_replacements_session_id within 500ms. The review may have been closed, the session id may be wrong, or the extension may be busy.';
+const SELECTION_REQUEST_UNCLAIMED_ERROR =
+  'No instance of the Markdown for Humans extension acknowledged the selection request within 500ms. The file may not be open in Markdown for Humans, or the extension may be busy.';
+const SELECTION_NOT_FOUND_ERROR =
+  'The file is open in Markdown for Humans, but the requested selection could not be found. The file contents may have changed, or the provided context may not match.';
+const SELECTION_INTERNAL_ERROR =
+  'Markdown for Humans began handling the selection, but an internal error prevented it from being completed.';
+const SELECTION_COMPLETION_TIMEOUT_ERROR =
+  'The file is open in Markdown for Humans, but an unknown error prevented the selection from being completed in time.';
 
 function getInstanceTempDir(instanceId) {
   return path.join(os.tmpdir(), `${INSTANCE_TEMP_DIR_PREFIX}${instanceId}`);
@@ -54,15 +76,23 @@ function getSelectionRevealResponseTempFilePath(instanceId) {
   return path.join(getInstanceTempDir(instanceId), 'SelectionRevealResponse.json');
 }
 
-function readActiveInstanceMetadata() {
+function getSelectionRevealRequestId(data) {
+  return data?.selection_request_id ?? data?.id ?? null;
+}
+
+function readJsonFile(filePath) {
   try {
-    if (!fs.existsSync(ACTIVE_INSTANCE_TEMP_FILE)) {
+    if (!fs.existsSync(filePath)) {
       return null;
     }
-    return JSON.parse(fs.readFileSync(ACTIVE_INSTANCE_TEMP_FILE, 'utf8'));
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   } catch {
     return null;
   }
+}
+
+function readActiveInstanceMetadata() {
+  return readJsonFile(ACTIVE_INSTANCE_TEMP_FILE);
 }
 
 function listInstanceIds() {
@@ -89,11 +119,12 @@ function readSelectionForActiveInstance() {
   return JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
 }
 
-function readSelectionForFile(filePath) {
+function readSelectionsForFile(filePath) {
   if (!filePath) {
-    return null;
+    return [];
   }
 
+  const results = [];
   for (const instanceId of listInstanceIds()) {
     const selectionPath = getSelectionStateFilePathForDocument(filePath, instanceId);
     if (!fs.existsSync(selectionPath)) {
@@ -103,12 +134,12 @@ function readSelectionForFile(filePath) {
     try {
       const data = JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
       if (data?.file === filePath) {
-        return data;
+        results.push(data);
       }
     } catch {}
   }
 
-  return null;
+  return results;
 }
 
 function normalizeSelectionResult(data) {
@@ -133,7 +164,10 @@ function findResponseById(id, kind) {
     try {
       if (!fs.existsSync(filePath)) continue;
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      if (data.id === id) {
+      const responseId = kind === 'selectionReveal'
+        ? getSelectionRevealRequestId(data)
+        : data.id;
+      if (responseId === id) {
         return data;
       }
     } catch {}
@@ -186,25 +220,20 @@ server.tool(
 );
 
 server.tool(
-  'get_selection_for_file',
-  'Get the current Markdown for Humans selection metadata for a specific markdown file, if that file is open in any Markdown for Humans instance. Use this only when the caller explicitly wants the selection for a named file.',
+  'get_selections_for_file',
+  'Get the current Markdown for Humans selection metadata for a specific markdown file across all instances where that file is open. Returns an array — one entry per open instance, empty array if not open anywhere. Use this only when the caller explicitly wants the selection for a named file.',
   {
     file: z.string().describe('Absolute path to the markdown file whose current MFH selection state should be returned'),
   },
   async ({ file }) => {
     try {
-      const data = normalizeSelectionResult(readSelectionForFile(file));
-      if (!data) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ file, selection: null, error: 'No selection data available for that file. Make sure it is open in Markdown for Humans in this VS Code session.' }) }],
-        };
-      }
+      const results = readSelectionsForFile(file).map(normalizeSelectionResult);
       return {
-        content: [{ type: 'text', text: JSON.stringify(data) }],
+        content: [{ type: 'text', text: JSON.stringify(results) }],
       };
     } catch (err) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ file, selection: null, error: String(err) }) }],
+        content: [{ type: 'text', text: JSON.stringify({ file, error: String(err) }) }],
       };
     }
   }
@@ -239,24 +268,25 @@ server.tool(
 Opens a popup panel beside the editor. Each option has its own Accept button and optional justification.
 The user can Accept any option (applying it), edit the replacement inline, or Skip All.
 The redline diff updates live as the user edits or moves focus between options.
-Returns { status, replacement, selected_option_index } where status is "applied", "accepted_unchanged", "accepted_changed", "skipped", "in_progress", or "timeout".
+The arguments before replacement_options are the same as for scroll_to_selection.
+Returns { status, message, error_type, error, propose_single_replacement_session_id, selection, selection_replacement, selected_option_index, file, context_before, context_after, headings_before } where status is "applied", "accepted_unchanged_but_not_applied", "accepted_changed_but_not_applied", "skipped", "in_progress", or "error".
 Treat only "applied" as authoritative success.
 Use context_before and context_after to locate the correct occurrence if the text appears multiple times.`,
   {
-    selection: z.string().describe('The exact text to replace (as returned by get_selection selection field)'),
-    options: z
+    selection: z.string().describe('The exact text to replace.'),
+    file: z.string().optional().describe('Absolute path to the markdown file.'),
+    context_before: z.string().optional().describe('Text immediately before the selection.'),
+    context_after: z.string().optional().describe('Text immediately after the selection.'),
+    headings_before: z.array(z.string()).optional().describe('Up to 5 headings preceding the selection, closest first.'),
+    replacement_options: z
       .array(z.object({
-        replacement: z.string().describe('The proposed replacement markdown text'),
+        selection_replacement: z.string().describe('The proposed replacement markdown text.'),
         justification: z.string().optional().describe('Optional markdown explaining the reasoning behind this option. When supplied, displayed above the replacement editor.'),
       }))
       .min(1)
-      .describe('Ordered list of replacement alternatives (max 3; extras ignored). Each has a replacement and optional justification.'),
-    file: z.string().optional().describe('Absolute path to the markdown file (file from get_selection)'),
-    context_before: z.string().optional().describe('Text immediately before the selection (context_before from get_selection)'),
-    context_after: z.string().optional().describe('Text immediately after the selection (context_after from get_selection)'),
-    headings_before: z.array(z.string()).optional().describe('Up to 5 headings preceding the selection, closest first (headings_before from get_selection)'),
+      .describe('Ordered list of replacement alternatives (max 3; extras ignored). Each has a selection_replacement and optional justification.'),
   },
-  async ({ selection, options, file, context_before, context_after, headings_before }) => {
+  async ({ selection, file, context_before, context_after, headings_before, replacement_options }) => {
     try {
       const id = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
@@ -270,8 +300,8 @@ Use context_before and context_after to locate the correct occurrence if the tex
             source_instance_id: selectionMetadata.instance_id ?? null,
           }
         : { file: file ?? null };
-      const cappedOptions = options.slice(0, 3).map(o => ({
-        replacement: o.replacement,
+      const cappedOptions = replacement_options.slice(0, 3).map(o => ({
+        replacement: o.selection_replacement,
         justification: o.justification ?? null,
       }));
       // Write proposal for extension to pick up
@@ -289,11 +319,73 @@ Use context_before and context_after to locate the correct occurrence if the tex
         'utf8'
       );
 
+      const claimed = await waitForProposalClaim(id, PROPOSAL_CLAIM_TIMEOUT_MS);
+      if (!claimed) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizeSingleProposalResult(
+                {
+                  id,
+                  status: 'error',
+                  error_type: 'proposal_request_not_acknowledged',
+                  error: PROPOSAL_REQUEST_UNCLAIMED_ERROR,
+                },
+                {
+                  selection,
+                  file: routingMetadata.file ?? null,
+                  context_before: context_before ?? null,
+                  context_after: context_after ?? null,
+                  headings_before: headings_before ?? null,
+                }
+              )
+            ),
+          }],
+        };
+      }
+
+      const startupResult = await waitForProposalStartup(id, PROPOSAL_STARTUP_TIMEOUT_MS);
+      if (startupResult.type === 'response') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizeSingleProposalResult(startupResult.value, {
+                selection,
+                file: routingMetadata.file ?? null,
+                context_before: context_before ?? null,
+                context_after: context_after ?? null,
+                headings_before: headings_before ?? null,
+              })
+            ),
+          }],
+        };
+      }
+      if (startupResult.type === 'error') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizeSingleProposalResult(startupResult.value, {
+                selection,
+                file: routingMetadata.file ?? null,
+                context_before: context_before ?? null,
+                context_after: context_after ?? null,
+                headings_before: headings_before ?? null,
+              })
+            ),
+          }],
+        };
+      }
+
       const result = await waitForResponse(id, TIMEOUT_MS, {
         responseKind: 'proposal',
         timeoutResult: {
           id,
-          status: 'timeout',
+          status: 'error',
+          error_type: 'proposal_internal_error',
+          error: PROPOSAL_INTERNAL_ERROR,
           replacement: null,
         },
       });
@@ -303,10 +395,41 @@ Use context_before and context_after to locate the correct occurrence if the tex
         context_before: context_before ?? null,
         context_after: context_after ?? null,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(normalizeResultStatus(finalResult)) }] };
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizeSingleProposalResult(finalResult, {
+              selection,
+              file: routingMetadata.file ?? null,
+              context_before: context_before ?? null,
+              context_after: context_after ?? null,
+              headings_before: headings_before ?? null,
+            })
+          ),
+        }],
+      };
     } catch (err) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizeSingleProposalResult(
+              {
+                status: 'error',
+                error_type: 'proposal_internal_error',
+                error: String(err),
+              },
+              {
+                selection,
+                file: file ?? null,
+                context_before: context_before ?? null,
+                context_after: context_after ?? null,
+                headings_before: headings_before ?? null,
+              }
+            )
+          ),
+        }],
       };
     }
   }
@@ -316,20 +439,43 @@ server.tool(
   'resume_single_replacement',
   `Resume a pending single proposed change review in the Markdown for Humans editor.
 Use this after propose_single_replacement returned status "in_progress" and the user later says they are done editing.
-Returns the final review result when available, or "in_progress" again if the review is still open.`,
+Returns the same fields as propose_single_replacement. This reads the current state immediately: final result, "in_progress", or "error" if the provided propose_single_replacement_session_id does not match any open review.`,
   {
-    session_id: z.string().describe('The session_id returned by propose_single_replacement when status was in_progress'),
+    propose_single_replacement_session_id: z
+      .string()
+      .describe('The propose_single_replacement_session_id returned by propose_single_replacement when status was in_progress'),
   },
-  async ({ session_id }) => {
+  async ({ propose_single_replacement_session_id }) => {
     try {
-      const result = await waitForProposalState(session_id, {
-        pendingResult: {
-          id: session_id,
-          session_id,
-          status: 'in_progress',
-          message: 'Review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
-        },
-      });
+      const currentState = await waitForSingleProposalResumeState(
+        propose_single_replacement_session_id,
+        PROPOSAL_RESUME_SESSION_LOOKUP_TIMEOUT_MS
+      );
+
+      if (!currentState) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizeSingleProposalResult({
+                status: 'error',
+                error_type: 'proposal_session_not_found',
+                error: PROPOSAL_SESSION_NOT_FOUND_ERROR,
+                propose_single_replacement_session_id,
+              })
+            ),
+          }],
+        };
+      }
+
+      const result = isFinalProposalState(currentState)
+        ? currentState
+        : {
+            ...currentState,
+            status: 'in_progress',
+            propose_single_replacement_session_id,
+            message: 'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".',
+          };
 
       const finalResult = await applyServerFallbackIfNeeded(result, {
         original: result.original,
@@ -337,10 +483,24 @@ Returns the final review result when available, or "in_progress" again if the re
         context_before: result.context_before ?? null,
         context_after: result.context_after ?? null,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(normalizeResultStatus(finalResult)) }] };
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(normalizeSingleProposalResult(finalResult)),
+        }],
+      };
     } catch (err) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizeSingleProposalResult({
+              status: 'error',
+              error_type: 'proposal_internal_error',
+              error: String(err),
+            })
+          ),
+        }],
       };
     }
   }
@@ -350,44 +510,45 @@ server.tool(
   'propose_sequential_replacements',
   `Show a queued series of proposed replacements for the same markdown file in the Markdown for Humans editor.
 Opens the same review panel and advances through each proposal without returning control to the MCP client between steps.
-Returns one aggregated result after the sequence completes or times out.
+Returns one aggregated result after the sequence completes, returns "in_progress", or fails with "error".
+The arguments before replacement_options in each proposed replacement are the same as for scroll_to_selection.
 Pass file when available so the extension can target the correct open markdown document.`,
   {
     file: z
       .string()
       .optional()
       .describe('Absolute path to the markdown file being reviewed (recommended when available)'),
-    changes: z
+    proposed_replacements: z
       .array(
         z.object({
           selection: z
             .string()
-            .describe('The exact text to replace for this step'),
-          options: z
-            .array(z.object({
-              replacement: z.string().describe('The proposed replacement markdown text'),
-              justification: z.string().optional().describe('Optional markdown explaining the reasoning behind this option.'),
-            }))
-            .min(1)
-            .describe('Ordered list of replacement alternatives for this step (max 3; extras ignored).'),
+            .describe('The exact text to replace for this step.'),
           context_before: z
             .string()
             .optional()
-            .describe('Text immediately before this selection'),
+            .describe('Text immediately before this selection.'),
           context_after: z
             .string()
             .optional()
-            .describe('Text immediately after this selection'),
+            .describe('Text immediately after this selection.'),
           headings_before: z
             .array(z.string())
             .optional()
-            .describe('Up to 5 headings preceding this selection, closest first (headings_before from get_selection)'),
+            .describe('Up to 5 headings preceding this selection, closest first.'),
+          replacement_options: z
+            .array(z.object({
+              selection_replacement: z.string().describe('The proposed replacement markdown text.'),
+              justification: z.string().optional().describe('Optional markdown explaining the reasoning behind this option. When supplied, displayed above the replacement editor.'),
+            }))
+            .min(1)
+            .describe('Ordered list of replacement alternatives for this step (max 3; extras ignored). Each has a selection_replacement and optional justification.'),
         })
       )
       .min(1)
-      .describe('Ordered list of replacements to review sequentially'),
+      .describe('Ordered list of proposed replacements to review sequentially.'),
   },
-  async ({ file, changes }) => {
+  async ({ file, proposed_replacements }) => {
     try {
       const id = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
@@ -397,42 +558,101 @@ Pass file when available so the extension can target the correct open markdown d
         JSON.stringify({
           id,
           ...routingMetadata,
-          proposals: changes.map(change => ({
-            original: change.selection,
-            options: change.options.slice(0, 3).map(o => ({
-              replacement: o.replacement,
-              justification: o.justification ?? null,
+          proposals: proposed_replacements.map(proposedReplacement => ({
+            original: proposedReplacement.selection,
+            options: proposedReplacement.replacement_options.slice(0, 3).map(option => ({
+              replacement: option.selection_replacement,
+              justification: option.justification ?? null,
             })),
-            context_before: change.context_before ?? null,
-            context_after: change.context_after ?? null,
-            headings_before: change.headings_before ?? null,
+            context_before: proposedReplacement.context_before ?? null,
+            context_after: proposedReplacement.context_after ?? null,
+            headings_before: proposedReplacement.headings_before ?? null,
           })),
         }),
         'utf8'
       );
+
+      const claimed = await waitForProposalClaim(id, PROPOSAL_CLAIM_TIMEOUT_MS);
+      if (!claimed) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizeBatchResultStatus(
+                {
+                  id,
+                  file: routingMetadata.file ?? null,
+                  status: 'error',
+                  error_type: 'proposal_request_not_acknowledged',
+                  error: PROPOSAL_REQUEST_UNCLAIMED_ERROR,
+                  results: [],
+                },
+                {
+                  file: routingMetadata.file ?? null,
+                }
+              )
+            ),
+          }],
+        };
+      }
+
+      const startupResult = await waitForProposalStartup(id, PROPOSAL_STARTUP_TIMEOUT_MS);
+      if (startupResult.type === 'response' || startupResult.type === 'error') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizeBatchResultStatus(startupResult.value, {
+                file: routingMetadata.file ?? null,
+              })
+            ),
+          }],
+        };
+      }
 
       const result = await waitForResponse(id, TIMEOUT_MS, {
         responseKind: 'proposal',
         timeoutResult: {
           id,
           file: routingMetadata.file ?? null,
-          status: 'timeout',
+          status: 'error',
+          error_type: 'proposal_internal_error',
+          error: PROPOSAL_INTERNAL_ERROR,
           results: [],
         },
       });
       const finalResult = await applyServerBatchFallbackIfNeeded(result, {
         file: routingMetadata.file ?? null,
-        changes: changes.map(change => ({
-          original: change.selection,
-          replacement: change.options[0]?.replacement ?? '',
-          context_before: change.context_before ?? null,
-          context_after: change.context_after ?? null,
+        proposed_replacements: proposed_replacements.map(proposedReplacement => ({
+          original: proposedReplacement.selection,
+          replacement: proposedReplacement.replacement_options[0]?.selection_replacement ?? '',
+          context_before: proposedReplacement.context_before ?? null,
+          context_after: proposedReplacement.context_after ?? null,
         })),
       });
-      return { content: [{ type: 'text', text: JSON.stringify(normalizeBatchResultStatus(finalResult)) }] };
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizeBatchResultStatus(finalResult, {
+              file: routingMetadata.file ?? null,
+            })
+          ),
+        }],
+      };
     } catch (err) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizeBatchResultStatus({
+              status: 'error',
+              error_type: 'proposal_internal_error',
+              error: String(err),
+              results: [],
+            })
+          ),
+        }],
       };
     }
   }
@@ -442,24 +662,48 @@ server.tool(
   'resume_sequential_replacements',
   `Resume a pending sequential proposal review session in the Markdown for Humans editor.
 Use this after propose_sequential_replacements returned status "in_progress" and the user later says they are done editing.
-Returns the final aggregated result when available, or "in_progress" again if the session is still open.`,
+Returns the same fields as propose_sequential_replacements. This reads the current state immediately: final result, "in_progress", or "error" if the provided propose_sequential_replacements_session_id does not match any open review.`,
   {
-    session_id: z.string().describe('The session_id returned by propose_sequential_replacements when status was in_progress'),
+    propose_sequential_replacements_session_id: z
+      .string()
+      .describe('The propose_sequential_replacements_session_id returned by propose_sequential_replacements when status was in_progress'),
   },
-  async ({ session_id }) => {
+  async ({ propose_sequential_replacements_session_id }) => {
     try {
-      const result = await waitForProposalState(session_id, {
-        pendingResult: {
-          id: session_id,
-          session_id,
-          status: 'in_progress',
-          message: 'Sequential review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
-        },
-      });
+      const currentState = await waitForSequentialProposalResumeState(
+        propose_sequential_replacements_session_id,
+        PROPOSAL_RESUME_SESSION_LOOKUP_TIMEOUT_MS
+      );
+
+      if (!currentState) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizeBatchResultStatus({
+                status: 'error',
+                error_type: 'proposal_sequential_session_not_found',
+                error: PROPOSAL_SEQUENTIAL_SESSION_NOT_FOUND_ERROR,
+                propose_sequential_replacements_session_id,
+                results: [],
+              })
+            ),
+          }],
+        };
+      }
+
+      const result = isFinalProposalState(currentState)
+        ? currentState
+        : {
+            ...currentState,
+            status: 'in_progress',
+            propose_sequential_replacements_session_id,
+            message: 'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".',
+          };
 
       const finalResult = await applyServerBatchFallbackIfNeeded(result, {
         file: result.file ?? null,
-        changes: Array.isArray(result.results)
+        proposed_replacements: Array.isArray(result.results)
           ? result.results.map(entry => ({
               original: entry.original,
               replacement: entry.replacement,
@@ -468,10 +712,25 @@ Returns the final aggregated result when available, or "in_progress" again if th
             }))
           : [],
       });
-      return { content: [{ type: 'text', text: JSON.stringify(normalizeBatchResultStatus(finalResult)) }] };
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(normalizeBatchResultStatus(finalResult)),
+        }],
+      };
     } catch (err) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizeBatchResultStatus({
+              status: 'error',
+              error_type: 'proposal_internal_error',
+              error: String(err),
+              results: [],
+            })
+          ),
+        }],
       };
     }
   }
@@ -481,7 +740,7 @@ server.tool(
   'scroll_to_selection',
   `Select and scroll to a passage in the Markdown for Humans editor.
 Use the exact selection text from get_selection, plus context_before/context_after when available, so the editor can locate the correct occurrence if the text appears multiple times.
-Returns { status, file } where status is "revealed", "timeout", or "error".`,
+Returns { status, file, error } where status is "revealed" or "error".`,
   {
     selection: z
       .string()
@@ -505,7 +764,7 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
   },
   async ({ selection, file, context_before, context_after, headings_before }) => {
     try {
-      const id = Date.now().toString();
+      const selectionRequestId = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
       const routingMetadata = buildSelectionRoutingMetadata(selectionMetadata, {
         selection,
@@ -516,7 +775,8 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
       fs.writeFileSync(
         SELECTION_REVEAL_TEMP_FILE,
         JSON.stringify({
-          id,
+          selection_request_id: selectionRequestId,
+          id: selectionRequestId,
           ...routingMetadata,
           original: selection,
           context_before: context_before ?? null,
@@ -526,16 +786,45 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
         'utf8'
       );
 
-      const result = await waitForResponse(id, SELECTION_REVEAL_TIMEOUT_MS, {
+      const claimed = await waitForSelectionRevealClaim(
+        selectionRequestId,
+        SELECTION_REVEAL_CLAIM_TIMEOUT_MS
+      );
+      if (!claimed) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              selection_request_id: selectionRequestId,
+              status: 'error',
+              error: SELECTION_REQUEST_UNCLAIMED_ERROR,
+              file: routingMetadata.file ?? null,
+            }),
+          }],
+        };
+      }
+
+      const result = await waitForResponse(
+        selectionRequestId,
+        SELECTION_REVEAL_COMPLETION_TIMEOUT_MS,
+        {
         responseKind: 'selectionReveal',
         timeoutResult: {
-          id,
+          selection_request_id: selectionRequestId,
+          id: selectionRequestId,
           status: 'error',
-          error: 'Timed out waiting for Markdown for Humans to acknowledge the reveal request.',
+          error: SELECTION_COMPLETION_TIMEOUT_ERROR,
           file: routingMetadata.file ?? null,
         },
       });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizeSelectionRevealResult(result, routingMetadata.file ?? null)
+          ),
+        }],
+      };
     } catch (err) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: String(err) }) }],
@@ -544,28 +833,144 @@ Returns { status, file } where status is "revealed", "timeout", or "error".`,
   }
 );
 
-function normalizeResultStatus(result) {
+function normalizeSingleProposalResult(result, fallback = {}) {
   if (!result || typeof result !== 'object') return result;
-  const statusMap = { accept: 'accepted_unchanged', accept_unchanged: 'accepted_unchanged', accept_changed: 'accepted_changed', cancelled: 'skipped', pending: 'in_progress' };
+
   const normalized = { ...result };
+  const rawStatus = normalized.status;
+  const statusMap = {
+    accept: 'accepted_unchanged_but_not_applied',
+    accept_unchanged: 'accepted_unchanged_but_not_applied',
+    accept_changed: 'accepted_changed_but_not_applied',
+    cancelled: 'skipped',
+    pending: 'in_progress',
+    timeout: 'error',
+  };
   if (normalized.status in statusMap) {
     normalized.status = statusMap[normalized.status];
   }
-  // Rename 'original' back to 'selection' in return value
-  if ('original' in normalized) {
-    normalized.selection = normalized.original;
-    delete normalized.original;
+
+  normalized.selection = normalized.original ?? fallback.selection ?? normalized.selection ?? null;
+  delete normalized.original;
+
+  normalized.selection_replacement =
+    normalized.selection_replacement ??
+    normalized.replacement ??
+    fallback.selection_replacement ??
+    null;
+  delete normalized.replacement;
+
+  normalized.file = normalized.file ?? fallback.file ?? null;
+  normalized.context_before = normalized.context_before ?? fallback.context_before ?? null;
+  normalized.context_after = normalized.context_after ?? fallback.context_after ?? null;
+  normalized.headings_before = normalized.headings_before ?? fallback.headings_before ?? null;
+
+  normalized.propose_single_replacement_session_id =
+    normalized.propose_single_replacement_session_id ??
+    normalized.review_id ??
+    normalized.session_id ??
+    fallback.propose_single_replacement_session_id ??
+    null;
+  delete normalized.review_id;
+  delete normalized.session_id;
+
+  if (!('selected_option_index' in normalized)) {
+    normalized.selected_option_index = null;
   }
+
+  delete normalized.applied_by;
+  delete normalized.fallback_error;
+
+  if (normalized.status === 'skipped' || normalized.status === 'in_progress' || normalized.status === 'error') {
+    normalized.selection_replacement = normalized.selection_replacement ?? null;
+    normalized.selected_option_index = normalized.selected_option_index ?? null;
+  }
+
+  if (normalized.status === 'applied') {
+    normalized.message = 'The replacement was written to the file.';
+    normalized.error_type = null;
+    normalized.error = null;
+  } else if (normalized.status === 'accepted_unchanged_but_not_applied') {
+    normalized.message =
+      'The user accepted the proposed replacement unchanged, but Markdown for Humans could not apply it to the file. The accepted text was copied to the clipboard.';
+    normalized.error_type = null;
+    normalized.error = null;
+  } else if (normalized.status === 'accepted_changed_but_not_applied') {
+    normalized.message =
+      'The user changed a proposed replacement and accepted that edited version, but Markdown for Humans could not apply it to the file. The accepted text was copied to the clipboard.';
+    normalized.error_type = null;
+    normalized.error = null;
+  } else if (normalized.status === 'skipped') {
+    normalized.message = 'The user declined all proposals.';
+    normalized.error_type = null;
+    normalized.error = null;
+  } else if (normalized.status === 'in_progress') {
+    normalized.message =
+      'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".';
+    normalized.error_type = null;
+    normalized.error = null;
+  } else if (normalized.status === 'error') {
+    const normalizedError = normalizeSingleProposalError(
+      normalized.error_type,
+      normalized.error,
+      rawStatus
+    );
+    normalized.error_type = normalizedError.error_type;
+    normalized.error = normalizedError.error;
+    normalized.message = normalizedError.error;
+    normalized.selection_replacement = normalized.selection_replacement ?? null;
+    normalized.selected_option_index = normalized.selected_option_index ?? null;
+  }
+
   return normalized;
 }
 
-function normalizeBatchResultStatus(result) {
+function normalizeBatchResultStatus(result, fallback = {}) {
   if (!result || typeof result !== 'object') return result;
-  const statusMap = { accept: 'accepted_unchanged', accept_unchanged: 'accepted_unchanged', accept_changed: 'accepted_changed', cancelled: 'skipped', pending: 'in_progress' };
+  const rawStatus = result.status;
+  const statusMap = {
+    accept: 'accepted_unchanged_but_not_applied',
+    accept_unchanged: 'accepted_unchanged_but_not_applied',
+    accept_changed: 'accepted_changed_but_not_applied',
+    cancelled: 'skipped',
+    pending: 'in_progress',
+    timeout: 'error',
+  };
   const normalized = { ...result };
   if (normalized.status in statusMap) {
     normalized.status = statusMap[normalized.status];
   }
+
+  normalized.propose_sequential_replacements_session_id =
+    normalized.propose_sequential_replacements_session_id ??
+    normalized.session_id ??
+    fallback.propose_sequential_replacements_session_id ??
+    null;
+  delete normalized.session_id;
+
+  normalized.file = normalized.file ?? fallback.file ?? null;
+  normalized.results = Array.isArray(normalized.results) ? normalized.results : [];
+
+  if (normalized.status === 'completed') {
+    normalized.message = 'The sequential proposal review was completed.';
+    normalized.error_type = null;
+    normalized.error = null;
+  } else if (normalized.status === 'in_progress') {
+    normalized.message =
+      'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".';
+    normalized.error_type = null;
+    normalized.error = null;
+  } else if (normalized.status === 'error') {
+    const normalizedError = normalizeSequentialProposalError(
+      normalized.error_type,
+      normalized.error,
+      rawStatus
+    );
+    normalized.error_type = normalizedError.error_type;
+    normalized.error = normalizedError.error;
+    normalized.message = normalizedError.error;
+  }
+
   if (Array.isArray(normalized.results)) {
     normalized.results = normalized.results.map(item => {
       if (!item || typeof item !== 'object') return item;
@@ -573,14 +978,147 @@ function normalizeBatchResultStatus(result) {
       if (r.status in statusMap) {
         r.status = statusMap[r.status];
       }
+      if ('replacement' in r) {
+        r.selection_replacement = r.replacement;
+        delete r.replacement;
+      }
       if ('original' in r) {
         r.selection = r.original;
         delete r.original;
+      }
+      if (!('selected_option_index' in r)) {
+        r.selected_option_index = null;
       }
       return r;
     });
   }
   return normalized;
+}
+
+function normalizeSequentialProposalError(existingErrorType, existingError, rawStatus) {
+  if (existingErrorType === 'proposal_sequential_session_not_found') {
+    return {
+      error_type: existingErrorType,
+      error: PROPOSAL_SEQUENTIAL_SESSION_NOT_FOUND_ERROR,
+    };
+  }
+
+  if (existingErrorType === 'proposal_request_not_acknowledged') {
+    return {
+      error_type: existingErrorType,
+      error: PROPOSAL_REQUEST_UNCLAIMED_ERROR,
+    };
+  }
+
+  if (existingErrorType === 'proposal_selection_not_found') {
+    return {
+      error_type: existingErrorType,
+      error: PROPOSAL_SELECTION_NOT_FOUND_ERROR,
+    };
+  }
+
+  if (existingErrorType === 'proposal_internal_error') {
+    return {
+      error_type: existingErrorType,
+      error: PROPOSAL_INTERNAL_ERROR,
+    };
+  }
+
+  if (existingError === PROPOSAL_SEQUENTIAL_SESSION_NOT_FOUND_ERROR) {
+    return {
+      error_type: 'proposal_sequential_session_not_found',
+      error: PROPOSAL_SEQUENTIAL_SESSION_NOT_FOUND_ERROR,
+    };
+  }
+
+  if (existingError === PROPOSAL_REQUEST_UNCLAIMED_ERROR) {
+    return {
+      error_type: 'proposal_request_not_acknowledged',
+      error: PROPOSAL_REQUEST_UNCLAIMED_ERROR,
+    };
+  }
+
+  if (existingError === PROPOSAL_SELECTION_NOT_FOUND_ERROR) {
+    return {
+      error_type: 'proposal_selection_not_found',
+      error: PROPOSAL_SELECTION_NOT_FOUND_ERROR,
+    };
+  }
+
+  if (rawStatus === 'timeout') {
+    return {
+      error_type: 'proposal_internal_error',
+      error: PROPOSAL_INTERNAL_ERROR,
+    };
+  }
+
+  return {
+    error_type: 'proposal_internal_error',
+    error: PROPOSAL_INTERNAL_ERROR,
+  };
+}
+
+function normalizeSingleProposalError(existingErrorType, existingError, rawStatus) {
+  if (existingErrorType === 'proposal_session_not_found') {
+    return {
+      error_type: existingErrorType,
+      error: PROPOSAL_SESSION_NOT_FOUND_ERROR,
+    };
+  }
+
+  if (existingErrorType === 'proposal_request_not_acknowledged') {
+    return {
+      error_type: existingErrorType,
+      error: PROPOSAL_REQUEST_UNCLAIMED_ERROR,
+    };
+  }
+
+  if (existingErrorType === 'proposal_selection_not_found') {
+    return {
+      error_type: existingErrorType,
+      error: PROPOSAL_SELECTION_NOT_FOUND_ERROR,
+    };
+  }
+
+  if (existingErrorType === 'proposal_internal_error') {
+    return {
+      error_type: existingErrorType,
+      error: PROPOSAL_INTERNAL_ERROR,
+    };
+  }
+
+  if (existingError === PROPOSAL_REQUEST_UNCLAIMED_ERROR) {
+    return {
+      error_type: 'proposal_request_not_acknowledged',
+      error: PROPOSAL_REQUEST_UNCLAIMED_ERROR,
+    };
+  }
+
+  if (existingError === PROPOSAL_SESSION_NOT_FOUND_ERROR) {
+    return {
+      error_type: 'proposal_session_not_found',
+      error: PROPOSAL_SESSION_NOT_FOUND_ERROR,
+    };
+  }
+
+  if (existingError === PROPOSAL_SELECTION_NOT_FOUND_ERROR) {
+    return {
+      error_type: 'proposal_selection_not_found',
+      error: PROPOSAL_SELECTION_NOT_FOUND_ERROR,
+    };
+  }
+
+  if (rawStatus === 'timeout') {
+    return {
+      error_type: 'proposal_internal_error',
+      error: PROPOSAL_INTERNAL_ERROR,
+    };
+  }
+
+  return {
+    error_type: 'proposal_internal_error',
+    error: PROPOSAL_INTERNAL_ERROR,
+  };
 }
 
 function normalizeForMatching(markdown) {
@@ -616,10 +1154,51 @@ function buildSelectionRoutingMetadata(selectionMetadata, selection, file) {
   if (proposalMatchesSelection(selectionMetadata, selection)) {
     return {
       file: selectionMetadata.file ?? file ?? null,
+      instance_id: selectionMetadata.instance_id ?? null,
       source_instance_id: selectionMetadata.instance_id ?? null,
     };
   }
   return { file: file ?? null };
+}
+
+function normalizeSelectionRevealResult(result, fallbackFile) {
+  if (!result || typeof result !== 'object') {
+    return result;
+  }
+
+  const normalized = { ...result };
+  if (!normalized.file && fallbackFile) {
+    normalized.file = fallbackFile;
+  }
+
+  const selectionRequestId = getSelectionRevealRequestId(normalized);
+  if (selectionRequestId && !normalized.selection_request_id) {
+    normalized.selection_request_id = selectionRequestId;
+  }
+
+  if (normalized.status !== 'error') {
+    return normalized;
+  }
+
+  const rawError = String(normalized.error ?? '');
+  if (
+    rawError === 'Could not resolve the requested selection in the active editor.' ||
+    rawError === SELECTION_NOT_FOUND_ERROR
+  ) {
+    normalized.error = SELECTION_NOT_FOUND_ERROR;
+    return normalized;
+  }
+
+  if (
+    rawError === 'No matching Markdown for Humans editor is open.' ||
+    rawError === 'Markdown for Humans did not accept the reveal request message.' ||
+    rawError.startsWith('Failed to deliver reveal request to the Markdown for Humans webview:')
+  ) {
+    normalized.error = SELECTION_INTERNAL_ERROR;
+    return normalized;
+  }
+
+  return normalized;
 }
 
 function buildBatchRoutingMetadata(selectionMetadata, file) {
@@ -776,12 +1355,30 @@ function clearFileIfExists(filePath) {
   } catch {}
 }
 
+function hasProposalBeenClaimed(proposalId) {
+  const pendingRequest = readJsonFile(PROPOSAL_TEMP_FILE);
+  if (!pendingRequest) {
+    return true;
+  }
+
+  return pendingRequest.id !== proposalId;
+}
+
+function hasSelectionRevealBeenClaimed(selectionRequestId) {
+  const pendingRequest = readJsonFile(SELECTION_REVEAL_TEMP_FILE);
+  if (!pendingRequest) {
+    return true;
+  }
+
+  return getSelectionRevealRequestId(pendingRequest) !== selectionRequestId;
+}
+
 function readProposalState(id) {
   return readProposalStateFromAnyInstance(id);
 }
 
 function isFinalProposalState(state) {
-  return Boolean(state) && state.status !== 'pending';
+  return Boolean(state) && state.status !== 'pending' && state.status !== 'ready';
 }
 
 async function applyServerFallbackIfNeeded(result, proposal) {
@@ -838,7 +1435,7 @@ async function applyServerBatchFallbackIfNeeded(result, batch) {
 
     for (let i = 0; i < result.results.length; i += 1) {
       const currentResult = result.results[i];
-      const originalChange = batch.changes[i];
+      const originalProposedReplacement = batch.proposed_replacements[i];
 
       if (!currentResult || currentResult.status !== 'accept' || !currentResult.replacement) {
         updatedResults.push(currentResult);
@@ -846,10 +1443,10 @@ async function applyServerBatchFallbackIfNeeded(result, batch) {
       }
 
       const applied = applyProposalReplacement(workingContent, {
-        original: currentResult.original || originalChange?.original,
+        original: currentResult.original || originalProposedReplacement?.original,
         replacement: currentResult.replacement,
-        context_before: currentResult.context_before ?? originalChange?.context_before ?? null,
-        context_after: currentResult.context_after ?? originalChange?.context_after ?? null,
+        context_before: currentResult.context_before ?? originalProposedReplacement?.context_before ?? null,
+        context_after: currentResult.context_after ?? originalProposedReplacement?.context_after ?? null,
       });
 
       if (!applied) {
@@ -931,9 +1528,7 @@ function waitForResponse(id, timeoutMs, options) {
   });
 }
 
-function waitForProposalState(id, options = {}) {
-  const { pendingResult } = options;
-
+function waitForSelectionRevealClaim(selectionRequestId, timeoutMs) {
   return new Promise((resolve) => {
     let watcher;
     let resolved = false;
@@ -947,18 +1542,123 @@ function waitForProposalState(id, options = {}) {
       resolve(value);
     };
 
+    const deadline = setTimeout(() => {
+      finish(false);
+    }, timeoutMs);
+
     const check = () => {
+      if (!hasSelectionRevealBeenClaimed(selectionRequestId)) {
+        return;
+      }
+      clearTimeout(deadline);
+      finish(true);
+    };
+
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, 25);
+
+    try {
+      watcher = fs.watch(path.dirname(SELECTION_REVEAL_TEMP_FILE), (_event, filename) => {
+        if (!filename || filename.includes('SelectionReveal')) {
+          check();
+        }
+      });
+    } catch {
+      // Polling is already active above.
+    }
+
+    check();
+  });
+}
+
+function waitForProposalClaim(proposalId, timeoutMs) {
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+    let iv;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => {
+      finish(false);
+    }, timeoutMs);
+
+    const check = () => {
+      if (!hasProposalBeenClaimed(proposalId)) {
+        return;
+      }
+      clearTimeout(deadline);
+      finish(true);
+    };
+
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, 25);
+
+    try {
+      watcher = fs.watch(path.dirname(PROPOSAL_TEMP_FILE), (_event, filename) => {
+        if (!filename || filename.includes('Proposal')) {
+          check();
+        }
+      });
+    } catch {
+      // Polling is already active above.
+    }
+
+    check();
+  });
+}
+
+function waitForProposalStartup(id, timeoutMs) {
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+    let iv;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => {
+      finish({ type: 'timeout' });
+    }, timeoutMs);
+
+    const check = () => {
+      const response = findResponseById(id, 'proposal');
+      if (response) {
+        clearTimeout(deadline);
+        finish({ type: 'response', value: response });
+        return;
+      }
+
       const state = readProposalState(id);
       if (!state) {
-        return false;
+        return;
       }
 
-      if (isFinalProposalState(state)) {
-        finish(state);
-        return true;
+      if (state.status === 'error') {
+        clearTimeout(deadline);
+        finish({ type: 'error', value: state });
+        return;
       }
 
-      return false;
+      if (state.status === 'ready') {
+        clearTimeout(deadline);
+        finish({ type: 'ready' });
+      }
     };
 
     iv = setInterval(() => {
@@ -966,9 +1666,55 @@ function waitForProposalState(id, options = {}) {
       check();
     }, MCP_RESPONSE_POLL_MS);
 
-    if (check()) {
-      return;
+    try {
+      watcher = fs.watch(os.tmpdir(), (_event, filename) => {
+        if (
+          !filename ||
+          filename.startsWith(INSTANCE_TEMP_DIR_PREFIX) ||
+          filename.includes('Proposal')
+        ) {
+          check();
+        }
+      });
+    } catch {
+      // Polling is already active above.
     }
+
+    check();
+  });
+}
+
+function waitForSingleProposalResumeState(propose_single_replacement_session_id, timeoutMs) {
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+    let iv;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => {
+      finish(null);
+    }, timeoutMs);
+
+    const check = () => {
+      const state = readProposalState(propose_single_replacement_session_id);
+      if (!state) {
+        return;
+      }
+      clearTimeout(deadline);
+      finish(state);
+    };
+
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, 25);
 
     try {
       watcher = fs.watch(os.tmpdir(), (_event, filename) => {
@@ -980,13 +1726,53 @@ function waitForProposalState(id, options = {}) {
       // Polling is already active above.
     }
 
-    setTimeout(() => {
-      finish(readProposalState(id) ?? pendingResult ?? {
-        id,
-        status: 'in_progress',
-        message: 'Review is still open in Markdown for Humans. When you finish editing, return to chat and type: resume',
+    check();
+  });
+}
+
+function waitForSequentialProposalResumeState(propose_sequential_replacements_session_id, timeoutMs) {
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+    let iv;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => {
+      finish(null);
+    }, timeoutMs);
+
+    const check = () => {
+      const state = readProposalState(propose_sequential_replacements_session_id);
+      if (!state) {
+        return;
+      }
+      clearTimeout(deadline);
+      finish(state);
+    };
+
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, 25);
+
+    try {
+      watcher = fs.watch(os.tmpdir(), (_event, filename) => {
+        if (filename && filename.startsWith(INSTANCE_TEMP_DIR_PREFIX)) {
+          check();
+        }
       });
-    }, TIMEOUT_MS);
+    } catch {
+      // Polling is already active above.
+    }
+
+    check();
   });
 }
 

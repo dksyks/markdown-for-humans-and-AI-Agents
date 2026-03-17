@@ -11,6 +11,9 @@
  * The actual rename operation is handled by the extension.
  */
 
+declare const __BUILD_TIME__: string;
+const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+
 interface VsCodeApi {
   postMessage(message: unknown): void;
 }

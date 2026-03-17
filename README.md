@@ -1,6 +1,6 @@
 # Markdown for Humans: WYSIWYG Editor
 
-**Seamless WYSIWYG markdown editing for VS Code** — Write markdown the way humans think.
+**Seamless WYSIWYG markdown editing for VS Code**  -  Write markdown the way humans think.
 
 ![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/concretio.markdown-for-humans?label=VS%20Code%20Marketplace&logo=visual-studio-code) ![Open VSX](https://img.shields.io/open-vsx/v/concretio/markdown-for-humans?label=Open%20VSX&logo=eclipse) ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
 
@@ -12,7 +12,7 @@
 
 ![Markdown for Humans Overview](https://raw.githubusercontent.com/concretios/markdown-for-humans/4bf7defb6a3e7ee56b34e6dd9dc0a55e471740ec/marketplace-assets/gifs/basic_overview_of_features.gif)
 
-*Experience seamless WYSIWYG markdown editing with visual table editing, image management, and more—all in VS Code.*
+*Experience seamless WYSIWYG markdown editing with visual table editing, image management, and more - all in VS Code.*
 
 ---
 
@@ -34,10 +34,10 @@ As natural as it gets in Microsoft Word or Google Docs etc.
 
 **Drag column borders to resize. Right-click to add rows. No syntax to memorize.**
 
-- ✅ **Drag-to-resize columns** — Click and drag column borders, just like Excel
-- ✅ **Right-click context menu** — Insert/delete rows and columns instantly
-- ✅ **Toolbar controls** — Add/remove rows and columns with dropdown menus
-- ✅ **Tab navigation** — Move between cells with Tab/Shift+Tab
+- ✅ **Drag-to-resize columns**  -  Click and drag column borders, just like Excel
+- ✅ **Right-click context menu**  -  Insert/delete rows and columns instantly
+- ✅ **Toolbar controls**  -  Add/remove rows and columns with dropdown menus
+- ✅ **Tab navigation**  -  Move between cells with Tab/Shift+Tab
 
 *Stop counting pipes and dashes. Start editing tables visually.*
 
@@ -51,11 +51,11 @@ As natural as it gets in Microsoft Word or Google Docs etc.
 
 **Drag images in. Resize with handles. Rename inline. No manual file operations.**
 
-- ✅ **Drag & drop** — Drop images directly into your document
-- ✅ **In-place resizing** — Drag handles to adjust width, see live preview
-- ✅ **Auto-size suggestions** — Get warnings for oversized images (saves your storage on GIT)
-- ✅ **Rename images** — Change filenames without leaving the editor (we rename file on disk, and also update the markdown code)
-- ✅ **Metadata overlay** — View dimensions, file size, and path at a glance
+- ✅ **Drag & drop**  -  Drop images directly into your document
+- ✅ **In-place resizing**  -  Drag handles to adjust width, see live preview
+- ✅ **Auto-size suggestions**  -  Get warnings for oversized images (saves your storage on GIT)
+- ✅ **Rename images**  -  Change filenames without leaving the editor (we rename file on disk, and also update the markdown code)
+- ✅ **Metadata overlay**  -  View dimensions, file size, and path at a glance
 
 > [!IMPORTANT]
 > We backup original image always, before resizing.
@@ -77,10 +77,10 @@ Humans work that way.
 
 Built on TipTap with a **human-first design philosophy**:
 
-- **Persistent formatting bar** — See your options, click what you need
-- **Floating shortcuts** — Actions appear where you need them (Tables: right-click, Images: More icon)
-- **No command palette overload** — Actions are visible, not buried in `/commands`
-- **No context switching** — Everything you need is right there
+- **Persistent formatting bar**  -  See your options, click what you need
+- **Floating shortcuts**  -  Actions appear where you need them (Tables: right-click, Images: More icon)
+- **No command palette overload**  -  Actions are visible, not buried in `/commands`
+- **No context switching**  -  Everything you need is right there
 
 ---
 
@@ -150,7 +150,7 @@ Built on TipTap with a **human-first design philosophy**:
 
 ![Enhanced Link Feature](https://raw.githubusercontent.com/concretios/markdown-for-humans/4bf7defb6a3e7ee56b34e6dd9dc0a55e471740ec/marketplace-assets/gifs/hyperlink_feature.gif)
 
-*Create links easily with support for URLs, file linking, heading links, and more—all through an intuitive dialog interface.*
+*Create links easily with support for URLs, file linking, heading links, and more - all through an intuitive dialog interface.*
 
 ### Mermaid Diagrams
 
@@ -172,7 +172,7 @@ Built on TipTap with a **human-first design philosophy**:
 
 ### AI Agent Integration (MCP)
 
-Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI coding assistants like Claude Code read your current editor selection and propose in-editor replacements—so you can ask your AI to rewrite, summarize, or act on whatever you have highlighted.
+Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI coding assistants like Claude Code read your current editor selection and propose in-editor replacements - so you can ask your AI to rewrite, summarize, or act on whatever you have highlighted.
 
 **Setup** (one-time, requires [Node.js](https://nodejs.org)):
 
@@ -193,9 +193,9 @@ Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI
    claude mcp add --scope user --transport stdio markdown-for-humans node "/path/to/mcp/server.js"
    ```
    The `--scope` argument controls where the configuration is stored:
-   - `--scope user` — stored in `~/.claude.json`, available across all projects (recommended)
-   - `--scope project` — stored in `.mcp.json` in the current project, shared with others via version control
-   - `--scope local` — stored in `.mcp.json` locally, not shared (default if omitted)
+   - `--scope user`  -  stored in `~/.claude.json`, available across all projects (recommended)
+   - `--scope project`  -  stored in `.mcp.json` in the current project, shared with others via version control
+   - `--scope local`  -  stored in `.mcp.json` locally, not shared (default if omitted)
 
    Alternatively, add manually to `.mcp.json` in your project or home directory:
    ```json
@@ -213,39 +213,39 @@ Markdown for Humans includes an MCP (Model Context Protocol) server that lets AI
 
 When the user selects text in a Markdown for Humans editor, the extension writes per-instance temp metadata containing `file`, `instance_id`, `selection`, `context_before`, and `context_after`. It also keeps per-file selection state for open Markdown for Humans files within that instance. The MCP server uses the active-instance pointer for active-selection calls and can also look up the last saved selection metadata for a specific open file when explicitly asked. Passing `file` and context parameters explicitly improves routing accuracy when the user may have moved focus since the last selection lookup.
 
-Important: selection temp metadata is a routing hint, not proof that the referenced file is still open in Markdown for Humans. `get_active_selection` only describes the currently active MFH tab. `get_selection_for_file` can return the last saved selection for a specific open MFH file even when that tab is inactive. Before using a prior `file` value to drive `scroll_to_selection` or proposal tools, verify that the target file is currently open in Markdown for Humans or provide the intended `file` explicitly from the document being edited.
+Selection-reveal temp requests use `selection_request_id` as the correlation id and `instance_id` as the routing hint for the expected Markdown for Humans instance.
+
+Important: selection temp metadata is a routing hint, not proof that the referenced file is still open in Markdown for Humans. `get_active_selection` only describes the currently active MFH tab. `get_selections_for_file` can return the last saved selection for a specific open MFH file even when that tab is inactive. Before using a prior `file` value to drive `scroll_to_selection` or proposal tools, verify that the target file is currently open in Markdown for Humans or provide the intended `file` explicitly from the document being edited.
 
 #### MCP tools
 
-Once configured, your AI assistant has access to 8 tools (server: `markdown-for-humans`):
+Once configured, your AI assistant has access to 7 tools (server: `markdown-for-humans`):
 
-**`get_active_selection`** — Returns the currently selected text in the active editor only, with surrounding context and heading structure. Returns: `file`, `selection`, `context_before`, `context_after`, `headings_before`, `instance_id`. This is the default selection lookup tool.
+**`get_active_selection`**  -  Returns the currently selected text in the active editor only, with surrounding context and heading structure. Returns: `file`, `selection`, `context_before`, `context_after`, `headings_before`, `instance_id`. Returns immediately; if nothing is selected, `selection`, `context_before`, and `context_after` are `null` (the call never hangs). This is the default selection lookup tool.
 
-**`get_selection_for_file`** — Returns the last saved selection metadata for a specific markdown file if that file is currently open in any Markdown for Humans instance, even when that tab is inactive. Use this only when the caller explicitly wants the selection for a named file.
+**`get_selections_for_file`**  -  Returns an array of selection metadata for a specific markdown file  -  one entry per instance where the file is open. Returns `[]` if the file is not open anywhere. Each entry contains `file`, `selection`, `context_before`, `context_after`, `headings_before`, `instance_id`; `selection`, `context_before`, and `context_after` are `null` if nothing is selected in that instance. Returns immediately. Never hangs.
 
-**`get_selection`** — Backward-compatible alias for `get_active_selection`.
+**`scroll_to_selection`**  -  Scrolls the editor to a specific passage and selects it. Parameters: `selection` (required), `file`, `context_before`, `context_after`, `headings_before` (all optional). Note: it is typically the case that calling `scroll_to_selection` immediately after `get_active_selection` serves no useful purpose. Only do so if the selection is known or suspected to be scrolled out of view. Returns: `{ status, file, error }` where status is `"revealed"` or `"error"`. Error text is user-facing and distinguishes between an unacknowledged selection request, a selection that could not be found in the open file, and a selection that could not be completed in time or due to an internal extension error.
 
-**`scroll_to_selection`** — Scrolls the editor to a specific passage and selects it. Parameters: `selection` (required), `file`, `context_before`, `context_after`, `headings_before` (all optional). Returns: `{ status, file }` where status is `"revealed"`, `"timeout"`, or `"error"`.
+**`propose_single_replacement`**  -  Opens a WYSIWYG proposal panel with up to 3 alternative replacements displayed vertically. The extension automatically scrolls the main editor to the target passage  -  no prior `get_selection` call needed. A shared redline at the top updates to reflect the focused option; each option has its own editable pane, optional justification panel, and Accept button. Parameters: `selection` (required), `file`, `context_before`, `context_after`, `headings_before` (all optional, and the same as `scroll_to_selection`), followed by `replacement_options` (required, 1-3 items each with `selection_replacement` and optional `justification`). Returns `status`, `message`, `error_type`, `error`, `propose_single_replacement_session_id`, `selection`, `selection_replacement`, `selected_option_index`, `file`, `context_before`, `context_after`, and `headings_before`. Status is one of `"applied"`, `"accepted_unchanged_but_not_applied"`, `"accepted_changed_but_not_applied"`, `"skipped"` (user clicked Skip This / Skip These), `"in_progress"`, or `"error"`. Treat only `"applied"` as authoritative success.
 
-**`propose_single_replacement`** — Opens a WYSIWYG proposal panel with up to 3 alternative replacements displayed vertically. The extension automatically scrolls the main editor to the target passage — no prior `get_selection` call needed. A shared redline at the top updates to reflect the focused option; each option has its own editable pane, optional collapsible justification panel, and Accept button. Parameters: `selection` (required — the exact text to replace, read from the file), `options` array (required, 1–3 items each with `replacement` and optional `justification`); `file`, `context_before`, `context_after`, `headings_before` (all optional). Returns `status` of `"applied"`, `"accepted_unchanged"`, `"accepted_changed"`, `"skipped"`, `"in_progress"`, `"timeout"`, or `"error"`, plus `session_id` when status is `"in_progress"` and `selected_option_index` indicating which alternative was accepted. Treat only `"applied"` as authoritative success.
+**`resume_single_replacement`**  -  Resumes a proposal panel that returned `"in_progress"`. Parameter: `propose_single_replacement_session_id` (from the `"in_progress"` response). Returns the same fields as `propose_single_replacement` and reads the current state immediately: final result, `"in_progress"`, or `"error"` if the provided `propose_single_replacement_session_id` does not match any open review.
 
-**`resume_single_replacement`** — Resumes a proposal panel that returned `"in_progress"`. Parameter: `session_id` (from the `"in_progress"` response).
+**`propose_sequential_replacements`**  -  Queues multiple replacements for the same file and presents them in one uninterrupted review flow. Parameters: `file` (optional) and `proposed_replacements` (required). Each proposed replacement uses the same selection-location arguments as `scroll_to_selection`: `selection`, `context_before`, `context_after`, and `headings_before`, followed by `replacement_options` (1-3 items each with `selection_replacement` and optional `justification`). Returns `status`, `message`, `error_type`, `error`, `propose_sequential_replacements_session_id`, `file`, and `results`. Top-level status is `"completed"`, `"in_progress"`, or `"error"`. Each item in `results` uses the same normalized fields as `propose_single_replacement`, including `selection`, `selection_replacement`, and `selected_option_index`. If the user clicks "Skip Remaining", the current and all remaining unreviewed steps are marked `"skipped"` and the overall status is `"completed"`.
 
-**`propose_sequential_replacements`** — Queues multiple replacements for the same file and presents them in one uninterrupted review flow. Parameters: `file` (optional), `changes` array (required) — each item has `selection` and `options` array (1–3 alternatives with `replacement` and optional `justification`), plus optional `context_before`, `context_after`, `headings_before`. Returns one aggregated result with per-step statuses (including `selected_option_index` per step), plus `session_id` when status is `"in_progress"`.
-
-**`resume_sequential_replacements`** — Resumes a sequential review session that returned `"in_progress"`. Parameter: `session_id` (from the `"in_progress"` response).
+**`resume_sequential_replacements`**  -  Resumes a sequential review session that returned `"in_progress"`. Parameter: `propose_sequential_replacements_session_id` (from the `"in_progress"` response). Returns the same fields as `propose_sequential_replacements` and reads the current state immediately: final result, `"in_progress"`, or `"error"` if the provided `propose_sequential_replacements_session_id` does not match any open review.
 
 #### Telling your AI agent when to use the MCP tools
 
-The MCP tools are available but your AI assistant won't use them automatically—you need to tell it when and how.
+The MCP tools are available but your AI assistant won't use them automatically - you need to tell it when and how.
 
 A ready-to-use instruction file is included at [`examples/CLAUDE.md`](examples/CLAUDE.md). Copy it to your project as:
 
-- `CLAUDE.md` — for Claude Code (place in your project root or `~/.claude/CLAUDE.md` for global use)
-- `AGENTS.md` — for Cursor, Codex, or other agents that read this file
+- `CLAUDE.md`  -  for Claude Code (place in your project root or `~/.claude/CLAUDE.md` for global use)
+- `AGENTS.md`  -  for Cursor, Codex, or other agents that read this file
 - Any system prompt or `instructions.md` file your agent reads at startup
 
-The file contains the full tool reference — when to call each tool, what parameters to pass, and how to handle every return status.
+The file contains the full tool reference  -  when to call each tool, what parameters to pass, and how to handle every return status.
 
 ---
 
@@ -253,7 +253,7 @@ The file contains the full tool reference — when to call each tool, what param
 
 Markdown for Humans includes everything you need for a modern writing experience:
 
-- **True WYSIWYG editing** powered by TipTap—see your formatted output as you type
+- **True WYSIWYG editing** powered by TipTap - see your formatted output as you type
 - **Advanced table editing** with drag-to-resize columns, context menus, and toolbar controls
 - **Mermaid diagrams** with 15 built-in templates and double-click editing
 - **Code blocks** with syntax highlighting for 11+ languages
@@ -273,7 +273,7 @@ Markdown for Humans includes everything you need for a modern writing experience
 
 Existing markdown editors force writers to choose between split-pane previews that waste screen space, plain text editing that requires memorizing syntax, standalone apps that don't integrate with your workflow, or command-heavy interfaces that bury actions in overloaded palettes.
 
-We built Markdown for Humans to solve the **real pain points**—tables and images—that make markdown editing frustrating, while keeping the underlying file as plain markdown (so Git diffs, tooling, and other editors still work).
+We built Markdown for Humans to solve the **real pain points** - tables and images - that make markdown editing frustrating, while keeping the underlying file as plain markdown (so Git diffs, tooling, and other editors still work).
 
 ---
 
@@ -303,7 +303,7 @@ We built Markdown for Humans to solve the **real pain points**—tables and imag
 ## Contributing
 
 > **⚡ Built on open source, for the community.**  
-> Markdown for Humans exists because open source software empowers everyone. We believe that the best tools should be built, improved, and maintained by the whole community—not limited by a few. By embracing collaboration and transparency, we keep innovation moving forward for everyone.
+> Markdown for Humans exists because open source software empowers everyone. We believe that the best tools should be built, improved, and maintained by the whole community - not limited by a few. By embracing collaboration and transparency, we keep innovation moving forward for everyone.
 
 We welcome contributions! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
