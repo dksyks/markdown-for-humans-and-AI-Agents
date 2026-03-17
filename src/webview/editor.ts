@@ -383,6 +383,11 @@ function resolveSelectionRangeFromRenderedBlocks(
 ): { from: number; to: number; targetBlocks: HTMLElement[] } | null {
   const selectionBlocks = getNormalizedSelectionBlocks(selectedMarkdown);
   const renderedBlocks = getRenderedEditorBlocks();
+  const fullHeadingSelection = reconstructHeadingSelection(
+    selectedMarkdown,
+    options?.contextBefore ?? null,
+    options?.contextAfter ?? null
+  );
 
   // When the selection is a heading (either starts with # markers, or context_before
   // ends with heading markers like "#### "), restrict matching to heading elements
@@ -397,12 +402,24 @@ function resolveSelectionRangeFromRenderedBlocks(
 
   let matchedBlocks =
     headingOnlyBlocks && headingOnlyBlocks.length > 0
-      ? findRenderedBlockSequence(headingOnlyBlocks, selectionBlocks, {
+      ? findRenderedBlockSequence(
+          headingOnlyBlocks,
+          fullHeadingSelection ? [fullHeadingSelection.text] : selectionBlocks,
+          {
+            selectedText: fullHeadingSelection?.markdown ?? selectedMarkdown,
+            contextBefore: options?.contextBefore ?? null,
+            contextAfter: options?.contextAfter ?? null,
+          }
+        )
+      : [];
+
+  if (matchedBlocks.length === 0 && headingOnlyBlocks && headingOnlyBlocks.length > 0 && fullHeadingSelection) {
+    matchedBlocks = findRenderedBlockSequence(headingOnlyBlocks, selectionBlocks, {
           selectedText: selectedMarkdown,
           contextBefore: options?.contextBefore ?? null,
           contextAfter: options?.contextAfter ?? null,
-        })
-      : [];
+        });
+  }
 
   if (matchedBlocks.length === 0) {
     matchedBlocks = findRenderedBlockSequence(renderedBlocks, selectionBlocks, {
@@ -527,6 +544,11 @@ function resolveSelectionRangeFromTextBlocks(
   }
 ): { from: number; to: number } | null {
   const selectionBlocks = getNormalizedSelectionBlocks(selectedMarkdown);
+  const fullHeadingSelection = reconstructHeadingSelection(
+    selectedMarkdown,
+    options?.contextBefore ?? null,
+    options?.contextAfter ?? null
+  );
 
   // Detect if the selection is a heading — either by leading # markers or by
   // context_before ending with a heading marker like "#### ".
@@ -561,11 +583,23 @@ function resolveSelectionRangeFromTextBlocks(
   const headingBlocks = allTextBlocks.filter(b => b.isHeading);
   const textBlocks = isHeadingCtx && headingBlocks.length > 0 ? headingBlocks : allTextBlocks;
 
-  let matchedBlocks = findTextBlockSequence(textBlocks, selectionBlocks, {
-    selectedText: selectedMarkdown,
-    contextBefore: options?.contextBefore ?? null,
-    contextAfter: options?.contextAfter ?? null,
-  });
+  let matchedBlocks = findTextBlockSequence(
+    textBlocks,
+    fullHeadingSelection ? [fullHeadingSelection.text] : selectionBlocks,
+    {
+      selectedText: fullHeadingSelection?.markdown ?? selectedMarkdown,
+      contextBefore: options?.contextBefore ?? null,
+      contextAfter: options?.contextAfter ?? null,
+    }
+  );
+
+  if (matchedBlocks.length === 0 && fullHeadingSelection) {
+    matchedBlocks = findTextBlockSequence(textBlocks, selectionBlocks, {
+      selectedText: selectedMarkdown,
+      contextBefore: options?.contextBefore ?? null,
+      contextAfter: options?.contextAfter ?? null,
+    });
+  }
 
   // If heading-only search found nothing, fall back to all blocks.
   if (matchedBlocks.length === 0 && textBlocks !== allTextBlocks) {
@@ -601,6 +635,26 @@ function resolveSelectionRangeFromTextBlocks(
   return {
     from: matchedBlocks[0].from,
     to: matchedBlocks[matchedBlocks.length - 1].to,
+  };
+}
+
+function reconstructHeadingSelection(
+  selectedMarkdown: string,
+  contextBefore: string | null,
+  contextAfter: string | null
+): { markdown: string; text: string } | null {
+  const before = (contextBefore ?? '').split('\n').pop() ?? '';
+  const after = (contextAfter ?? '').split('\n')[0] ?? '';
+
+  const combined = `${before}${selectedMarkdown}${after}`;
+  const match = combined.match(/^(#{1,6})\s+(.*)$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    markdown: combined,
+    text: match[2].replace(/\s+/g, ' ').trim(),
   };
 }
 
@@ -2821,6 +2875,12 @@ function initializeProposalMode() {
     .proposal-btn-timer { margin-left: auto; min-width: 72px; }
     .proposal-btn-timer.expiring { color: var(--vscode-errorForeground, #f44); border-color: var(--vscode-errorForeground, #f44); }
     .proposal-btn-timer.resume-ready { color: var(--vscode-textLink-foreground, #3794ff); border-color: var(--vscode-textLink-foreground, #3794ff); }
+    .proposal-heading-context-1 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 2em; line-height: 1.25; font-weight: 700; margin: 0.67em 0; }
+    .proposal-heading-context-2 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 1.5em; line-height: 1.3; font-weight: 700; margin: 0.75em 0; }
+    .proposal-heading-context-3 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 1.17em; line-height: 1.35; font-weight: 700; margin: 0.83em 0; }
+    .proposal-heading-context-4 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 1em; line-height: 1.4; font-weight: 700; margin: 1em 0; }
+    .proposal-heading-context-5 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 0.83em; line-height: 1.4; font-weight: 700; margin: 1.1em 0; }
+    .proposal-heading-context-6 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 0.67em; line-height: 1.4; font-weight: 700; margin: 1.2em 0; }
   `;
   document.head.appendChild(styleEl);
 
@@ -2864,9 +2924,11 @@ function initializeProposalMode() {
     const redlineWrap = root?.querySelector('.proposal-redline-wrap') as HTMLElement | null;
     if (!redlineWrap || !reviewEl) return;
 
-    const changeTarget = reviewEl.querySelector(
+    const changeInlineTarget = reviewEl.querySelector(
       '.proposal-redline-added, .proposal-redline-removed, .proposal-redline-block-added, .proposal-redline-block-removed, .proposal-redline-structural.proposal-redline-added, .proposal-redline-structural.proposal-redline-removed'
     ) as HTMLElement | null;
+    const changeTarget = (changeInlineTarget?.closest('h1, h2, h3, h4, h5, h6, p, li, blockquote, table, pre') as HTMLElement | null)
+      ?? changeInlineTarget;
 
     if (!changeTarget) {
       redlineWrap.scrollTop = 0;
@@ -2896,12 +2958,46 @@ function initializeProposalMode() {
       const suffix = numOptions > 1 ? ` — Option ${activeEditorIndex + 1}` : '';
       redlineTitleEl.textContent = `Redlined Proposal${suffix}`;
     }
+    requestAnimationFrame(() => {
+      centerActiveRedlineChange();
+      setTimeout(() => centerActiveRedlineChange(), 0);
+      setTimeout(() => centerActiveRedlineChange(), 50);
+    });
   };
 
   // --- Opacity: dim all option sections except the active one ---
   const updateOptionOpacity = () => {
     optionSections.forEach((section, i) => {
       section.classList.toggle('proposal-option-inactive', i !== activeEditorIndex);
+    });
+  };
+
+  const detectProposalHeadingContext = () => {
+    const before = (currentDisplayContextBefore ?? '').split('\n').pop() ?? '';
+    const after = (currentDisplayContextAfter ?? '').split('\n')[0] ?? '';
+    const original = currentOriginalMarkdown ?? '';
+    const fullLine = `${before}${original}${after}`;
+    const match = fullLine.match(/^(#{1,6})\s+.*$/);
+    if (!match) {
+      return null;
+    }
+    return { level: match[1].length };
+  };
+
+  const applyProposalBlockContextStyling = () => {
+    const headingContext = detectProposalHeadingContext();
+    optionSections.forEach(section => {
+      section.classList.remove(
+        'proposal-heading-context-1',
+        'proposal-heading-context-2',
+        'proposal-heading-context-3',
+        'proposal-heading-context-4',
+        'proposal-heading-context-5',
+        'proposal-heading-context-6'
+      );
+      if (headingContext) {
+        section.classList.add(`proposal-heading-context-${headingContext.level}`);
+      }
     });
   };
 
@@ -3142,6 +3238,7 @@ function initializeProposalMode() {
     };
 
     schedulePanelHeightPasses();
+    applyProposalBlockContextStyling();
     window.addEventListener('resize', applyPanelHeights, { passive: true });
   };
 

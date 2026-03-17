@@ -49,6 +49,22 @@ describe('proposalRedline', () => {
     expect(html).toContain('community.');
   });
 
+  it('renders partial heading-line selections as headings when inline context includes heading markers', () => {
+    const html = renderProposalRedlineHtml(
+      'Accounts ',
+      'Financial Accounts ',
+      {
+        displayContextBefore: '# ',
+        displayContextAfter: 'and Their Relationships',
+      }
+    );
+
+    expect(html).toContain('<h1>');
+    expect(html).toContain('Financial Accounts');
+    expect(html).toContain('and Their Relationships');
+    expect(html).not.toContain('<p><span class="proposal-context-ghost"># ');
+  });
+
   it('preserves heading presentation while redlining the heading text', () => {
     const html = renderProposalRedlineHtml('## Project Goals', '## Implementation Plan');
 

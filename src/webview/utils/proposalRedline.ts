@@ -130,16 +130,26 @@ export function renderProposalRedlineHtml(
     fragments.every(f => /^<p[ >]/.test(f.trimStart()));
 
   if (isInlineContext) {
+    const inlineHeadingContext = detectInlineHeadingContext(
+      inlineBefore,
+      originalMarkdown,
+      inlineAfter
+    );
     // Strip outer <p>...</p> from each fragment, then wrap everything in one paragraph.
     const innerHtml = fragments
       .map(f => f.trimStart().replace(/^<p[^>]*>/, '').replace(/<\/p>\s*$/, ''))
       .join('');
     const beforeHtml = inlineBefore
-      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(inlineBefore)}</span>`
+      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(inlineHeadingContext?.displayBefore ?? inlineBefore)}</span>`
       : '';
     const afterHtml = inlineAfter
-      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(inlineAfter)}</span>`
+      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(inlineHeadingContext?.displayAfter ?? inlineAfter)}</span>`
       : '';
+    const needsSuffixBoundarySpace =
+      inlineAfter &&
+      !/^\s/.test(inlineAfter) &&
+      (/\s$/.test(originalMarkdown) || /\s$/.test(replacementMarkdown));
+    const suffixBoundarySpace = needsSuffixBoundarySpace ? '&nbsp;' : '';
 
     // Render any preceding complete blocks (e.g. headings) as ghost divs above
     const precedingFragments = precedingContext
@@ -154,7 +164,16 @@ export function renderProposalRedlineHtml(
         )
       : [];
 
-    return [...precedingFragments, `<p>${beforeHtml}${innerHtml}${afterHtml}</p>`, ...followingFragments].join('');
+    if (inlineHeadingContext) {
+      const level = inlineHeadingContext.level;
+      return [
+        ...precedingFragments,
+        `<h${level}>${beforeHtml}${innerHtml}${suffixBoundarySpace}${afterHtml}</h${level}>`,
+        ...followingFragments,
+      ].join('');
+    }
+
+    return [...precedingFragments, `<p>${beforeHtml}${innerHtml}${suffixBoundarySpace}${afterHtml}</p>`, ...followingFragments].join('');
   }
 
   const beforeFragments = options?.displayContextBefore
@@ -176,6 +195,28 @@ export function renderProposalRedlineHtml(
   }
 
   return allFragments.join('');
+}
+
+function detectInlineHeadingContext(
+  inlineBefore: string,
+  selectionMarkdown: string,
+  inlineAfter: string
+): { level: number; displayBefore: string; displayAfter: string } | null {
+  const beforeLine = inlineBefore.split('\n').pop() ?? inlineBefore;
+  const afterLine = inlineAfter.split('\n')[0] ?? inlineAfter;
+  const fullLine = `${beforeLine}${selectionMarkdown}${afterLine}`;
+  const match = fullLine.match(/^(#{1,6})\s+(.*)$/);
+  if (!match) {
+    return null;
+  }
+
+  const level = match[1].length;
+  const displayBefore = beforeLine.replace(/^#{1,6}/, '');
+  return {
+    level,
+    displayBefore,
+    displayAfter: afterLine,
+  };
 }
 
 function renderChangedBlockGroup(removedBlocks: MarkdownBlock[], addedBlocks: MarkdownBlock[]): string[] {
