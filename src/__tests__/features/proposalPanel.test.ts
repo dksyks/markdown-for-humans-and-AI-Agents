@@ -341,12 +341,103 @@ describe('ProposalPanel', () => {
     });
   });
 
+  it('does not overwrite the clipboard when an accepted proposal is applied successfully', async () => {
+    (vscode.env.clipboard.writeText as jest.Mock).mockClear();
+
+    const proposalHostPanel = {
+      dispose: jest.fn(),
+    };
+
+    const panel = Object.create(ProposalPanel.prototype) as Record<string, unknown>;
+    panel._panel = proposalHostPanel;
+    panel._requestId = 'clipboard-apply';
+    panel._proposal = {
+      original: 'Old text',
+      options: [{ replacement: 'New text' }],
+      context_before: null,
+      context_after: null,
+    };
+    panel._proposalQueue = [
+      {
+        original: 'Old text',
+        options: [{ replacement: 'New text' }],
+        context_before: null,
+        context_after: null,
+      },
+    ];
+    panel._proposalResults = [];
+    panel._proposalIndex = 0;
+    panel._sourceDocument = {
+      uri: vscode.Uri.file('/test/CHANGELOG.md'),
+    } as unknown as vscode.TextDocument;
+    panel._applyReplacement = jest.fn().mockResolvedValue(true);
+    panel._buildResponsePayload = jest.fn().mockReturnValue({ id: 'clipboard-apply', status: 'applied' });
+    panel._writeResponsePayload = jest.fn();
+    panel._writeProposalState = jest.fn();
+
+    await (panel._handleMessage as (msg: unknown) => Promise<void>)({
+      type: 'proposalResponse',
+      status: 'accept',
+      replacement: 'New text',
+      selected_option_index: 0,
+    });
+
+    expect(vscode.env.clipboard.writeText).not.toHaveBeenCalledWith('New text');
+  });
+
+  it('copies the accepted replacement to the clipboard when it was not applied', async () => {
+    (vscode.env.clipboard.writeText as jest.Mock).mockClear();
+
+    const proposalHostPanel = {
+      dispose: jest.fn(),
+    };
+
+    const panel = Object.create(ProposalPanel.prototype) as Record<string, unknown>;
+    panel._panel = proposalHostPanel;
+    panel._requestId = 'clipboard-fallback';
+    panel._proposal = {
+      original: 'Old text',
+      options: [{ replacement: 'New text' }],
+      context_before: null,
+      context_after: null,
+    };
+    panel._proposalQueue = [
+      {
+        original: 'Old text',
+        options: [{ replacement: 'New text' }],
+        context_before: null,
+        context_after: null,
+      },
+    ];
+    panel._proposalResults = [];
+    panel._proposalIndex = 0;
+    panel._sourceDocument = {
+      uri: vscode.Uri.file('/test/CHANGELOG.md'),
+    } as unknown as vscode.TextDocument;
+    panel._applyReplacement = jest.fn().mockResolvedValue(false);
+    panel._buildResponsePayload = jest.fn().mockReturnValue({ id: 'clipboard-fallback', status: 'accept_unchanged' });
+    panel._writeResponsePayload = jest.fn();
+    panel._writeProposalState = jest.fn();
+
+    await (panel._handleMessage as (msg: unknown) => Promise<void>)({
+      type: 'proposalResponse',
+      status: 'accept',
+      replacement: 'New text',
+      selected_option_index: 0,
+    });
+
+    expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith('New text');
+  });
+
   it('writes a pending handoff response and keeps the panel open for single proposals', async () => {
     if (fs.existsSync(RESPONSE_TEMP_FILE)) {
       fs.unlinkSync(RESPONSE_TEMP_FILE);
     }
 
     const proposalHostPanel = {
+      webview: {
+        postMessage: jest.fn(),
+      },
       dispose: jest.fn(),
     };
 
@@ -407,5 +498,58 @@ describe('ProposalPanel', () => {
 
     const stateFilePath = ProposalPanel._getProposalStateFilePath('pending-1');
     expect(fs.existsSync(stateFilePath)).toBe(true);
+    expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith('resume');
+    expect(proposalHostPanel.webview.postMessage).toHaveBeenCalledWith({ type: 'resumePromptCopied' });
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Copied "resume" to the clipboard. Finish reviewing in Markdown for Humans, then paste it into the conversation.'
+    );
+  });
+
+  it('falls back to the current pending-handoff behavior if auto-copying resume fails', async () => {
+    if (fs.existsSync(RESPONSE_TEMP_FILE)) {
+      fs.unlinkSync(RESPONSE_TEMP_FILE);
+    }
+
+    (vscode.env.clipboard.writeText as jest.Mock).mockRejectedValueOnce(new Error('clipboard failed'));
+
+    const proposalHostPanel = {
+      webview: {
+        postMessage: jest.fn(),
+      },
+      dispose: jest.fn(),
+    };
+
+    const panel = Object.create(ProposalPanel.prototype) as Record<string, unknown>;
+    panel._panel = proposalHostPanel;
+    panel._requestId = 'pending-fallback';
+    panel._proposal = {
+      original: 'Old text',
+      options: [{ replacement: 'New text' }],
+      context_before: null,
+      context_after: null,
+    };
+    panel._proposalQueue = [
+      {
+        original: 'Old text',
+        options: [{ replacement: 'New text' }],
+        context_before: null,
+        context_after: null,
+      },
+    ];
+    panel._proposalResults = [];
+    panel._proposalIndex = 0;
+    panel._sourceDocument = {
+      uri: vscode.Uri.file('/test/CHANGELOG.md'),
+    } as unknown as vscode.TextDocument;
+    panel._hasPendingHandoff = false;
+
+    await (panel._handleMessage as (msg: unknown) => Promise<void>)({
+      type: 'proposalPending',
+    });
+
+    expect(proposalHostPanel.dispose).not.toHaveBeenCalled();
+    expect(fs.existsSync(RESPONSE_TEMP_FILE)).toBe(true);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(proposalHostPanel.webview.postMessage).not.toHaveBeenCalled();
   });
 });

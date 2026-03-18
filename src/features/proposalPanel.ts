@@ -303,7 +303,9 @@ export class ProposalPanel {
         const originalOptionReplacement = this._proposal.options[optionIndex]?.replacement ?? '';
         const unchanged = replacement === originalOptionReplacement;
         appliedStatus = applied ? 'applied' : (unchanged ? 'accept_unchanged' : 'accept_changed');
-        await vscode.env.clipboard.writeText(replacement);
+        if (!applied) {
+          await vscode.env.clipboard.writeText(replacement);
+        }
       } else if (status === 'timeout' && replacement) {
         await vscode.env.clipboard.writeText(replacement);
       }
@@ -387,11 +389,24 @@ export class ProposalPanel {
       } catch (err) {
         console.warn(`${BUILD_TAG} Failed to write pending proposal state:`, err);
       }
+      await this._copyResumePromptForPendingHandoff();
       return;
     }
 
     if (msg.type === 'copyResumePrompt') {
       await vscode.env.clipboard.writeText('resume');
+    }
+  }
+
+  private async _copyResumePromptForPendingHandoff(): Promise<void> {
+    try {
+      await vscode.env.clipboard.writeText('resume');
+      this._panel.webview.postMessage({ type: 'resumePromptCopied' });
+      void vscode.window.showInformationMessage(
+        'Copied "resume" to the clipboard. Finish reviewing in Markdown for Humans, then paste it into the conversation.'
+      );
+    } catch {
+      // Preserve the current behavior if clipboard copy fails.
     }
   }
 

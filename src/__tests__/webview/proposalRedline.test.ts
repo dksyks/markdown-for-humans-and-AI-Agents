@@ -69,6 +69,54 @@ describe('proposalRedline', () => {
     expect(html).not.toContain('proposal-context-ghost"> </span>');
   });
 
+  it('renders partial unordered-list selections as list items when inline context includes a list marker', () => {
+    const html = renderProposalRedlineHtml(
+      "member's",
+      "Member's",
+      {
+        displayContextBefore: '- The removed ',
+        displayContextAfter:
+          ' Trust Accounts come under the control of the Committee\n- Any subsequent distributions shall be made by the Committee as then constituted.',
+      }
+    );
+
+    expect(html).toContain('<ul class="proposal-redline-list"><li>');
+    expect(html).toContain('proposal-redline-removed');
+    expect(html).toContain('proposal-redline-added');
+    expect(html).toContain('Trust Accounts come under the control of the Committee');
+    expect(html).toContain('<div class="proposal-context-ghost"><ul>');
+    expect(html).toContain('Any subsequent distributions shall be made by the Committee as then constituted.');
+    expect(html).not.toContain('<p><span class="proposal-context-ghost">- The removed ');
+    expect(html).not.toContain('Trust Accounts come under the control of the Committee<br>- Any subsequent');
+  });
+
+  it('renders partial ordered-list selections with the original list number preserved', () => {
+    const html = renderProposalRedlineHtml(
+      'committee members',
+      'Committee Members',
+      {
+        displayContextBefore: [
+          '1. The Beneficiary must be Disbursement Eligible.',
+          '2. Prior to voting to approve, each Committee member shall make a good-faith effort to determine that the applicable eligibility criteria, category requirements, and limitations have been satisfied.',
+          '3. For any Beneficiary to receive a transfer, the majority of Committee Members (excluding the requesting Beneficiary if the requesting Beneficiary is on the Committee) must approve.',
+          '4. The ',
+        ].join('\n'),
+        displayContextAfter: [
+          ' may approve Qualified Spending in any amount up to the applicable category-specific and aggregate limits set forth in Section 06. Qualified Taxes may be approved up to the incremental tax amounts permitted under Section 07.',
+          '5. All committee members (excluding the requesting Beneficiary if the requesting Beneficiary is on the committee) participate in approvals, regardless of whether they are Disbursement Ineligible themselves or have entered their Post-Stewardship Years.',
+        ].join('\n'),
+      }
+    );
+
+    expect(html).toContain('<ol class="proposal-redline-list" start="4"><li value="4">');
+    expect(html).toContain('proposal-redline-removed');
+    expect(html).toContain('proposal-redline-added');
+    expect(html).toContain('may approve Qualified Spending in any amount up to the applicable category-specific and aggregate limits set forth in Section 06.');
+    expect(html).toContain('<div class="proposal-context-ghost"><ol>');
+    expect(html).toContain('<div class="proposal-context-ghost"><ol start="5">');
+    expect(html).not.toContain('<ol class="proposal-redline-list"><li>');
+  });
+
   it('preserves heading presentation while redlining the heading text', () => {
     const html = renderProposalRedlineHtml('## Project Goals', '## Implementation Plan');
     const removedIndex = html.indexOf('proposal-redline-removed');
@@ -214,5 +262,56 @@ describe('proposalRedline', () => {
     expect(html).toContain('>1</span>');
     expect(html).toContain('>2</span>');
     expect(html).not.toContain('<script>alert(1)</script>');
+  });
+
+  it('diffs inside a shared outer bold wrapper instead of replacing the whole bold span', () => {
+    const html = renderProposalRedlineHtml(
+      '**satisfies the account access requirements of Section 02, satisfies the reporting requirements of Section 14 (including the timely submission of a complete year-end report), and, if applicable, submits a Spousal Waiver required under Section 13 with the immediately preceding year-end review.**',
+      '**satisfies the account access requirements of Section 02, satisfies the reporting requirements of Section 14 (including the timely submission of a complete year-end report), and, if applicable, submits a Spousal Waiver required under Section 13 with the immediately preceding Year-end Review.**'
+    );
+
+    expect(html).toContain('<strong>');
+    expect(html).toContain('proposal-redline-removed');
+    expect(html).toContain('proposal-redline-added');
+    expect(html).toContain('>year-end review</span>');
+    expect(html).toContain('>Year-end Review</span>');
+    expect(html).not.toContain(
+      '<span class="proposal-redline-removed">satisfies the account access requirements of Section 02'
+    );
+    expect(html).not.toContain(
+      '<span class="proposal-redline-added">satisfies the account access requirements of Section 02'
+    );
+  });
+
+  it('diffs inside a shared bold wrapper split across inline context before and after', () => {
+    const html = renderProposalRedlineHtml(
+      'satisfies the account access requirements of Section 02, satisfies the reporting requirements of Section 14 (including the timely submission of a complete year-end report), and, if applicable, submits a Spousal Waiver required under Section 13 with the immediately preceding year-end review.',
+      'satisfies the account access requirements of Section 02, satisfies the reporting requirements of Section 14 (including the timely submission of a complete year-end report), and, if applicable, submits a Spousal Waiver required under Section 13 with the immediately preceding Year-end Review.',
+      {
+        displayContextBefore: '- For each calendar year, a Beneficiary\'s Stewardship Score shall increase by one (1) if the Beneficiary neither receives nor approves any Excess Disbursements, has no Misappropriation of Trust funds detected as the Beneficiary, voted for no Advance Approvals that resulted in a Misappropriation, **',
+        displayContextAfter: '** This score increase applies regardless of whether the Beneficiary was Disbursement Eligible during that year.',
+      }
+    );
+
+    expect(html).toContain('<ul class="proposal-redline-list"><li><span class="proposal-context-ghost">');
+    expect(html).toContain('proposal-redline-removed');
+    expect(html).toContain('proposal-redline-added');
+    expect(html).toContain('>year-end review</span>');
+    expect(html).toContain('>Year-end Review</span>');
+    expect(html).toContain('that resulted in a Misappropriation, </span><strong>');
+    expect(html).toContain(
+      '</strong><span class="proposal-context-ghost"> This score increase applies regardless of whether the Beneficiary was Disbursement Eligible during that year.</span>'
+    );
+    expect(html).not.toContain('proposal-context-ghost">**');
+    expect(html).not.toContain('** This score increase');
+    expect(html).not.toContain(
+      '<strong><span class="proposal-context-ghost">For each calendar year'
+    );
+    expect(html).not.toContain(
+      '<span class="proposal-redline-removed">satisfies the account access requirements of Section 02'
+    );
+    expect(html).not.toContain(
+      '<span class="proposal-redline-added">satisfies the account access requirements of Section 02'
+    );
   });
 });

@@ -27,6 +27,12 @@ interface DiffPart {
   type: 'equal' | 'insert' | 'delete';
 }
 
+type InlineContextBlock =
+  | { kind: 'heading'; level: number; displayBefore: string; displayAfter: string }
+  | { kind: 'unorderedListItem'; displayBefore: string; displayAfter: string }
+  | { kind: 'orderedListItem'; orderedStart: number; displayBefore: string; displayAfter: string }
+  | { kind: 'taskListItem'; taskChecked: boolean; displayBefore: string; displayAfter: string };
+
 const inlineMarkdownRenderer = new MarkdownIt({
   html: false,
   breaks: true,
@@ -123,6 +129,10 @@ export function renderProposalRedlineHtml(
   const inlineAfter = afterParts[0];
   // Following complete blocks after the inline snippet
   const followingContext = afterParts.slice(1).join('\n\n');
+  const beforeLines = (inlineBefore ?? '').split('\n');
+  const afterLines = (inlineAfter ?? '').split('\n');
+  const inlineBeforeLine = beforeLines[beforeLines.length - 1] ?? '';
+  const inlineAfterLine = afterLines[0] ?? '';
 
   const isInlineContext =
     (inlineBefore || inlineAfter) &&
@@ -130,50 +140,73 @@ export function renderProposalRedlineHtml(
     fragments.every(f => /^<p[ >]/.test(f.trimStart()));
 
   if (isInlineContext) {
-    const inlineHeadingContext = detectInlineHeadingContext(
-      inlineBefore,
+    const inlineBlockContext = detectInlineBlockContext(
+      inlineBeforeLine,
       originalMarkdown,
-      inlineAfter
+      inlineAfterLine
     );
     // Strip outer <p>...</p> from each fragment, then wrap everything in one paragraph.
     const innerHtml = fragments
       .map(f => f.trimStart().replace(/^<p[^>]*>/, '').replace(/<\/p>\s*$/, ''))
       .join('');
-    const beforeHtml = inlineBefore
-      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(inlineHeadingContext?.displayBefore ?? inlineBefore)}</span>`
+    const effectiveInlineBefore = inlineBlockContext?.displayBefore ?? inlineBefore;
+    const effectiveInlineAfter = inlineBlockContext?.displayAfter ?? inlineAfter;
+    const sharedContextWrapper = detectSharedInlineContextWrapper(
+      effectiveInlineBefore,
+      effectiveInlineAfter
+    );
+    const outerBeforeText = sharedContextWrapper?.outerBefore ?? effectiveInlineBefore;
+    const innerBeforeText = sharedContextWrapper?.innerBefore ?? '';
+    const innerAfterText = sharedContextWrapper?.innerAfter ?? '';
+    const outerAfterText = sharedContextWrapper?.outerAfter ?? effectiveInlineAfter;
+    const beforeHtml = outerBeforeText
+      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(outerBeforeText)}</span>`
       : '';
-    const afterHtml = inlineAfter
-      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(inlineHeadingContext?.displayAfter ?? inlineAfter)}</span>`
+    const afterHtml = outerAfterText
+      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(outerAfterText)}</span>`
       : '';
     const needsSuffixBoundarySpace =
-      inlineAfter &&
-      !/^\s/.test(inlineAfter) &&
+      (innerAfterText || outerAfterText) &&
+      !/^\s/.test(innerAfterText || outerAfterText) &&
       (/\s$/.test(originalMarkdown) || /\s$/.test(replacementMarkdown));
     const suffixBoundarySpace = needsSuffixBoundarySpace ? '&nbsp;' : '';
 
-    // Render any preceding complete blocks (e.g. headings) as ghost divs above
-    const precedingFragments = precedingContext
-      ? splitMarkdownBlocks(precedingContext).map(
-          block => `<div class="proposal-context-ghost">${renderMarkdownBlock(block)}</div>`
-        )
-      : [];
-    // Render any following complete blocks as ghost divs below
-    const followingFragments = followingContext
-      ? splitMarkdownBlocks(followingContext).map(
-          block => `<div class="proposal-context-ghost">${renderMarkdownBlock(block)}</div>`
-        )
-      : [];
+    const precedingChunks = inlineBlockContext
+      ? [...beforeParts.slice(0, -1), beforeLines.slice(0, -1).join('\n')].filter(chunk => chunk.trim())
+      : precedingContext
+        ? [precedingContext]
+        : [];
+    const followingChunks = inlineBlockContext
+      ? [afterLines.slice(1).join('\n'), ...afterParts.slice(1)].filter(chunk => chunk.trim())
+      : followingContext
+        ? [followingContext]
+        : [];
 
-    if (inlineHeadingContext) {
-      const level = inlineHeadingContext.level;
+    const precedingFragments = renderGhostContextChunks(precedingChunks);
+    const followingFragments = renderGhostContextChunks(followingChunks);
+    const wrappedInnerBeforeHtml = innerBeforeText
+      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(innerBeforeText)}</span>`
+      : '';
+    const wrappedInnerAfterHtml = innerAfterText
+      ? `<span class="proposal-context-ghost">${renderInlineMarkdownSegment(innerAfterText)}</span>`
+      : '';
+    const wrappedContent = `${wrappedInnerBeforeHtml}${innerHtml}${suffixBoundarySpace}${wrappedInnerAfterHtml}`;
+    const combinedInlineContent = `${beforeHtml}${
+      sharedContextWrapper
+        ? renderInlineWrapper(sharedContextWrapper.kind, wrappedContent)
+        : wrappedContent
+    }${afterHtml}`;
+    const combinedInlineHtml = combinedInlineContent;
+
+    if (inlineBlockContext) {
       return [
         ...precedingFragments,
-        `<h${level}>${beforeHtml}${innerHtml}${suffixBoundarySpace}${afterHtml}</h${level}>`,
+        renderInlineContextBlock(inlineBlockContext, combinedInlineHtml),
         ...followingFragments,
       ].join('');
     }
 
-    return [...precedingFragments, `<p>${beforeHtml}${innerHtml}${suffixBoundarySpace}${afterHtml}</p>`, ...followingFragments].join('');
+    return [...precedingFragments, `<p>${combinedInlineHtml}</p>`, ...followingFragments].join('');
   }
 
   const beforeFragments = options?.displayContextBefore
@@ -197,26 +230,118 @@ export function renderProposalRedlineHtml(
   return allFragments.join('');
 }
 
-function detectInlineHeadingContext(
+function detectSharedInlineContextWrapper(
+  displayBefore: string,
+  displayAfter: string
+): {
+  kind: 'strong' | 'em' | 'strike';
+  outerBefore: string;
+  innerBefore: string;
+  innerAfter: string;
+  outerAfter: string;
+} | null {
+  const candidates: Array<{ marker: string; kind: 'strong' | 'em' | 'strike' }> = [
+    { marker: '**', kind: 'strong' },
+    { marker: '__', kind: 'strong' },
+    { marker: '~~', kind: 'strike' },
+    { marker: '*', kind: 'em' },
+    { marker: '_', kind: 'em' },
+  ];
+
+  for (const candidate of candidates) {
+    const beforeMarkerIndex = displayBefore.lastIndexOf(candidate.marker);
+    const afterMarkerIndex = displayAfter.indexOf(candidate.marker);
+    if (beforeMarkerIndex === -1 && afterMarkerIndex === -1) {
+      continue;
+    }
+
+    return {
+      kind: candidate.kind,
+      outerBefore:
+        beforeMarkerIndex === -1 ? '' : displayBefore.slice(0, beforeMarkerIndex),
+      innerBefore:
+        beforeMarkerIndex === -1 ? displayBefore : displayBefore.slice(beforeMarkerIndex + candidate.marker.length),
+      innerAfter:
+        afterMarkerIndex === -1 ? displayAfter : displayAfter.slice(0, afterMarkerIndex),
+      outerAfter:
+        afterMarkerIndex === -1 ? '' : displayAfter.slice(afterMarkerIndex + candidate.marker.length),
+    };
+  }
+
+  return null;
+}
+
+function detectInlineBlockContext(
   inlineBefore: string,
   selectionMarkdown: string,
   inlineAfter: string
-): { level: number; displayBefore: string; displayAfter: string } | null {
+): InlineContextBlock | null {
   const beforeLine = inlineBefore.split('\n').pop() ?? inlineBefore;
   const afterLine = inlineAfter.split('\n')[0] ?? inlineAfter;
   const fullLine = `${beforeLine}${selectionMarkdown}${afterLine}`;
-  const match = fullLine.match(/^(#{1,6})\s+(.*)$/);
-  if (!match) {
-    return null;
+  const taskMatch = fullLine.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/);
+  if (taskMatch) {
+    return {
+      kind: 'taskListItem',
+      taskChecked: taskMatch[1].toLowerCase() === 'x',
+      displayBefore: beforeLine.replace(/^\s*[-*+]\s+\[[ xX]\]\s*/, ''),
+      displayAfter: afterLine,
+    };
   }
 
-  const level = match[1].length;
-  const displayBefore = beforeLine.replace(/^#{1,6}\s*/, '');
-  return {
-    level,
-    displayBefore,
-    displayAfter: afterLine,
-  };
+  const orderedMatch = fullLine.match(/^\s*(\d+)\.\s+(.*)$/);
+  if (orderedMatch) {
+    return {
+      kind: 'orderedListItem',
+      orderedStart: Number(orderedMatch[1]),
+      displayBefore: beforeLine.replace(/^\s*\d+\.\s*/, ''),
+      displayAfter: afterLine,
+    };
+  }
+
+  const unorderedMatch = fullLine.match(/^\s*[-*+]\s+(.*)$/);
+  if (unorderedMatch) {
+    return {
+      kind: 'unorderedListItem',
+      displayBefore: beforeLine.replace(/^\s*[-*+]\s*/, ''),
+      displayAfter: afterLine,
+    };
+  }
+
+  const headingMatch = fullLine.match(/^(#{1,6})\s+(.*)$/);
+  if (headingMatch) {
+    return {
+      kind: 'heading',
+      level: headingMatch[1].length,
+      displayBefore: beforeLine.replace(/^#{1,6}\s*/, ''),
+      displayAfter: afterLine,
+    };
+  }
+
+  return null;
+}
+
+function renderGhostContextChunks(chunks: string[]): string[] {
+  return chunks.flatMap(chunk =>
+    splitMarkdownBlocks(chunk).map(
+      block => `<div class="proposal-context-ghost">${renderMarkdownBlock(block)}</div>`
+    )
+  );
+}
+
+function renderInlineContextBlock(context: InlineContextBlock, contentHtml: string): string {
+  switch (context.kind) {
+    case 'heading':
+      return `<h${context.level}>${contentHtml}</h${context.level}>`;
+    case 'unorderedListItem':
+      return `<ul class="proposal-redline-list"><li>${contentHtml}</li></ul>`;
+    case 'orderedListItem':
+      return `<ol class="proposal-redline-list" start="${context.orderedStart}"><li value="${context.orderedStart}">${contentHtml}</li></ol>`;
+    case 'taskListItem': {
+      const checked = context.taskChecked ? ' checked' : '';
+      return `<ul class="proposal-redline-list proposal-redline-task-list"><li><label><input type="checkbox" disabled${checked}> <span>${contentHtml}</span></label></li></ul>`;
+    }
+  }
 }
 
 function renderChangedBlockGroup(removedBlocks: MarkdownBlock[], addedBlocks: MarkdownBlock[]): string[] {
@@ -421,7 +546,7 @@ function renderInlineRedlineBlock(originalBlock: MarkdownBlock, replacementBlock
     case 'unorderedListItem':
       return `<ul class="proposal-redline-list"><li>${contentHtml}</li></ul>`;
     case 'orderedListItem':
-      return `<ol class="proposal-redline-list" start="${replacementBlock.orderedStart ?? 1}"><li>${contentHtml}</li></ol>`;
+      return `<ol class="proposal-redline-list" start="${replacementBlock.orderedStart ?? 1}"><li value="${replacementBlock.orderedStart ?? 1}">${contentHtml}</li></ol>`;
     case 'taskListItem': {
       const checked = replacementBlock.taskChecked ? ' checked' : '';
       return `<ul class="proposal-redline-list proposal-redline-task-list"><li><label><input type="checkbox" disabled${checked}> <span>${contentHtml}</span></label></li></ul>`;
@@ -437,6 +562,11 @@ function renderInlineRedlineBlock(originalBlock: MarkdownBlock, replacementBlock
 }
 
 function renderInlineDiffText(originalText: string, replacementText: string): string {
+  const wrappedInlineDiff = renderSharedWrappedInlineDiff(originalText, replacementText);
+  if (wrappedInlineDiff) {
+    return wrappedInlineDiff;
+  }
+
   const parts = diffTextParts(originalText, replacementText);
 
   return parts
@@ -456,6 +586,69 @@ function renderInlineDiffText(originalText: string, replacementText: string): st
     .join('');
 }
 
+function renderSharedWrappedInlineDiff(originalText: string, replacementText: string): string | null {
+  const sharedWrapper = detectSharedInlineWrapper(originalText, replacementText);
+  if (!sharedWrapper) {
+    return null;
+  }
+
+  const innerHtml = renderInlineDiffText(sharedWrapper.originalInner, sharedWrapper.replacementInner);
+  return renderInlineWrapper(sharedWrapper.kind, innerHtml);
+}
+
+function detectSharedInlineWrapper(
+  originalText: string,
+  replacementText: string
+): { kind: 'strong' | 'em' | 'strike'; originalInner: string; replacementInner: string } | null {
+  const candidates: Array<{ marker: string; kind: 'strong' | 'em' | 'strike' }> = [
+    { marker: '**', kind: 'strong' },
+    { marker: '__', kind: 'strong' },
+    { marker: '~~', kind: 'strike' },
+    { marker: '*', kind: 'em' },
+    { marker: '_', kind: 'em' },
+  ];
+
+  for (const candidate of candidates) {
+    const originalInner = unwrapInlineWrapper(originalText, candidate.marker);
+    const replacementInner = unwrapInlineWrapper(replacementText, candidate.marker);
+    if (originalInner === null || replacementInner === null) {
+      continue;
+    }
+
+    return {
+      kind: candidate.kind,
+      originalInner,
+      replacementInner,
+    };
+  }
+
+  return null;
+}
+
+function unwrapInlineWrapper(text: string, marker: string): string | null {
+  if (!text.startsWith(marker) || !text.endsWith(marker)) {
+    return null;
+  }
+
+  const inner = text.slice(marker.length, text.length - marker.length);
+  if (!inner || inner.includes('\n')) {
+    return null;
+  }
+
+  return inner;
+}
+
+function renderInlineWrapper(kind: 'strong' | 'em' | 'strike', innerHtml: string): string {
+  switch (kind) {
+    case 'strong':
+      return `<strong>${innerHtml}</strong>`;
+    case 'em':
+      return `<em>${innerHtml}</em>`;
+    case 'strike':
+      return `<s>${innerHtml}</s>`;
+  }
+}
+
 function renderStandaloneInlineBlock(
   block: MarkdownBlock,
   changeType: 'removed' | 'added'
@@ -468,7 +661,7 @@ function renderStandaloneInlineBlock(
     case 'unorderedListItem':
       return `<ul class="proposal-redline-list"><li>${contentHtml}</li></ul>`;
     case 'orderedListItem':
-      return `<ol class="proposal-redline-list" start="${block.orderedStart ?? 1}"><li>${contentHtml}</li></ol>`;
+      return `<ol class="proposal-redline-list" start="${block.orderedStart ?? 1}"><li value="${block.orderedStart ?? 1}">${contentHtml}</li></ol>`;
     case 'taskListItem': {
       const checked = block.taskChecked ? ' checked' : '';
       return `<ul class="proposal-redline-list proposal-redline-task-list"><li><label><input type="checkbox" disabled${checked}> <span>${contentHtml}</span></label></li></ul>`;

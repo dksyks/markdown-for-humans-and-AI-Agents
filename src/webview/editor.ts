@@ -48,6 +48,11 @@ import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
 import { renderProposalRedlineHtml, renderMarkdownHtml } from './utils/proposalRedline';
+import {
+  buildProposalEditableMarkdown,
+  extractProposalReplacementFromEditableMarkdown,
+  normalizeProposalReplacementForContext,
+} from './utils/proposalContext';
 import { applyColors, updateColorSettingsPanel, DEFAULT_COLORS } from './features/colorSettings';
 import { resolveSelectionMatch } from './utils/selectionMatching';
 import {
@@ -2881,12 +2886,6 @@ function initializeProposalMode() {
     .proposal-btn-timer { margin-left: auto; min-width: 72px; }
     .proposal-btn-timer.expiring { color: var(--vscode-errorForeground, #f44); border-color: var(--vscode-errorForeground, #f44); }
     .proposal-btn-timer.resume-ready { color: var(--vscode-textLink-foreground, #3794ff); border-color: var(--vscode-textLink-foreground, #3794ff); }
-    .proposal-heading-context-1 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 2em; line-height: 1.25; font-weight: 700; margin: 0.67em 0; }
-    .proposal-heading-context-2 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 1.5em; line-height: 1.3; font-weight: 700; margin: 0.75em 0; }
-    .proposal-heading-context-3 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 1.17em; line-height: 1.35; font-weight: 700; margin: 0.83em 0; }
-    .proposal-heading-context-4 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 1em; line-height: 1.4; font-weight: 700; margin: 1em 0; }
-    .proposal-heading-context-5 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 0.83em; line-height: 1.4; font-weight: 700; margin: 1.1em 0; }
-    .proposal-heading-context-6 .proposal-pane-proposed .ProseMirror > p:first-child { font-size: 0.67em; line-height: 1.4; font-weight: 700; margin: 1.2em 0; }
   `;
   document.head.appendChild(styleEl);
 
@@ -2952,7 +2951,19 @@ function initializeProposalMode() {
   const renderReviewPane = () => {
     const activeEditor = proposedEditors[activeEditorIndex];
     if (!activeEditor || !reviewEl) return;
-    const replacementMarkdown = getEditorMarkdownForSync(activeEditor);
+    const editedMarkdown = getEditorMarkdownForSync(activeEditor);
+    const extractedReplacement = extractProposalReplacementFromEditableMarkdown(
+      currentOriginalMarkdown,
+      editedMarkdown,
+      currentDisplayContextBefore,
+      currentDisplayContextAfter
+    );
+    const replacementMarkdown = normalizeProposalReplacementForContext(
+      currentOriginalMarkdown,
+      extractedReplacement,
+      currentDisplayContextBefore,
+      currentDisplayContextAfter
+    );
     const redlineHtml = renderProposalRedlineHtml(
       currentOriginalMarkdown,
       replacementMarkdown,
@@ -2980,35 +2991,6 @@ function initializeProposalMode() {
     });
   };
 
-  const detectProposalHeadingContext = () => {
-    const before = (currentDisplayContextBefore ?? '').split('\n').pop() ?? '';
-    const after = (currentDisplayContextAfter ?? '').split('\n')[0] ?? '';
-    const original = currentOriginalMarkdown ?? '';
-    const fullLine = `${before}${original}${after}`;
-    const match = fullLine.match(/^(#{1,6})\s+.*$/);
-    if (!match) {
-      return null;
-    }
-    return { level: match[1].length };
-  };
-
-  const applyProposalBlockContextStyling = () => {
-    const headingContext = detectProposalHeadingContext();
-    optionSections.forEach(section => {
-      section.classList.remove(
-        'proposal-heading-context-1',
-        'proposal-heading-context-2',
-        'proposal-heading-context-3',
-        'proposal-heading-context-4',
-        'proposal-heading-context-5',
-        'proposal-heading-context-6'
-      );
-      if (headingContext) {
-        section.classList.add(`proposal-heading-context-${headingContext.level}`);
-      }
-    });
-  };
-
   const activateOption = (index: number, focusEditor = false) => {
     activeEditorIndex = index;
     renderReviewPane();
@@ -3025,9 +3007,21 @@ function initializeProposalMode() {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     const normalizedStatus = status === 'skip' ? 'skipped' : status === 'reject' ? 'rejected' : status;
     const resolvedIndex = optionIndex ?? activeEditorIndex;
+    const editedMarkdown = getEditorMarkdownForSync(proposedEditors[resolvedIndex]);
+    const extractedReplacement = extractProposalReplacementFromEditableMarkdown(
+      currentOriginalMarkdown,
+      editedMarkdown,
+      currentDisplayContextBefore,
+      currentDisplayContextAfter
+    );
     const replacementMd = normalizedStatus === 'skipped' || normalizedStatus === 'rejected'
       ? null
-      : getEditorMarkdownForSync(proposedEditors[resolvedIndex]);
+      : normalizeProposalReplacementForContext(
+          currentOriginalMarkdown,
+          extractedReplacement,
+          currentDisplayContextBefore,
+          currentDisplayContextAfter
+        );
     vscode.postMessage({
       type: 'proposalResponse',
       status: normalizedStatus,
@@ -3178,7 +3172,15 @@ function initializeProposalMode() {
       acceptBtns.push(acceptBtn);
       acceptBtn.addEventListener('click', () => handleProposalResponse('accept', i));
 
-      editor.commands.setContent(opt.replacement ?? '', { contentType: 'markdown' });
+      editor.commands.setContent(
+        buildProposalEditableMarkdown(
+          currentOriginalMarkdown,
+          opt.replacement ?? '',
+          currentDisplayContextBefore,
+          currentDisplayContextAfter
+        ),
+        { contentType: 'markdown' }
+      );
 
       // Justification
       const justSection = document.getElementById(`proposal-just-section-${i}`) as HTMLElement;
@@ -3255,13 +3257,17 @@ function initializeProposalMode() {
     };
 
     schedulePanelHeightPasses();
-    applyProposalBlockContextStyling();
     window.addEventListener('resize', applyPanelHeights, { passive: true });
   };
 
   // --- Handle proposalInit from extension ---
   window.addEventListener('message', (event: MessageEvent) => {
     const msg = event.data;
+    if (msg.type === 'resumePromptCopied') {
+      hasCopiedResumePrompt = true;
+      updateTimerButtonForPendingHandoff();
+      return;
+    }
     if (msg.type !== 'proposalInit') return;
 
     // Apply color settings if provided (same as main editor settingsUpdate)
