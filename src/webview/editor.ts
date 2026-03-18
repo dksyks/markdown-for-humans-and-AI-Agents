@@ -1996,6 +1996,14 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
         updateEditorContent(message.content);
         break;
+      case 'getOutline': {
+        pushOutlineUpdate();
+        if (editor) {
+          const { from } = editor.state.selection;
+          vscode.postMessage({ type: 'selectionChange', pos: from });
+        }
+        break;
+      }
       case 'getSelection': {
         if (editor) {
           const { empty } = editor.state.selection;

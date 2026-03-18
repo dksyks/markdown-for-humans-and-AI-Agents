@@ -629,6 +629,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         markWebviewPanelActive(webviewPanel);
         writeActiveInstanceMetadata(document.uri.fsPath);
         webviewPanel.webview.postMessage({ type: 'getSelection' });
+        webviewPanel.webview.postMessage({ type: 'getOutline' });
       } else if (getActiveWebviewPanel() === webviewPanel) {
         setActiveWebviewPanel(undefined);
       }
