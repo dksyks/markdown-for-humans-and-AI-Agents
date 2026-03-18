@@ -1094,7 +1094,7 @@ function handleSelectionRevealMessage(
         'text'
       );
     }
-    if (message.type === 'scrollAndSelect') {
+    if (message.type === 'scrollAndSelect' || message.type === 'selectProposalSelection') {
       revealProposalTarget(editor, selFrom, selTo);
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
@@ -2800,7 +2800,6 @@ export const __testing = {
 // plus Accept / Edit / Cancel buttons and a countdown timer.
 // ---------------------------------------------------------------------------
 
-const PROPOSAL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes, must match MCP server
 const PROPOSAL_PENDING_HANDOFF_MS = 110 * 1000; // hand off before common 120s MCP client timeout
 
 function initializeProposalMode() {
@@ -2922,8 +2921,7 @@ function initializeProposalMode() {
   let timerBtn: HTMLButtonElement;
 
   // --- Timer state ---
-  let remainingMs = PROPOSAL_TIMEOUT_MS;
-  let timerInterval: ReturnType<typeof setInterval> | null = null;
+  let handoffTimeout: ReturnType<typeof setTimeout> | null = null;
   let hasPendingHandoff = false;
   let hasCopiedResumePrompt = false;
 
@@ -3002,9 +3000,9 @@ function initializeProposalMode() {
     }
   };
 
-  // --- Response handler (shared by Accept buttons, skip buttons, and timer) ---
-  const handleProposalResponse = (status: 'accept' | 'skip' | 'reject' | 'timeout' | 'skipped', optionIndex?: number) => {
-    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  // --- Response handler (shared by Accept buttons and skip buttons) ---
+  const handleProposalResponse = (status: 'accept' | 'skip' | 'reject' | 'skipped', optionIndex?: number) => {
+    if (handoffTimeout) { clearTimeout(handoffTimeout); handoffTimeout = null; }
     const normalizedStatus = status === 'skip' ? 'skipped' : status === 'reject' ? 'rejected' : status;
     const resolvedIndex = optionIndex ?? activeEditorIndex;
     const editedMarkdown = getEditorMarkdownForSync(proposedEditors[resolvedIndex]);
@@ -3045,20 +3043,12 @@ function initializeProposalMode() {
     vscode.postMessage({ type: 'proposalPending' });
   };
 
-  const startTimer = () => {
-    if (timerInterval) clearInterval(timerInterval);
-    timerInterval = setInterval(() => {
-      remainingMs -= 1000;
-      timerBtn.classList.toggle('expiring', remainingMs <= 60_000);
-      if (!hasPendingHandoff && PROPOSAL_TIMEOUT_MS - remainingMs >= PROPOSAL_PENDING_HANDOFF_MS) {
-        notifyPendingHandoff();
-      }
-      if (remainingMs <= 0) {
-        clearInterval(timerInterval!);
-        timerInterval = null;
-        handleProposalResponse('timeout');
-      }
-    }, 1000);
+  const startHandoffTimer = () => {
+    if (handoffTimeout) clearTimeout(handoffTimeout);
+    handoffTimeout = setTimeout(() => {
+      handoffTimeout = null;
+      if (!hasPendingHandoff) notifyPendingHandoff();
+    }, PROPOSAL_PENDING_HANDOFF_MS);
   };
 
   // --- Build dynamic layout from options array ---
@@ -3124,7 +3114,7 @@ function initializeProposalMode() {
     cancelBtn.addEventListener('click', () => handleProposalResponse('skip'));
     rejectBtn?.addEventListener('click', () => handleProposalResponse('reject'));
     skipRemainingBtn?.addEventListener('click', () => {
-      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      if (handoffTimeout) { clearTimeout(handoffTimeout); handoffTimeout = null; }
       vscode.postMessage({ type: 'proposalSkipRemaining' });
     });
     timerBtn.addEventListener('click', () => {
@@ -3297,12 +3287,10 @@ function initializeProposalMode() {
     // Reset timer
     hasPendingHandoff = false;
     hasCopiedResumePrompt = false;
-    remainingMs = PROPOSAL_TIMEOUT_MS;
     timerBtn.textContent = 'Review in progress';
-    timerBtn.classList.remove('expiring');
     timerBtn.classList.remove('resume-ready');
     timerBtn.title = 'Review in progress';
-    startTimer();
+    startHandoffTimer();
   });
 
   // Signal ready to extension host

@@ -650,12 +650,15 @@ export class ProposalPanel {
   private _scrollMainEditorWithRetries() {
     this._scrollMainEditor();
 
-    // Opening the proposal panel beside the editor resizes the main webview.
-    // Re-apply the selection on the final retry so visible highlighting survives layout changes.
-    for (const delay of [100, 250]) {
+    // Opening the proposal panel beside the editor resizes the main webview,
+    // which can reset the scroll position. Re-apply across a broad window to
+    // survive late layout changes.
+    for (const delay of [100, 250, 500]) {
       setTimeout(() => this._revealMainEditorSelection(), delay);
     }
-    setTimeout(() => this._scrollMainEditor(), 500);
+    for (const delay of [750, 1200]) {
+      setTimeout(() => this._scrollMainEditor(), delay);
+    }
   }
 
   private _getHtml(): string {
