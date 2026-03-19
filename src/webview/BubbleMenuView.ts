@@ -610,12 +610,12 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     {
       type: 'button',
       label: 'Source',
-      title: 'Open source view (split)',
+      title: 'Toggle source view (split)',
       icon: { name: 'split-horizontal', fallback: '</>' },
       action: () => {
         window.dispatchEvent(new CustomEvent('openSourceView'));
       },
-      isActive: () => false,
+      isActive: () => (window as any).isSourceVisible?.() ?? false,
       className: 'source-button',
     },
     { type: 'separator' },

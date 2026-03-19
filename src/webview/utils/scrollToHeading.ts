@@ -9,9 +9,9 @@ const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
 
 import { Editor } from '@tiptap/core';
 
-export function scrollToPos(editor: Editor, pos: number) {
+export function scrollToPos(editor: Editor, pos: number, noFocus = false) {
   editor.commands.setTextSelection(pos);
-  editor.commands.focus();
+  if (!noFocus) editor.commands.focus();
 
   requestAnimationFrame(() => {
     try {

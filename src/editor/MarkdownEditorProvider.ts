@@ -645,6 +645,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     let lastSourceSyncLine = -1;
     const selectionSyncSubscription = vscode.window.onDidChangeTextEditorSelection(e => {
       if (this._isSyncFromWebview) return;
+      // Only sync from the editor the user is actively interacting with
+      if (e.textEditor !== vscode.window.activeTextEditor) return;
       if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
       const line = e.selections[0].active.line + 1; // 1-based
       if (line === lastSourceSyncLine) return;
@@ -652,11 +654,22 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       webviewPanel.webview.postMessage({ type: 'syncFromSourceLine', line });
     });
 
+    // Detect when source editor is closed externally (user closes the tab)
+    const visibleEditorsSub = vscode.window.onDidChangeVisibleTextEditors(editors => {
+      const sourceStillOpen = editors.some(
+        ed => ed.document.uri.toString() === document.uri.toString()
+      );
+      if (!sourceStillOpen) {
+        webviewPanel.webview.postMessage({ type: 'sourceViewClosed' });
+      }
+    });
+
     // Cleanup
     webviewPanel.onDidDispose(() => {
       changeDocumentSubscription.dispose();
       configChangeSubscription.dispose();
       selectionSyncSubscription.dispose();
+      visibleEditorsSub.dispose();
       // Clean up pending edits tracking for this document
       this.pendingEdits.delete(document.uri.toString());
       this.lastWebviewContent.delete(document.uri.toString());
@@ -797,6 +810,19 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           }, 300);
         })();
         break;
+      case 'closeSourceView': {
+        // Close the source text editor for this document
+        const sourceTab = vscode.window.tabGroups.all
+          .flatMap(g => g.tabs)
+          .find(tab =>
+            tab.input instanceof vscode.TabInputText &&
+            tab.input.uri.toString() === document.uri.toString()
+          );
+        if (sourceTab) {
+          void vscode.window.tabGroups.close(sourceTab);
+        }
+        break;
+      }
       case 'syncSourceLine': {
         // MFH cursor moved — sync source text editor cursor to the same line
         const line = message.line as number;
@@ -812,7 +838,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
             new vscode.Range(pos, pos),
             vscode.TextEditorRevealType.InCenterIfOutsideViewport
           );
-          setTimeout(() => { this._isSyncFromWebview = false; }, 100);
+          setTimeout(() => { this._isSyncFromWebview = false; }, 300);
         }
         break;
       }

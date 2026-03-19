@@ -486,21 +486,49 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
 
         decorations.push(widget);
       } else if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
-        // Per-item decorations for list items
+        // Single-anchor pattern (like tables): one widget with per-item absolute spans
+        const itemInfos: { lineNum: number; selFrom: number; selTo: number }[] = [];
         let itemIdx = 0;
         node.forEach((listItem: any, itemOff: number) => {
-          const itemAbsStart = offset + 1 + itemOff;
+          const itemAbsStart = offset + 1 + itemOff + 1; // into listItem content
           const itemAbsEnd = offset + 1 + itemOff + listItem.nodeSize - 1;
           const itemLine = findListItemLine(typeName, itemIdx, lines, contentLineIndex);
           const itemLineNum = itemLine >= 0 ? itemLine + 1 : lineNum + itemIdx;
-
-          const widget = Decoration.widget(itemAbsStart, () => {
-            return createGutterSpan(itemLineNum, null, itemAbsStart, itemAbsEnd);
-          }, { side: -1, key: `ln-li-${offset}-${itemIdx}` });
-
-          decorations.push(widget);
+          itemInfos.push({ lineNum: itemLineNum, selFrom: itemAbsStart, selTo: itemAbsEnd });
           itemIdx++;
         });
+
+        const widget = Decoration.widget(offset, () => {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'line-number-table-anchor';
+
+          const spans: HTMLElement[] = [];
+          for (const info of itemInfos) {
+            const span = createGutterSpan(info.lineNum, null, info.selFrom, info.selTo);
+            span.style.position = 'absolute';
+            span.style.visibility = 'hidden';
+            wrapper.appendChild(span);
+            spans.push(span);
+          }
+
+          requestAnimationFrame(() => {
+            const listEl = wrapper.nextElementSibling;
+            if (!listEl) return;
+            const wrapperRect = wrapper.getBoundingClientRect();
+            const items = listEl.querySelectorAll(':scope > li');
+            items.forEach((li: Element, i: number) => {
+              if (i < spans.length) {
+                const liRect = li.getBoundingClientRect();
+                spans[i].style.top = `${liRect.top - wrapperRect.top}px`;
+                spans[i].style.visibility = '';
+              }
+            });
+          });
+
+          return wrapper;
+        }, { side: -1, key: `ln-list-${offset}` });
+
+        decorations.push(widget);
       } else {
         // Standard widget for non-table, non-list nodes
         const selFrom = offset + 1;

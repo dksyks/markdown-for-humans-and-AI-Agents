@@ -191,6 +191,10 @@ let isDomReady = document.readyState !== 'loading';
 let hasAutoOpenedNav = false; // Track if we've already auto-opened nav for this webview
 let lastSyncedSourceLine = -1; // Debounce: only send syncSourceLine when line changes
 let isSyncFromSource = false; // Loop guard: true when scrolling due to source editor sync
+let isSourceViewOpen = false; // Track whether source view split is open
+
+/** Check if source view is currently open (used by toolbar button) */
+(window as any).isSourceVisible = () => isSourceViewOpen;
 let outlineUpdateTimeout: number | null = null;
 let pendingSelectionRevealMessage:
   | {
@@ -1554,7 +1558,8 @@ function initializeEditor(initialContent: string) {
           }
 
           // Sync cursor position to source view (if open)
-          if (!isSyncFromSource) {
+          // Only sync when MFH has focus (user is interacting with it, not passive update)
+          if (!isSyncFromSource && document.hasFocus()) {
             const sourceLine = posToMarkdownLine(editor, from);
             if (sourceLine > 0 && sourceLine !== lastSyncedSourceLine) {
               lastSyncedSourceLine = sourceLine;
@@ -1618,6 +1623,21 @@ function initializeEditor(initialContent: string) {
         }
         window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: false } }));
       }, 0);
+    });
+
+    // When the webview panel gains focus (user clicks on MFH side),
+    // auto-focus the editor so they can start typing immediately
+    window.addEventListener('focus', () => {
+      if (editorInstance && !editorInstance.isFocused) {
+        setTimeout(() => {
+          const active = document.activeElement;
+          const isInNavPane = active?.closest('#toc-panel-wrapper');
+          const isInToolbar = active?.closest('.formatting-toolbar');
+          if (!isInNavPane && !isInToolbar) {
+            editorInstance.commands.focus();
+          }
+        }, 50);
+      }
     });
 
     const clearPinnedSelection = () => {
@@ -2101,15 +2121,15 @@ window.addEventListener('message', (event: MessageEvent) => {
         break;
       }
       case 'syncFromSourceLine': {
-        // Source editor cursor moved — scroll MFH to the corresponding block
+        // Source editor cursor moved — scroll MFH to match without stealing focus
         if (!editor) break;
         const syncLine = message.line as number;
         if (typeof syncLine !== 'number' || syncLine < 1) break;
         const syncPos = markdownLineToPos(editor, syncLine);
         if (syncPos > 0) {
           isSyncFromSource = true;
-          scrollToPos(editor, syncPos);
-          requestAnimationFrame(() => { isSyncFromSource = false; });
+          scrollToPos(editor, syncPos, true); // scroll without focus
+          setTimeout(() => { isSyncFromSource = false; }, 300);
         }
         break;
       }
@@ -2123,6 +2143,11 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
         break;
       }
+      case 'sourceViewClosed':
+        // Extension host notifies that source editor was closed externally
+        isSourceViewOpen = false;
+        updateToolbarStates();
+        break;
       case 'settingsUpdate':
         // Update skipResizeWarning setting
         if (typeof message.skipResizeWarning === 'boolean') {
@@ -2774,10 +2799,18 @@ document.addEventListener(
   true
 );
 
-// Handle open source view from toolbar button
+// Handle toggle source view from toolbar button
 window.addEventListener('openSourceView', () => {
-  console.log(`${BUILD_TAG} Opening source view...`);
-  vscode.postMessage({ type: 'openSourceView' });
+  if (isSourceViewOpen) {
+    console.log(`${BUILD_TAG} Closing source view...`);
+    vscode.postMessage({ type: 'closeSourceView' });
+    isSourceViewOpen = false;
+  } else {
+    console.log(`${BUILD_TAG} Opening source view...`);
+    vscode.postMessage({ type: 'openSourceView' });
+    isSourceViewOpen = true;
+  }
+  updateToolbarStates();
 });
 
 // Handle settings button from toolbar -> open VS Code settings UI
