@@ -481,6 +481,9 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       italic: config.get<string>('markdownForHumans.colors.italic', '#248a57'),
       boldItalic: config.get<string>('markdownForHumans.colors.boldItalic', '#ff7300'),
       labelOpacity: config.get<number>('markdownForHumans.colors.labelOpacity', 0.10),
+      showHeadingGutter: config.get<boolean>('markdownForHumans.showHeadingGutter', true),
+      showLineNumbers: config.get<boolean>('markdownForHumans.showLineNumbers', false),
+      showNavigationPane: config.get<boolean>('markdownForHumans.showNavigationPane', false),
     };
   }
 
@@ -685,6 +688,11 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       'relativeToDocument'
     );
 
+    // Extract filename for webview display
+    const fileName = document.uri.scheme === 'untitled'
+      ? 'Untitled'
+      : path.basename(document.uri.fsPath);
+
     webview.postMessage({
       type: 'update',
       content: transformedContent,
@@ -692,6 +700,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       imagePath: imagePath,
       imagePathBase: imagePathBase,
       colors: this.getColorSettings(),
+      fileName,
     });
   }
 

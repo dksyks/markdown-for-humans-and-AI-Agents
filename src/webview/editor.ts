@@ -31,14 +31,15 @@ import { GitHubAlerts } from './extensions/githubAlerts';
 import { ImageEnterSpacing } from './extensions/imageEnterSpacing';
 import { MarkdownParagraph } from './extensions/markdownParagraph';
 import { OrderedListMarkdownFix } from './extensions/orderedListMarkdownFix';
-import { createFormattingToolbar, createTableMenu, updateToolbarStates } from './BubbleMenuView';
+import { LineNumbers, setDocumentFilename } from './extensions/lineNumbers';
+import { createFormattingToolbar, createTableMenu, updateToolbarStates, updateDisplaySettings } from './BubbleMenuView';
 import { getEditorMarkdownForSync } from './utils/markdownSerialization';
 import {
   setupImageDragDrop,
   hasPendingImageSaves,
   getPendingImageCount,
 } from './features/imageDragDrop';
-import { toggleTocOverlay } from './features/tocOverlay';
+import { toggleTocOverlay, setTocPanelWidth, showTocOverlay, isTocVisible, updateActiveHeading, refreshTocList } from './features/tocOverlay';
 import { toggleSearchOverlay, toggleReplaceOverlay, isSearchVisible, searchNext, searchPrev, replaceAll } from './features/searchOverlay';
 import { showLinkDialog } from './features/linkDialog';
 import { processPasteContent, parseFencedCode } from './utils/pasteHandler';
@@ -187,6 +188,7 @@ let lastUserEditTime = 0; // Track when user last edited
 let pendingInitialContent: string | null = null; // Content from host before editor is ready
 let hasSentReadySignal = false;
 let isDomReady = document.readyState !== 'loading';
+let hasAutoOpenedNav = false; // Track if we've already auto-opened nav for this webview
 let outlineUpdateTimeout: number | null = null;
 let pendingSelectionRevealMessage:
   | {
@@ -1156,6 +1158,20 @@ const trackSentContent = (content: string) => {
   lastSentTimestamp = Date.now();
 };
 
+/** Apply gutter display settings (heading labels, line numbers) */
+const applyGutterSettings = (colors: Record<string, unknown>) => {
+  const editorEl = document.querySelector('.markdown-editor') as HTMLElement | null;
+  if (!editorEl) return;
+  const showHeading = colors.showHeadingGutter !== false; // default true
+  const showLines = colors.showLineNumbers === true; // default false
+  editorEl.classList.toggle('hide-heading-gutter', !showHeading);
+  editorEl.classList.toggle('show-line-numbers', showLines);
+  updateDisplaySettings(colors);
+  if (typeof colors.outlinePanelWidth === 'number') {
+    setTocPanelWidth(colors.outlinePanelWidth);
+  }
+};
+
 const pushOutlineUpdate = () => {
   if (!editor) return;
   try {
@@ -1172,6 +1188,10 @@ const scheduleOutlineUpdate = () => {
   }
   outlineUpdateTimeout = window.setTimeout(() => {
     pushOutlineUpdate();
+    // Refresh navigation pane if visible (keeps heading text in sync)
+    if (editor && isTocVisible()) {
+      refreshTocList(editor);
+    }
     outlineUpdateTimeout = null;
   }, 250);
 };
@@ -1445,6 +1465,7 @@ function initializeEditor(initialContent: string) {
           },
         }),
         PinnedSelectionExtension,
+        LineNumbers,
       ],
       // Don't pass content here - we'll set it after init with contentType: 'markdown'
       editorProps: {
@@ -1524,6 +1545,11 @@ function initializeEditor(initialContent: string) {
           }
           const headings_before = getHeadingsBeforeSelection(editor);
           vscode.postMessage({ type: 'selectionPush', selected, context_before, context_after, headings_before });
+
+          // Update active heading highlight in navigation pane
+          if (isTocVisible()) {
+            updateActiveHeading(from, editor);
+          }
         } catch (error) {
           console.warn(`${BUILD_TAG} Selection update failed:`, error);
         }
@@ -1984,6 +2010,11 @@ window.addEventListener('message', (event: MessageEvent) => {
         if (message.colors && typeof message.colors === 'object') {
           (window as any).md4hColors = message.colors;
           applyColors({ ...DEFAULT_COLORS, ...(message.colors as object) });
+          applyGutterSettings(message.colors as Record<string, unknown>);
+        }
+        // Set document filename for line-copy feature
+        if (typeof message.fileName === 'string') {
+          setDocumentFilename(message.fileName);
         }
         // Initialize editor with first payload to seed undo history correctly
         if (!editor) {
@@ -1992,9 +2023,32 @@ window.addEventListener('message', (event: MessageEvent) => {
           } else {
             pendingInitialContent = message.content;
           }
-          return;
+        } else {
+          updateEditorContent(message.content);
         }
-        updateEditorContent(message.content);
+
+        // Auto-open navigation pane (once per webview lifecycle)
+        if (!hasAutoOpenedNav) {
+          const colors = message.colors as Record<string, unknown> | undefined;
+          if (colors?.showNavigationPane) {
+            const mdContent = (message.content as string) || '';
+            const hasHeadings = /^#{1,6} /m.test(mdContent);
+            if (hasHeadings) {
+              hasAutoOpenedNav = true;
+              // Defer until editor is initialized
+              const checkEditor = setInterval(() => {
+                if (editor) {
+                  clearInterval(checkEditor);
+                  if (!isTocVisible()) {
+                    showTocOverlay(editor);
+                    updateToolbarStates();
+                  }
+                }
+              }, 100);
+              setTimeout(() => clearInterval(checkEditor), 5000);
+            }
+          }
+        }
         break;
       case 'getOutline': {
         pushOutlineUpdate();
@@ -2051,6 +2105,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         if (message.colors && typeof message.colors === 'object') {
           (window as any).md4hColors = message.colors;
           applyColors({ ...DEFAULT_COLORS, ...(message.colors as object) });
+          applyGutterSettings(message.colors as Record<string, unknown>);
           updateColorSettingsPanel(message.colors as object);
         }
         break;

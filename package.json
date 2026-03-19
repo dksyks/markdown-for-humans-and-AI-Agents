@@ -250,6 +250,26 @@
           "minimum": 0,
           "maximum": 1,
           "description": "Opacity of the H1–H6 gutter labels (0 = invisible, 1 = fully opaque)."
+        },
+        "markdownForHumans.showHeadingGutter": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show H1–H6 labels in the editor gutter."
+        },
+        "markdownForHumans.showLineNumbers": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show markdown source line numbers in the editor gutter."
+        },
+        "markdownForHumans.showNavigationPane": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open the navigation pane for documents with headings."
+        },
+        "markdownForHumans.outlinePanelWidth": {
+          "type": "number",
+          "default": 220,
+          "description": "Width of the navigation pane in pixels."
         }
       }
     }

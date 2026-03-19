@@ -21,9 +21,26 @@ import { showLinkDialog } from './features/linkDialog';
 import { showImageInsertDialog } from './features/imageInsertDialog';
 import { showColorSettingsPanel } from './features/colorSettings';
 import type { Editor } from '@tiptap/core';
+import { isTocVisible } from './features/tocOverlay';
 
 // Store reference to refresh function so it can be called externally
 let toolbarRefreshFunction: (() => void) | null = null;
+
+// Editor display settings state (synced from extension host via editor.ts)
+const editorDisplaySettings: Record<string, boolean> = {
+  showHeadingGutter: true,
+  showLineNumbers: false,
+};
+
+/** Update display settings state (called from editor.ts when settings arrive) */
+export function updateDisplaySettings(settings: Record<string, unknown>): void {
+  if (typeof settings.showHeadingGutter === 'boolean') {
+    editorDisplaySettings.showHeadingGutter = settings.showHeadingGutter;
+  }
+  if (typeof settings.showLineNumbers === 'boolean') {
+    editorDisplaySettings.showLineNumbers = settings.showLineNumbers;
+  }
+}
 
 /**
  * Normalize selection and create a code block
@@ -102,6 +119,8 @@ type ToolbarDropdownItem = {
   action: () => void;
   icon?: ToolbarIcon;
   isEnabled?: () => boolean; // Function to check if item should be enabled
+  isActive?: () => boolean; // Function to check if item should appear highlighted (toggle)
+  noClose?: boolean; // If true, clicking this item does not close the dropdown
 };
 
 type ToolbarDropdown = {
@@ -579,13 +598,13 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     },
     {
       type: 'button',
-      label: 'Outline',
-      title: 'Toggle Document Outline (TOC)',
+      label: 'Navigation',
+      title: 'Show Navigation Pane',
       icon: { name: 'list-tree', fallback: 'TOC' },
       action: () => {
         window.dispatchEvent(new CustomEvent('toggleTocOutline'));
       },
-      isActive: () => false,
+      isActive: () => isTocVisible(),
       className: 'toc-button',
     },
     {
@@ -633,26 +652,63 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     },
     { type: 'separator' },
     {
-      type: 'button',
-      label: 'Text Colors',
-      title: 'Text color settings',
-      icon: { name: 'symbol-color', fallback: '🎨' },
-      action: () => {
-        showColorSettingsPanel();
-      },
-      isActive: () => false,
-      className: 'color-settings-button',
-    },
-    {
-      type: 'button',
+      type: 'dropdown',
       label: 'Settings',
       title: 'Settings',
       icon: { name: 'gear', fallback: '⚙' },
-      action: () => {
-        window.dispatchEvent(new CustomEvent('openExtensionSettings'));
-      },
-      isActive: () => false,
-      className: 'settings-button',
+      className: 'settings-dropdown',
+      items: [
+        {
+          label: ' Heading',
+          action: () => {
+            const next = !editorDisplaySettings.showHeadingGutter;
+            editorDisplaySettings.showHeadingGutter = next;
+            const editorEl = document.querySelector('.markdown-editor') as HTMLElement | null;
+            if (editorEl) editorEl.classList.toggle('hide-heading-gutter', !next);
+            const vscodeApi = (window as any).vscode;
+            if (vscodeApi) vscodeApi.postMessage({ type: 'updateSetting', key: 'markdownForHumans.showHeadingGutter', value: next });
+          },
+          isActive: () => editorDisplaySettings.showHeadingGutter,
+          noClose: true,
+        },
+        {
+          label: ' Line Numbers',
+          action: () => {
+            const next = !editorDisplaySettings.showLineNumbers;
+            editorDisplaySettings.showLineNumbers = next;
+            const editorEl = document.querySelector('.markdown-editor') as HTMLElement | null;
+            if (editorEl) editorEl.classList.toggle('show-line-numbers', next);
+            const vscodeApi = (window as any).vscode;
+            if (vscodeApi) vscodeApi.postMessage({ type: 'updateSetting', key: 'markdownForHumans.showLineNumbers', value: next });
+          },
+          isActive: () => editorDisplaySettings.showLineNumbers,
+          noClose: true,
+        },
+        {
+          label: '──────────────────',
+          action: () => {},
+          isEnabled: () => false,
+        },
+        {
+          label: ' Text Colors',
+          icon: { name: 'symbol-color', fallback: '🎨' },
+          action: () => {
+            showColorSettingsPanel();
+          },
+        },
+        {
+          label: '──────────────────',
+          action: () => {},
+          isEnabled: () => false,
+        },
+        {
+          label: ' System Settings',
+          icon: { name: 'settings-gear', fallback: '⚙' },
+          action: () => {
+            window.dispatchEvent(new CustomEvent('openExtensionSettings'));
+          },
+        },
+      ],
     },
   ];
 
@@ -706,12 +762,22 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       }
     });
 
-    // Update dropdown item disabled states
+    // Update dropdown item disabled and active states
     dropdownItems.forEach(({ config, element }) => {
       const enabled = config.isEnabled ? config.isEnabled() : true;
       element.disabled = !enabled;
       element.classList.toggle('disabled', !enabled);
       element.setAttribute('aria-disabled', String(!enabled));
+      if (config.isActive) {
+        const active = config.isActive();
+        // Don't highlight the whole item — only update the checkbox
+        element.classList.remove('active');
+        const cb = element.querySelector('.toolbar-dropdown-checkbox');
+        if (cb) {
+          cb.textContent = active ? '☑' : '☐';
+          cb.classList.toggle('checked', active);
+        }
+      }
     });
 
     // Sync overflow action button states
@@ -728,6 +794,14 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       const enabled = config.isEnabled ? config.isEnabled() : true;
       element.disabled = !enabled;
       element.classList.toggle('disabled', !enabled);
+      if (config.isActive) {
+        const active = config.isActive();
+        const cb = element.querySelector('.toolbar-dropdown-checkbox');
+        if (cb) {
+          cb.textContent = active ? '☑' : '☐';
+          cb.classList.toggle('checked', active);
+        }
+      }
     });
 
     // Update heading widget
@@ -857,22 +931,22 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         refreshActiveStates();
       };
 
-      // ↑ click: promote (smaller level number, P→H6)
+      // ↑ click: promote (smaller level number, wraps H1→P)
       hUpBtn.onclick = e => {
         e.preventDefault();
         const cur = getCurrentLevel();
         const base = cur > 0 ? cur : displayedLevel;
-        const next = base === 7 ? 6 : Math.max(1, base - 1);
+        const next = base <= 1 ? 7 : base - 1;
         applyLevel(next);
         refreshActiveStates();
       };
 
-      // ↓ click: demote (larger level number, H6→P)
+      // ↓ click: demote (larger level number, wraps P→H1)
       hDownBtn.onclick = e => {
         e.preventDefault();
         const cur = getCurrentLevel();
         const base = cur > 0 ? cur : displayedLevel;
-        const next = Math.min(7, base + 1);
+        const next = base >= 7 ? 1 : base + 1;
         applyLevel(next);
         refreshActiveStates();
       };
@@ -896,13 +970,12 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
 
         const focused = isEditorFocused;
 
-        // ↑ disabled at H1 (level 1) or no focus
-        hUpBtn.disabled = !focused || displayedLevel <= 1;
-        hUpBtn.classList.toggle('disabled', hUpBtn.disabled);
+        // ↑↓ only disabled when editor not focused (circular cycling)
+        hUpBtn.disabled = !focused;
+        hUpBtn.classList.toggle('disabled', !focused);
 
-        // ↓ disabled at P (level 7) or no focus
-        hDownBtn.disabled = !focused || displayedLevel >= 7;
-        hDownBtn.classList.toggle('disabled', hDownBtn.disabled);
+        hDownBtn.disabled = !focused;
+        hDownBtn.classList.toggle('disabled', !focused);
 
         hxBtn.disabled = !focused;
         hxBtn.classList.toggle('disabled', !focused);
@@ -954,6 +1027,15 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         menuItem.title = item.label;
         menuItem.setAttribute('aria-label', item.label);
 
+        // For toggle items, show a checkbox indicator
+        let checkboxSpan: HTMLSpanElement | null = null;
+        if (item.isActive) {
+          checkboxSpan = document.createElement('span');
+          checkboxSpan.className = 'toolbar-dropdown-checkbox';
+          checkboxSpan.textContent = item.isActive() ? '☑' : '☐';
+          menuItem.append(checkboxSpan);
+        }
+
         const text = document.createElement('span');
         text.textContent = item.label;
 
@@ -974,8 +1056,10 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
           }
 
           item.action();
-          menu.style.display = 'none';
-          button.setAttribute('aria-expanded', 'false');
+          if (!item.noClose) {
+            menu.style.display = 'none';
+            button.setAttribute('aria-expanded', 'false');
+          }
           refreshActiveStates();
         };
 
@@ -1251,7 +1335,15 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
           const row = document.createElement('button');
           row.type = 'button';
           row.className = 'toolbar-dropdown-item';
-          row.textContent = subItem.label;
+          if (subItem.isActive) {
+            const cb = document.createElement('span');
+            cb.className = 'toolbar-dropdown-checkbox';
+            cb.textContent = subItem.isActive() ? '☑' : '☐';
+            row.appendChild(cb);
+          }
+          const rowText = document.createElement('span');
+          rowText.textContent = subItem.label;
+          row.appendChild(rowText);
           const enabled = subItem.isEnabled ? subItem.isEnabled() : true;
           row.disabled = !enabled;
           row.classList.toggle('disabled', !enabled);

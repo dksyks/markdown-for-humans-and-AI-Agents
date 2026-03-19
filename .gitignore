@@ -35,6 +35,7 @@ Desktop.ini
 # Temporary files
 temp/
 test-docs/
+Todo*.md
 
 # AI coding assistant context files (symlinks to prompts/vibe-coding-guide.md)
 CLAUDE.md
