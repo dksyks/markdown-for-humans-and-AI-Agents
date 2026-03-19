@@ -31,7 +31,7 @@ import { GitHubAlerts } from './extensions/githubAlerts';
 import { ImageEnterSpacing } from './extensions/imageEnterSpacing';
 import { MarkdownParagraph } from './extensions/markdownParagraph';
 import { OrderedListMarkdownFix } from './extensions/orderedListMarkdownFix';
-import { LineNumbers, setDocumentFilename } from './extensions/lineNumbers';
+import { LineNumbers, setDocumentFilename, posToMarkdownLine, markdownLineToPos } from './extensions/lineNumbers';
 import { createFormattingToolbar, createTableMenu, updateToolbarStates, updateDisplaySettings } from './BubbleMenuView';
 import { getEditorMarkdownForSync } from './utils/markdownSerialization';
 import {
@@ -189,6 +189,8 @@ let pendingInitialContent: string | null = null; // Content from host before edi
 let hasSentReadySignal = false;
 let isDomReady = document.readyState !== 'loading';
 let hasAutoOpenedNav = false; // Track if we've already auto-opened nav for this webview
+let lastSyncedSourceLine = -1; // Debounce: only send syncSourceLine when line changes
+let isSyncFromSource = false; // Loop guard: true when scrolling due to source editor sync
 let outlineUpdateTimeout: number | null = null;
 let pendingSelectionRevealMessage:
   | {
@@ -1550,6 +1552,15 @@ function initializeEditor(initialContent: string) {
           if (isTocVisible()) {
             updateActiveHeading(from, editor);
           }
+
+          // Sync cursor position to source view (if open)
+          if (!isSyncFromSource) {
+            const sourceLine = posToMarkdownLine(editor, from);
+            if (sourceLine > 0 && sourceLine !== lastSyncedSourceLine) {
+              lastSyncedSourceLine = sourceLine;
+              vscode.postMessage({ type: 'syncSourceLine', line: sourceLine });
+            }
+          }
         } catch (error) {
           console.warn(`${BUILD_TAG} Selection update failed:`, error);
         }
@@ -2086,6 +2097,29 @@ window.addEventListener('message', (event: MessageEvent) => {
           vscode.postMessage({ type: 'selectionResult', selected, context_before, context_after, headings_before });
         } else {
           vscode.postMessage({ type: 'selectionResult', selected: null, context_before: null, context_after: null, headings_before: [] });
+        }
+        break;
+      }
+      case 'syncFromSourceLine': {
+        // Source editor cursor moved — scroll MFH to the corresponding block
+        if (!editor) break;
+        const syncLine = message.line as number;
+        if (typeof syncLine !== 'number' || syncLine < 1) break;
+        const syncPos = markdownLineToPos(editor, syncLine);
+        if (syncPos > 0) {
+          isSyncFromSource = true;
+          scrollToPos(editor, syncPos);
+          requestAnimationFrame(() => { isSyncFromSource = false; });
+        }
+        break;
+      }
+      case 'requestCurrentLine': {
+        // Extension host requests the current cursor line (e.g., on source view open)
+        if (!editor) break;
+        const { from: curFrom } = editor.state.selection;
+        const curLine = posToMarkdownLine(editor, curFrom);
+        if (curLine > 0) {
+          vscode.postMessage({ type: 'syncSourceLine', line: curLine });
         }
         break;
       }

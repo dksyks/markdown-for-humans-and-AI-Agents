@@ -375,6 +375,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   private lastWebviewContent = new Map<string, string>();
   // Pending resolve for getSelection requests
   private pendingSelectionResolve: ((result: string) => void) | undefined;
+  // Loop guard for bidirectional source sync
+  _isSyncFromWebview = false;
 
   public static register(context: vscode.ExtensionContext): { disposable: vscode.Disposable; provider: MarkdownEditorProvider } {
     const provider = new MarkdownEditorProvider(context);
@@ -638,10 +640,23 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       }
     });
 
+    // Source-to-MFH cursor sync: when cursor moves in the source text editor,
+    // tell the webview so it can scroll to the corresponding block.
+    let lastSourceSyncLine = -1;
+    const selectionSyncSubscription = vscode.window.onDidChangeTextEditorSelection(e => {
+      if (this._isSyncFromWebview) return;
+      if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
+      const line = e.selections[0].active.line + 1; // 1-based
+      if (line === lastSourceSyncLine) return;
+      lastSourceSyncLine = line;
+      webviewPanel.webview.postMessage({ type: 'syncFromSourceLine', line });
+    });
+
     // Cleanup
     webviewPanel.onDidDispose(() => {
       changeDocumentSubscription.dispose();
       configChangeSubscription.dispose();
+      selectionSyncSubscription.dispose();
       // Clean up pending edits tracking for this document
       this.pendingEdits.delete(document.uri.toString());
       this.lastWebviewContent.delete(document.uri.toString());
@@ -769,13 +784,38 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         break;
       case 'openSourceView':
         // Open the source file in a split view with VS Code's default text editor
-        vscode.commands.executeCommand(
-          'vscode.openWith',
-          document.uri,
-          'default',
-          vscode.ViewColumn.Beside
-        );
+        void (async () => {
+          await vscode.commands.executeCommand(
+            'vscode.openWith',
+            document.uri,
+            'default',
+            vscode.ViewColumn.Beside
+          );
+          // Request current cursor line from webview so source editor scrolls to it
+          setTimeout(() => {
+            webview.postMessage({ type: 'requestCurrentLine' });
+          }, 300);
+        })();
         break;
+      case 'syncSourceLine': {
+        // MFH cursor moved — sync source text editor cursor to the same line
+        const line = message.line as number;
+        if (typeof line !== 'number' || line < 1) break;
+        const sourceEditor = vscode.window.visibleTextEditors.find(
+          ed => ed.document.uri.toString() === document.uri.toString()
+        );
+        if (sourceEditor) {
+          this._isSyncFromWebview = true;
+          const pos = new vscode.Position(line - 1, 0);
+          sourceEditor.selection = new vscode.Selection(pos, pos);
+          sourceEditor.revealRange(
+            new vscode.Range(pos, pos),
+            vscode.TextEditorRevealType.InCenterIfOutsideViewport
+          );
+          setTimeout(() => { this._isSyncFromWebview = false; }, 100);
+        }
+        break;
+      }
       case 'openExtensionSettings':
         vscode.commands.executeCommand(
           'workbench.action.openSettings',

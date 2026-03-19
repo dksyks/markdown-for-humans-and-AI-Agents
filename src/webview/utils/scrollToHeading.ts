@@ -44,15 +44,16 @@ export function scrollToPos(editor: Editor, pos: number) {
 }
 
 export function scrollToHeading(editor: Editor, pos: number) {
-  // Focus and set selection
-  editor.commands.setTextSelection(pos);
+  // pos is the node boundary (before the heading). pos+1 is inside the content.
+  const contentPos = pos + 1;
+  editor.commands.setTextSelection(contentPos);
   editor.commands.focus();
 
   // Scroll after DOM updates
   requestAnimationFrame(() => {
     try {
       const view = editor.view;
-      const domPos = view.domAtPos(pos);
+      const domPos = view.domAtPos(contentPos);
 
       let headingElement: Node;
       if (

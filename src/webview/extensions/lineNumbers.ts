@@ -178,12 +178,22 @@ function countBlockLines(node: any, lines: string[], startLine: number): number 
       count++; i++;
     }
   } else if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
+    const itemPattern = typeName === 'bulletList'
+      ? /^\s*[-*+] /
+      : typeName === 'orderedList'
+        ? /^\s*\d+[.)]\s/
+        : /^\s*- \[/;
     while (i < lines.length) {
       const line = lines[i];
       if (line.trim() === '') {
-        if (i + 1 < lines.length && (lines[i + 1].match(/^(\s{2,}|\t)/) || lines[i + 1].match(/^(\s*[-*+]|\s*\d+[.)]\s|\s*- \[)/))) {
+        // Blank line: continue only if next line is a list item or indented continuation
+        if (i + 1 < lines.length && (itemPattern.test(lines[i + 1]) || /^(\s{2,}|\t)/.test(lines[i + 1]))) {
           count++; i++; continue;
         }
+        break;
+      }
+      // Non-blank: must be a list item or indented continuation to belong to this list
+      if (!itemPattern.test(line) && !/^(\s{2,}|\t)/.test(line)) {
         break;
       }
       count++; i++;
@@ -201,6 +211,116 @@ function countBlockLines(node: any, lines: string[], startLine: number): number 
   }
 
   return Math.max(count, 1);
+}
+
+/**
+ * Find the markdown line for the Nth list item within a list block.
+ * Returns 0-based line index, or -1 if not found.
+ */
+function findListItemLine(
+  listType: string,
+  itemIndex: number,
+  lines: string[],
+  listStartLine: number
+): number {
+  const pattern = listType === 'bulletList'
+    ? /^\s*[-*+] /
+    : listType === 'orderedList'
+      ? /^\s*\d+[.)]\s/
+      : /^\s*- \[/;
+
+  let found = 0;
+  for (let i = listStartLine; i < lines.length; i++) {
+    if (lines[i].trim() === '') continue;
+    // Stop if we hit a non-list, non-continuation line
+    if (!pattern.test(lines[i]) && !/^(\s{2,}|\t)/.test(lines[i])) break;
+    if (pattern.test(lines[i])) {
+      if (found === itemIndex) return i;
+      found++;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Given a ProseMirror position, return the 1-based markdown source line number.
+ * Returns -1 if the position cannot be mapped.
+ */
+export function posToMarkdownLine(editor: any, pos: number): number {
+  const markdown = getEditorMarkdownForSync(editor);
+  if (!markdown) return -1;
+  const lines = markdown.split('\n');
+  const doc = editor.state.doc;
+  let lineIndex = 0;
+  let result = -1;
+
+  doc.forEach((node: any, offset: number) => {
+    if (result !== -1) return;
+
+    const typeName = node.type.name;
+    if (typeName === 'paragraph') {
+      const text = node.textContent || '';
+      if (text.trim() === '' && (!node.content || node.content.size === 0 ||
+          (node.content.size === 1 && node.content.firstChild?.type?.name === 'hardBreak'))) {
+        return;
+      }
+    }
+
+    const nodeEnd = offset + node.nodeSize;
+    const contentLineIndex = findBlockLine(node, lines, lineIndex);
+
+    if (pos >= offset && pos < nodeEnd) {
+      result = contentLineIndex >= 0 ? contentLineIndex + 1 : -1;
+      return;
+    }
+
+    const countFrom = Math.max(lineIndex, contentLineIndex >= 0 ? contentLineIndex : lineIndex);
+    const blockLines = countBlockLines(node, lines, countFrom);
+    lineIndex = countFrom + blockLines;
+  });
+
+  return result;
+}
+
+/**
+ * Given a 1-based markdown line number, return the ProseMirror position
+ * of the block that contains that line. Returns -1 if not found.
+ */
+export function markdownLineToPos(editor: any, targetLine: number): number {
+  const markdown = getEditorMarkdownForSync(editor);
+  if (!markdown) return -1;
+  const lines = markdown.split('\n');
+  const doc = editor.state.doc;
+  let lineIndex = 0;
+  let result = -1;
+
+  doc.forEach((node: any, offset: number) => {
+    if (result !== -1) return;
+
+    const typeName = node.type.name;
+    if (typeName === 'paragraph') {
+      const text = node.textContent || '';
+      if (text.trim() === '' && (!node.content || node.content.size === 0 ||
+          (node.content.size === 1 && node.content.firstChild?.type?.name === 'hardBreak'))) {
+        return;
+      }
+    }
+
+    const contentLineIndex = findBlockLine(node, lines, lineIndex);
+    const countFrom = Math.max(lineIndex, contentLineIndex >= 0 ? contentLineIndex : lineIndex);
+    const blockLines = countBlockLines(node, lines, countFrom);
+    const blockEndLine = countFrom + blockLines;
+
+    const target0 = targetLine - 1; // 0-based
+    if (contentLineIndex >= 0 && target0 >= contentLineIndex && target0 < blockEndLine) {
+      result = offset + 1; // +1 to get inside the node content
+      return;
+    }
+
+    lineIndex = blockEndLine;
+  });
+
+  return result;
 }
 
 /**
@@ -365,8 +485,24 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
         }, { side: -1, key: `ln-table-${offset}` });
 
         decorations.push(widget);
+      } else if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
+        // Per-item decorations for list items
+        let itemIdx = 0;
+        node.forEach((listItem: any, itemOff: number) => {
+          const itemAbsStart = offset + 1 + itemOff;
+          const itemAbsEnd = offset + 1 + itemOff + listItem.nodeSize - 1;
+          const itemLine = findListItemLine(typeName, itemIdx, lines, contentLineIndex);
+          const itemLineNum = itemLine >= 0 ? itemLine + 1 : lineNum + itemIdx;
+
+          const widget = Decoration.widget(itemAbsStart, () => {
+            return createGutterSpan(itemLineNum, null, itemAbsStart, itemAbsEnd);
+          }, { side: -1, key: `ln-li-${offset}-${itemIdx}` });
+
+          decorations.push(widget);
+          itemIdx++;
+        });
       } else {
-        // Standard widget for non-table nodes
+        // Standard widget for non-table, non-list nodes
         const selFrom = offset + 1;
         const selTo = offset + node.nodeSize - 1;
         const widget = Decoration.widget(offset + 1, () => {

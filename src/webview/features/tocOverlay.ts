@@ -11,7 +11,7 @@ import { scrollToHeading } from '../utils/scrollToHeading';
 /**
  * TOC Panel state
  */
-let tocPanelElement: HTMLElement | null = null;
+let tocWrapperElement: HTMLElement | null = null;
 let tocResizeHandle: HTMLElement | null = null;
 let isVisible = false;
 let panelWidth = 220; // default width in px
@@ -19,7 +19,25 @@ const MIN_PANEL_WIDTH = 120;
 const MAX_PANEL_WIDTH = 500;
 
 /**
+ * Update the editor's left margin to account for the fixed-position nav panel,
+ * and position the panel below the toolbar.
+ */
+function updateEditorMargin(): void {
+  const editorElement = document.querySelector('#editor') as HTMLElement;
+  if (!editorElement) return;
+  editorElement.style.marginLeft = isVisible ? panelWidth + 'px' : '';
+
+  // Position wrapper below the toolbar
+  if (tocWrapperElement) {
+    const toolbar = document.querySelector('.formatting-toolbar') as HTMLElement;
+    const toolbarHeight = toolbar ? toolbar.offsetHeight : 0;
+    tocWrapperElement.style.setProperty('--toc-top', toolbarHeight + 'px');
+  }
+}
+
+/**
  * Create the fixed left-side TOC panel and wrap the editor in a flex layout.
+ * The header is a separate element from the scrollable list so it can never scroll.
  */
 export function createTocPanel(editor: Editor): HTMLElement {
   const editorElement = document.querySelector('#editor') as HTMLElement;
@@ -36,13 +54,12 @@ export function createTocPanel(editor: Editor): HTMLElement {
     appLayout.appendChild(editorElement);
   }
 
-  // Create panel
-  const panel = document.createElement('div');
-  panel.id = 'toc-panel';
-  panel.className = 'toc-panel';
-  panel.style.width = panelWidth + 'px';
+  // Create outer wrapper — this is the visible container that gets width/background/border
+  const wrapper = document.createElement('div');
+  wrapper.id = 'toc-panel-wrapper';
+  wrapper.style.width = panelWidth + 'px';
 
-  // Create header
+  // Create header — direct child of wrapper, outside the scrollable panel
   const header = document.createElement('div');
   header.className = 'toc-panel-header';
   header.innerHTML = `
@@ -52,6 +69,10 @@ export function createTocPanel(editor: Editor): HTMLElement {
 
   const closeBtn = header.querySelector('.toc-panel-close') as HTMLElement;
   closeBtn.onclick = () => hideTocOverlay(editor);
+
+  // Create panel body — contains only the scrollable list and resize handle
+  const panel = document.createElement('div');
+  panel.className = 'toc-panel';
 
   // Create list container
   const listContainer = document.createElement('div');
@@ -63,9 +84,13 @@ export function createTocPanel(editor: Editor): HTMLElement {
   resizeHandle.className = 'toc-panel-resize-handle';
   tocResizeHandle = resizeHandle;
 
-  panel.appendChild(header);
+  // Assemble: panel holds list + resize handle
   panel.appendChild(listContainer);
   panel.appendChild(resizeHandle);
+
+  // Assemble: wrapper holds header + panel
+  wrapper.appendChild(header);
+  wrapper.appendChild(panel);
 
   // Prevent scroll events from propagating to the main editor
   // when at the top/bottom boundary of the list
@@ -78,11 +103,11 @@ export function createTocPanel(editor: Editor): HTMLElement {
     }
   }, { passive: false });
 
-  // Insert panel before editor in the flex layout
-  appLayout.insertBefore(panel, editorElement);
+  // Insert wrapper before editor in the flex layout
+  appLayout.insertBefore(wrapper, editorElement);
 
-  // Set up resize dragging
-  setupResizeDrag(resizeHandle, panel);
+  // Set up resize dragging (resizes the wrapper)
+  setupResizeDrag(resizeHandle, wrapper);
 
   // Handle Esc key to close
   const handleKeydown = (e: KeyboardEvent) => {
@@ -93,8 +118,8 @@ export function createTocPanel(editor: Editor): HTMLElement {
   };
   document.addEventListener('keydown', handleKeydown);
 
-  tocPanelElement = panel;
-  return panel;
+  tocWrapperElement = wrapper;
+  return wrapper;
 }
 
 /**
@@ -109,6 +134,7 @@ function setupResizeDrag(handle: HTMLElement, panel: HTMLElement) {
     const newWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, startWidth + delta));
     panelWidth = newWidth;
     panel.style.width = newWidth + 'px';
+    updateEditorMargin();
   };
 
   const onMouseUp = () => {
@@ -198,19 +224,20 @@ function renderTocList(editor: Editor, listContainer: HTMLElement): void {
  * Show the TOC panel
  */
 export function showTocOverlay(editor: Editor): void {
-  if (!tocPanelElement) {
+  if (!tocWrapperElement) {
     createTocPanel(editor);
   }
 
-  if (!tocPanelElement) return;
+  if (!tocWrapperElement) return;
 
-  const listContainer = tocPanelElement.querySelector('.toc-panel-list') as HTMLElement;
+  const listContainer = tocWrapperElement.querySelector('.toc-panel-list') as HTMLElement;
   if (listContainer) {
     renderTocList(editor, listContainer);
   }
 
-  tocPanelElement.classList.add('visible');
+  tocWrapperElement.classList.add('visible');
   isVisible = true;
+  updateEditorMargin();
 
   // Persist nav pane open state
   const vscodeApi = (window as any).vscode;
@@ -223,7 +250,7 @@ export function showTocOverlay(editor: Editor): void {
   }
 
   requestAnimationFrame(() => {
-    const firstItem = tocPanelElement?.querySelector('.toc-panel-item') as HTMLElement;
+    const firstItem = tocWrapperElement?.querySelector('.toc-panel-item') as HTMLElement;
     if (firstItem) {
       firstItem.focus();
     }
@@ -234,10 +261,11 @@ export function showTocOverlay(editor: Editor): void {
  * Hide the TOC panel
  */
 export function hideTocOverlay(editor: Editor, restorePosition = true): void {
-  if (!tocPanelElement) return;
+  if (!tocWrapperElement) return;
 
-  tocPanelElement.classList.remove('visible');
+  tocWrapperElement.classList.remove('visible');
   isVisible = false;
+  updateEditorMargin();
 
   // Persist nav pane closed state
   const vscodeApi = (window as any).vscode;
@@ -275,8 +303,9 @@ export function isTocVisible(): boolean {
  */
 export function setTocPanelWidth(width: number): void {
   panelWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, width));
-  if (tocPanelElement) {
-    tocPanelElement.style.width = panelWidth + 'px';
+  if (tocWrapperElement) {
+    tocWrapperElement.style.width = panelWidth + 'px';
+    updateEditorMargin();
   }
 }
 
@@ -284,8 +313,8 @@ export function setTocPanelWidth(width: number): void {
  * Refresh the TOC list if the panel is visible (e.g., after heading text changes).
  */
 export function refreshTocList(editor: Editor): void {
-  if (!isVisible || !tocPanelElement) return;
-  const listContainer = tocPanelElement.querySelector('.toc-panel-list') as HTMLElement;
+  if (!isVisible || !tocWrapperElement) return;
+  const listContainer = tocWrapperElement.querySelector('.toc-panel-list') as HTMLElement;
   if (listContainer) {
     renderTocList(editor, listContainer);
   }
@@ -296,7 +325,7 @@ export function refreshTocList(editor: Editor): void {
  * If the cursor is not inside a heading, highlights the nearest preceding heading.
  */
 export function updateActiveHeading(cursorPos: number, editor: Editor): void {
-  if (!isVisible || !tocPanelElement) return;
+  if (!isVisible || !tocWrapperElement) return;
 
   const outline = buildOutlineFromEditor(editor);
   let activePos: number | null = null;
@@ -310,7 +339,7 @@ export function updateActiveHeading(cursorPos: number, editor: Editor): void {
   }
 
   // Update the DOM: toggle .toc-active class
-  const items = tocPanelElement.querySelectorAll('.toc-panel-item');
+  const items = tocWrapperElement.querySelectorAll('.toc-panel-item');
   items.forEach(item => {
     const pos = Number(item.getAttribute('data-pos'));
     const isActive = pos === activePos;

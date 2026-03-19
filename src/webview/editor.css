@@ -1742,23 +1742,33 @@
     min-width: 0;
   }
 
-  .toc-panel {
+  /* Wrapper is fixed to the viewport — never participates in page scroll.
+     top is set dynamically via JS to sit below the toolbar. */
+  #toc-panel-wrapper {
     display: none;
     flex-direction: column;
-    flex-shrink: 0;
-    position: sticky;
-    top: 0;
-    align-self: flex-start;
-    height: 100vh;
-    max-height: 100vh;
+    position: fixed;
+    left: 0;
+    top: var(--toc-top, 0px);
+    height: calc(100vh - var(--toc-top, 0px));
+    z-index: 50;
     background-color: color-mix(in srgb, var(--vscode-editor-background) 40%, var(--vscode-editor-foreground) 60%);
     border-right: 1px solid var(--md-border);
     overflow: hidden;
-    overscroll-behavior: contain;
   }
 
-  .toc-panel.visible {
+  #toc-panel-wrapper.visible {
     display: flex;
+  }
+
+  /* Panel body: fills remaining space below the header, contains scrollable list */
+  .toc-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    overscroll-behavior: contain;
+    min-height: 0;
   }
 
   .toc-panel-header {
@@ -1768,6 +1778,18 @@
     padding: 8px 12px;
     border-bottom: 1px solid var(--md-border);
     flex-shrink: 0;
+    position: relative;
+  }
+
+  /* Filler strip continuing the scrollbar gutter up through the header */
+  .toc-panel-header::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 6px;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.08);
   }
 
   .toc-panel-title {
