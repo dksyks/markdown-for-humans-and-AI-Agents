@@ -1602,6 +1602,12 @@ function initializeEditor(initialContent: string) {
       editorContainer.parentElement.insertBefore(formattingToolbar, editorContainer);
     }
 
+    // Create gutter click shield — absorbs clicks on empty gutter space
+    // so they don't reach ProseMirror and cause focus loss
+    const gutterShield = document.createElement('div');
+    gutterShield.className = 'gutter-shield';
+    editorElement.insertBefore(gutterShield, editorElement.firstChild);
+
     // Track editor focus state for toolbar and keep toolbar enabled while interacting with it
     const editorDom = editorInstance.view.dom;
     editorDom.addEventListener('focus', () => {

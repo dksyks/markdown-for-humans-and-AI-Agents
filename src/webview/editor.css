@@ -116,6 +116,26 @@
   }
 
   /* ============================================
+     Gutter Click Shield
+     Transparent overlay covering the gutter (padding-left) area.
+     Absorbs clicks so they don't reach ProseMirror and cause focus loss.
+     Gutter spans sit on top via z-index: 2.
+     ============================================ */
+
+  #editor {
+    position: relative;
+  }
+
+  .gutter-shield {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: calc(var(--gutter-width, 4em) + 30px); /* gutter width + left margin */
+    z-index: 1;
+  }
+
+  /* ============================================
      Gutter: Heading Labels + Line Numbers
      Combined into a single widget per block.
      Format: "H1 L5" (label left, number right).
@@ -136,6 +156,7 @@
     white-space: nowrap;
     cursor: pointer;
     pointer-events: auto;
+    z-index: 2;
   }
 
   .gutter-heading-label {
