@@ -21,10 +21,26 @@ const MAX_PANEL_WIDTH = 500;
 /**
  * Update the editor's left margin to account for the fixed-position nav panel,
  * and position the panel below the toolbar.
+ * When an editor is provided, preserves the cursor's viewport position across the reflow.
  */
-function updateEditorMargin(): void {
+function updateEditorMargin(editor?: Editor): void {
   const editorElement = document.querySelector('#editor') as HTMLElement;
   if (!editorElement) return;
+
+  // Capture cursor viewport Y before reflow
+  let cursorY: number | null = null;
+  let cursorPos: number | null = null;
+  if (editor) {
+    try {
+      const sel = editor.state.selection;
+      cursorPos = sel.head;
+      const coords = editor.view.coordsAtPos(cursorPos);
+      cursorY = coords.top;
+    } catch {
+      // Ignore if position can't be resolved
+    }
+  }
+
   editorElement.style.marginLeft = isVisible ? panelWidth + 'px' : '';
 
   // Position wrapper below the toolbar
@@ -32,6 +48,21 @@ function updateEditorMargin(): void {
     const toolbar = document.querySelector('.formatting-toolbar') as HTMLElement;
     const toolbarHeight = toolbar ? toolbar.offsetHeight : 0;
     tocWrapperElement.style.setProperty('--toc-top', toolbarHeight + 'px');
+  }
+
+  // Restore cursor viewport position after reflow
+  if (editor && cursorY !== null && cursorPos !== null) {
+    requestAnimationFrame(() => {
+      try {
+        const newCoords = editor.view.coordsAtPos(cursorPos!);
+        const delta = newCoords.top - cursorY!;
+        if (Math.abs(delta) > 1) {
+          window.scrollBy(0, delta);
+        }
+      } catch {
+        // Ignore if position can't be resolved after reflow
+      }
+    });
   }
 }
 
@@ -237,7 +268,7 @@ export function showTocOverlay(editor: Editor): void {
 
   tocWrapperElement.classList.add('visible');
   isVisible = true;
-  updateEditorMargin();
+  updateEditorMargin(editor);
 
   // Persist nav pane open state
   const vscodeApi = (window as any).vscode;
@@ -265,7 +296,7 @@ export function hideTocOverlay(editor: Editor, restorePosition = true): void {
 
   tocWrapperElement.classList.remove('visible');
   isVisible = false;
-  updateEditorMargin();
+  updateEditorMargin(editor);
 
   // Persist nav pane closed state
   const vscodeApi = (window as any).vscode;

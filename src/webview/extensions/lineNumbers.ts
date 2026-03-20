@@ -8,11 +8,42 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
 import { getEditorMarkdownForSync } from '../utils/markdownSerialization';
+import { editorDisplaySettings } from '../BubbleMenuView';
 
 const LINE_NUMBERS_PLUGIN_KEY = new PluginKey('lineNumbers');
 
 /** Module-level document filename, set by editor.ts on document load */
 let documentFilename = '';
+
+/** Cached total line count for gutter width recalculation */
+let cachedTotalLines = 0;
+
+/**
+ * Recalculate and apply the --gutter-width CSS variable based on which
+ * decorations are currently enabled and the document line count.
+ */
+export function updateGutterWidth(totalLines?: number): void {
+  if (totalLines !== undefined) cachedTotalLines = totalLines;
+  const digits = String(cachedTotalLines || 1).length;
+
+  const showHeading = editorDisplaySettings.showHeadingGutter !== false;
+  const showLines = editorDisplaySettings.showLineNumbers === true;
+
+  /** these are used to calculate the gutter width - the get the right value but the calculation is not quite right 
+   * It is all based upon how the gutter decorations are done so perhaps it doesn't matter how the individual 
+   * values are arrived at (as long as they work)
+  */
+  const headingWidth = showHeading ? 2 * 0.6 : 0;
+  const spaceBetweenWidth = (showHeading && showLines) ? 0.6 : 0;
+  const lineWidth = showLines ? (1 + digits) * 0.4 : 0;
+  const rightPadding = (showHeading ? 0.9 : 0) + (showLines ? 0.4 : 0);
+  const gutterWidth = rightPadding + headingWidth + spaceBetweenWidth + lineWidth;
+
+  const editorEl = document.querySelector('.markdown-editor') as HTMLElement | null;
+  if (editorEl) {
+    editorEl.style.setProperty('--gutter-width', `${gutterWidth}em`);
+  }
+}
 
 /**
  * Set the document filename for line-copy feature.
@@ -346,14 +377,8 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
     const lines = markdown.split('\n');
     const totalLines = lines.length;
 
-    // Set CSS variable for dynamic gutter width based on line count
-    const digits = String(totalLines).length;
-    const gutterChars = 2 + 1 + 1 + digits + 1;
-    const gutterWidth = Math.max(4, gutterChars * 0.65);
-    const editorEl = document.querySelector('.markdown-editor') as HTMLElement | null;
-    if (editorEl) {
-      editorEl.style.setProperty('--gutter-width', `${gutterWidth}em`);
-    }
+    // Set CSS variable for dynamic gutter width based on line count and active decorations
+    updateGutterWidth(totalLines);
 
     const decorations: Decoration[] = [];
     let lineIndex = 0;
@@ -485,6 +510,60 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
         }, { side: -1, key: `ln-table-${offset}` });
 
         decorations.push(widget);
+      } else if (typeName === 'githubAlert' || typeName === 'blockquote') {
+        // Single-anchor pattern: one widget with per-line absolute spans
+        // Count the > lines in the markdown for this block
+        const alertLineInfos: { lineNum: number; selFrom: number; selTo: number }[] = [];
+        let childIdx = 0;
+        // First line is the header (> [!TYPE]) for githubAlert
+        if (typeName === 'githubAlert') {
+          alertLineInfos.push({ lineNum: lineNum, selFrom: offset + 1, selTo: offset + 1 });
+        }
+        node.forEach((child: any, childOff: number) => {
+          const childAbsStart = offset + 1 + childOff + 1;
+          const childAbsEnd = offset + 1 + childOff + child.nodeSize - 1;
+          // Each child block corresponds to lines after the header
+          const childLine = contentLineIndex + (typeName === 'githubAlert' ? 1 : 0) + childIdx;
+          const childLineNum = childLine < lines.length ? childLine + 1 : lineNum + childIdx + 1;
+          alertLineInfos.push({ lineNum: childLineNum, selFrom: childAbsStart, selTo: childAbsEnd });
+          childIdx++;
+        });
+
+        const widget = Decoration.widget(offset, () => {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'line-number-table-anchor';
+
+          const spans: HTMLElement[] = [];
+          for (const info of alertLineInfos) {
+            const span = createGutterSpan(info.lineNum, null, info.selFrom, info.selTo);
+            span.style.position = 'absolute';
+            span.style.visibility = 'hidden';
+            wrapper.appendChild(span);
+            spans.push(span);
+          }
+
+          requestAnimationFrame(() => {
+            const blockEl = wrapper.nextElementSibling;
+            if (!blockEl) return;
+            const wrapperRect = wrapper.getBoundingClientRect();
+            // For githubAlert: first span aligns to header, rest to content children
+            // For blockquote: spans align to direct children
+            const children = blockEl.querySelectorAll(':scope > *');
+            let spanIdx = 0;
+            children.forEach((child: Element) => {
+              if (spanIdx < spans.length) {
+                const childRect = child.getBoundingClientRect();
+                spans[spanIdx].style.top = `${childRect.top - wrapperRect.top}px`;
+                spans[spanIdx].style.visibility = '';
+                spanIdx++;
+              }
+            });
+          });
+
+          return wrapper;
+        }, { side: -1, key: `ln-alert-${offset}` });
+
+        decorations.push(widget);
       } else if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
         // Single-anchor pattern (like tables): one widget with per-item absolute spans
         const itemInfos: { lineNum: number; selFrom: number; selTo: number }[] = [];
@@ -551,4 +630,59 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
   } catch {
     return DecorationSet.empty;
   }
+}
+
+/**
+ * Reposition all absolutely-positioned gutter spans inside .line-number-table-anchor
+ * elements. Called when editor width changes (nav pane, source view, window resize).
+ */
+export function repositionGutterDecorations(): void {
+  const anchors = document.querySelectorAll('.line-number-table-anchor');
+  anchors.forEach(wrapper => {
+    const sibling = wrapper.nextElementSibling;
+    if (!sibling) return;
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const spans = wrapper.querySelectorAll('.line-number-gutter') as NodeListOf<HTMLElement>;
+
+    // Determine what kind of sibling this is and get the child elements to align to
+    let children: NodeListOf<Element> | Element[];
+    const table = sibling.querySelector('table');
+    if (table) {
+      children = table.querySelectorAll('tr');
+    } else if (sibling.tagName === 'UL' || sibling.tagName === 'OL') {
+      children = sibling.querySelectorAll(':scope > li');
+    } else {
+      // blockquote / githubAlert: direct children
+      children = sibling.querySelectorAll(':scope > *');
+    }
+
+    children.forEach((child: Element, i: number) => {
+      if (i < spans.length) {
+        const childRect = child.getBoundingClientRect();
+        spans[i].style.top = `${childRect.top - wrapperRect.top}px`;
+      }
+    });
+  });
+}
+
+/**
+ * Set up a ResizeObserver on the editor element to reposition gutter decorations
+ * when the editor width changes (due to nav pane, source view, or window resize).
+ */
+let resizeObserverInstalled = false;
+export function installGutterResizeObserver(): void {
+  if (resizeObserverInstalled) return;
+  const editorEl = document.querySelector('#editor') as HTMLElement;
+  if (!editorEl) return;
+
+  let lastWidth = editorEl.offsetWidth;
+  const observer = new ResizeObserver(() => {
+    const newWidth = editorEl.offsetWidth;
+    if (newWidth !== lastWidth) {
+      lastWidth = newWidth;
+      repositionGutterDecorations();
+    }
+  });
+  observer.observe(editorEl);
+  resizeObserverInstalled = true;
 }

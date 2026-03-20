@@ -22,12 +22,13 @@ import { showImageInsertDialog } from './features/imageInsertDialog';
 import { showColorSettingsPanel } from './features/colorSettings';
 import type { Editor } from '@tiptap/core';
 import { isTocVisible } from './features/tocOverlay';
+import { updateGutterWidth } from './extensions/lineNumbers';
 
 // Store reference to refresh function so it can be called externally
 let toolbarRefreshFunction: (() => void) | null = null;
 
 // Editor display settings state (synced from extension host via editor.ts)
-const editorDisplaySettings: Record<string, boolean> = {
+export const editorDisplaySettings: Record<string, boolean> = {
   showHeadingGutter: true,
   showLineNumbers: false,
 };
@@ -239,6 +240,92 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
   const modKeyLabel = isMac ? 'Cmd' : 'Ctrl';
 
   const buttons: ToolbarItem[] = [
+    {
+      type: 'button',
+      label: 'Find',
+      title: `Find in document (${modKeyLabel}+F)`,
+      icon: { name: 'search', fallback: '🔍' },
+      action: () => {
+        window.dispatchEvent(new CustomEvent('openFind'));
+      },
+      isActive: () => false,
+      className: 'find-button',
+    },
+    {
+      type: 'dropdown',
+      label: 'Go',
+      title: 'Navigate insertion point history',
+      icon: { name: 'history', fallback: '↺' },
+      items: [
+        {
+          label: 'Go Back (Ctrl+Alt+Left)',
+          action: () => {
+            window.dispatchEvent(new CustomEvent('navigateBack'));
+          },
+        },
+        {
+          label: 'Go Forward (Ctrl+Alt+Right)',
+          action: () => {
+            window.dispatchEvent(new CustomEvent('navigateForward'));
+          },
+        },
+      ],
+    },
+    {
+      type: 'button',
+      label: 'Navigation',
+      title: 'Show Navigation Pane',
+      icon: { name: 'list-tree', fallback: 'TOC' },
+      action: () => {
+        window.dispatchEvent(new CustomEvent('toggleTocOutline'));
+      },
+      isActive: () => isTocVisible(),
+      className: 'toc-button',
+    },
+    {
+      type: 'button',
+      label: 'Source',
+      title: 'Toggle source view (split)',
+      icon: { name: 'split-horizontal', fallback: '</>' },
+      action: () => {
+        window.dispatchEvent(new CustomEvent('openSourceView'));
+      },
+      isActive: () => (window as any).isSourceVisible?.() ?? false,
+      className: 'source-button',
+    },
+    { type: 'separator' },
+    {
+      type: 'button',
+      label: 'Copy MD',
+      title: 'Copy selection as Markdown',
+      icon: { name: 'copy', fallback: 'Copy' },
+      action: () => {
+        window.dispatchEvent(new CustomEvent('copyAsMarkdown'));
+      },
+      isActive: () => false,
+      className: 'copy-button',
+    },
+    {
+      type: 'dropdown',
+      label: 'Export',
+      title: 'Export document',
+      icon: { name: 'export', fallback: 'Export' },
+      items: [
+        {
+          label: 'Export as PDF',
+          action: () => {
+            window.dispatchEvent(new CustomEvent('exportDocument', { detail: { format: 'pdf' } }));
+          },
+        },
+        {
+          label: 'Export as Word',
+          action: () => {
+            window.dispatchEvent(new CustomEvent('exportDocument', { detail: { format: 'docx' } }));
+          },
+        },
+      ],
+    },
+    { type: 'separator' },
     {
       type: 'button',
       label: 'Bold',
@@ -566,92 +653,6 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     },
     { type: 'separator' },
     {
-      type: 'button',
-      label: 'Find',
-      title: `Find in document (${modKeyLabel}+F)`,
-      icon: { name: 'search', fallback: '🔍' },
-      action: () => {
-        window.dispatchEvent(new CustomEvent('openFind'));
-      },
-      isActive: () => false,
-      className: 'find-button',
-    },
-    {
-      type: 'dropdown',
-      label: 'Go',
-      title: 'Navigate insertion point history',
-      icon: { name: 'history', fallback: '↺' },
-      items: [
-        {
-          label: 'Go Back (Ctrl+Alt+Left)',
-          action: () => {
-            window.dispatchEvent(new CustomEvent('navigateBack'));
-          },
-        },
-        {
-          label: 'Go Forward (Ctrl+Alt+Right)',
-          action: () => {
-            window.dispatchEvent(new CustomEvent('navigateForward'));
-          },
-        },
-      ],
-    },
-    {
-      type: 'button',
-      label: 'Navigation',
-      title: 'Show Navigation Pane',
-      icon: { name: 'list-tree', fallback: 'TOC' },
-      action: () => {
-        window.dispatchEvent(new CustomEvent('toggleTocOutline'));
-      },
-      isActive: () => isTocVisible(),
-      className: 'toc-button',
-    },
-    {
-      type: 'button',
-      label: 'Source',
-      title: 'Toggle source view (split)',
-      icon: { name: 'split-horizontal', fallback: '</>' },
-      action: () => {
-        window.dispatchEvent(new CustomEvent('openSourceView'));
-      },
-      isActive: () => (window as any).isSourceVisible?.() ?? false,
-      className: 'source-button',
-    },
-    { type: 'separator' },
-    {
-      type: 'button',
-      label: 'Copy MD',
-      title: 'Copy selection as Markdown',
-      icon: { name: 'copy', fallback: 'Copy' },
-      action: () => {
-        window.dispatchEvent(new CustomEvent('copyAsMarkdown'));
-      },
-      isActive: () => false,
-      className: 'copy-button',
-    },
-    {
-      type: 'dropdown',
-      label: 'Export',
-      title: 'Export document',
-      icon: { name: 'export', fallback: 'Export' },
-      items: [
-        {
-          label: 'Export as PDF',
-          action: () => {
-            window.dispatchEvent(new CustomEvent('exportDocument', { detail: { format: 'pdf' } }));
-          },
-        },
-        {
-          label: 'Export as Word',
-          action: () => {
-            window.dispatchEvent(new CustomEvent('exportDocument', { detail: { format: 'docx' } }));
-          },
-        },
-      ],
-    },
-    { type: 'separator' },
-    {
       type: 'dropdown',
       label: 'Settings',
       title: 'Settings',
@@ -667,6 +668,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
             if (editorEl) editorEl.classList.toggle('hide-heading-gutter', !next);
             const vscodeApi = (window as any).vscode;
             if (vscodeApi) vscodeApi.postMessage({ type: 'updateSetting', key: 'markdownForHumans.showHeadingGutter', value: next });
+            updateGutterWidth();
           },
           isActive: () => editorDisplaySettings.showHeadingGutter,
           noClose: true,
@@ -680,6 +682,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
             if (editorEl) editorEl.classList.toggle('show-line-numbers', next);
             const vscodeApi = (window as any).vscode;
             if (vscodeApi) vscodeApi.postMessage({ type: 'updateSetting', key: 'markdownForHumans.showLineNumbers', value: next });
+            updateGutterWidth();
           },
           isActive: () => editorDisplaySettings.showLineNumbers,
           noClose: true,

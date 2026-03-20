@@ -31,7 +31,7 @@ import { GitHubAlerts } from './extensions/githubAlerts';
 import { ImageEnterSpacing } from './extensions/imageEnterSpacing';
 import { MarkdownParagraph } from './extensions/markdownParagraph';
 import { OrderedListMarkdownFix } from './extensions/orderedListMarkdownFix';
-import { LineNumbers, setDocumentFilename, posToMarkdownLine, markdownLineToPos } from './extensions/lineNumbers';
+import { LineNumbers, setDocumentFilename, posToMarkdownLine, markdownLineToPos, installGutterResizeObserver } from './extensions/lineNumbers';
 import { createFormattingToolbar, createTableMenu, updateToolbarStates, updateDisplaySettings } from './BubbleMenuView';
 import { getEditorMarkdownForSync } from './utils/markdownSerialization';
 import {
@@ -1610,6 +1610,9 @@ function initializeEditor(initialContent: string) {
     // Prevent the browser from blurring the editor when clicking on the shield.
     // Without this, clicking any non-focusable element automatically blurs the editor.
     gutterShield.addEventListener('mousedown', (e) => { e.preventDefault(); });
+
+    // Reposition gutter decorations when editor width changes
+    installGutterResizeObserver();
 
     // Track editor focus state for toolbar and keep toolbar enabled while interacting with it
     const editorDom = editorInstance.view.dom;
