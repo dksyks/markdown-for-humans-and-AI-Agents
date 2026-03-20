@@ -1452,9 +1452,6 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       - parseFloat(toolbarStyle.paddingLeft)
       - parseFloat(toolbarStyle.paddingRight);
 
-    // scrollWidth captures all item widths + gaps + separator margins accurately
-    const totalWidth = itemsContainer.scrollWidth;
-
     // Per-item right-edge positions relative to itemsContainer left edge
     // Using getBoundingClientRect for accuracy regardless of flex stretching
     const containerLeft = itemsContainer.getBoundingClientRect().left;
@@ -1462,6 +1459,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       const r = item.getBoundingClientRect();
       return r.right - containerLeft;
     });
+    const totalWidth = rightEdges.length > 0 ? rightEdges[rightEdges.length - 1] : 0;
 
     if (totalWidth <= available) {
       // All items fit — no overflow needed

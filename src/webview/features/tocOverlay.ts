@@ -18,19 +18,37 @@ let panelWidth = 220; // default width in px
 const MIN_PANEL_WIDTH = 120;
 const MAX_PANEL_WIDTH = 500;
 
+interface CursorViewportAnchor {
+  pos: number;
+  top: number;
+}
+
+function captureCursorViewportAnchor(editor: Editor): CursorViewportAnchor | null {
+  try {
+    const pos = editor.state.selection.head;
+    const top = editor.view.coordsAtPos(pos).top;
+    return { pos, top };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Update the editor's left margin to account for the fixed-position nav panel,
  * and position the panel below the toolbar.
  * When an editor is provided, preserves the cursor's viewport position across the reflow.
  */
-function updateEditorMargin(editor?: Editor): void {
+function updateEditorMargin(editor?: Editor, anchor?: CursorViewportAnchor | null): void {
   const editorElement = document.querySelector('#editor') as HTMLElement;
   if (!editorElement) return;
 
   // Capture cursor viewport Y before reflow
   let cursorY: number | null = null;
   let cursorPos: number | null = null;
-  if (editor) {
+  if (anchor) {
+    cursorPos = anchor.pos;
+    cursorY = anchor.top;
+  } else if (editor) {
     try {
       const sel = editor.state.selection;
       cursorPos = sel.head;
@@ -138,7 +156,7 @@ export function createTocPanel(editor: Editor): HTMLElement {
   appLayout.insertBefore(wrapper, editorElement);
 
   // Set up resize dragging (resizes the wrapper)
-  setupResizeDrag(resizeHandle, wrapper);
+  setupResizeDrag(resizeHandle, wrapper, editor);
 
   // Handle Esc key to close
   const handleKeydown = (e: KeyboardEvent) => {
@@ -156,16 +174,17 @@ export function createTocPanel(editor: Editor): HTMLElement {
 /**
  * Set up mouse drag resizing for the panel.
  */
-function setupResizeDrag(handle: HTMLElement, panel: HTMLElement) {
+function setupResizeDrag(handle: HTMLElement, panel: HTMLElement, editor: Editor) {
   let startX = 0;
   let startWidth = 0;
+  let dragAnchor: CursorViewportAnchor | null = null;
 
   const onMouseMove = (e: MouseEvent) => {
     const delta = e.clientX - startX;
     const newWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, startWidth + delta));
     panelWidth = newWidth;
     panel.style.width = newWidth + 'px';
-    updateEditorMargin();
+    updateEditorMargin(editor, dragAnchor);
   };
 
   const onMouseUp = () => {
@@ -173,6 +192,7 @@ function setupResizeDrag(handle: HTMLElement, panel: HTMLElement) {
     document.removeEventListener('mouseup', onMouseUp);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    dragAnchor = null;
 
     // Persist width
     const vscodeApi = (window as any).vscode;
@@ -189,6 +209,7 @@ function setupResizeDrag(handle: HTMLElement, panel: HTMLElement) {
     e.preventDefault();
     startX = e.clientX;
     startWidth = panelWidth;
+    dragAnchor = captureCursorViewportAnchor(editor);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMouseMove);

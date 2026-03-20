@@ -49,6 +49,14 @@ import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
 import { renderProposalRedlineHtml, renderMarkdownHtml } from './utils/proposalRedline';
+
+interface ResizeSelectionAnchor {
+  pos: number;
+  top: number;
+  left: number;
+  scrollTop: number;
+  editorWidth: number | null;
+}
 import {
   buildProposalEditableMarkdown,
   extractProposalReplacementFromEditableMarkdown,
@@ -1614,6 +1622,128 @@ function initializeEditor(initialContent: string) {
     // Reposition gutter decorations when editor width changes
     installGutterResizeObserver();
 
+    const editorRoot = document.querySelector('#editor') as HTMLElement | null;
+    const scrollContainer = getScrollContainer();
+    let lastStableResizeAnchor: ResizeSelectionAnchor | null = null;
+    let resizeSessionActive = false;
+    let resizeSessionTimeoutId: number | null = null;
+    let scrollCaptureFrameId: number | null = null;
+    let suppressAnchorCapture = false;
+    let lastObservedEditorWidth = editorRoot?.offsetWidth ?? 0;
+
+    const readCurrentResizeAnchor = (): ResizeSelectionAnchor | null => {
+      try {
+        const pos = editorInstance.state.selection.head;
+        const coords = editorInstance.view.coordsAtPos(pos);
+        return {
+          pos,
+          top: coords.top,
+          left: coords.left,
+          scrollTop: scrollContainer.scrollTop,
+          editorWidth: editorRoot?.offsetWidth ?? null,
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    const captureStableResizeAnchor = () => {
+      if (suppressAnchorCapture || resizeSessionActive) {
+        return;
+      }
+      const anchor = readCurrentResizeAnchor();
+      if (anchor) {
+        lastStableResizeAnchor = anchor;
+      }
+    };
+
+    const releaseAnchorCaptureSuppression = () => {
+      requestAnimationFrame(() => {
+        suppressAnchorCapture = false;
+      });
+    };
+
+    const applyResizePreservation = () => {
+      if (!resizeSessionActive || !lastStableResizeAnchor) {
+        return;
+      }
+
+      const currentAnchor = readCurrentResizeAnchor();
+      if (!currentAnchor) {
+        return;
+      }
+
+      const delta = currentAnchor.top - lastStableResizeAnchor.top;
+      if (Math.abs(delta) <= 1) {
+        return;
+      }
+
+      suppressAnchorCapture = true;
+      scrollContainer.scrollTop += delta;
+      releaseAnchorCaptureSuppression();
+    };
+
+    const scheduleResizePreservation = () => {
+      applyResizePreservation();
+      requestAnimationFrame(() => {
+        applyResizePreservation();
+      });
+      window.setTimeout(() => {
+        applyResizePreservation();
+      }, 80);
+    };
+
+    const beginOrExtendResizeSession = () => {
+      if (!resizeSessionActive) {
+        resizeSessionActive = true;
+      }
+
+      scheduleResizePreservation();
+
+      if (resizeSessionTimeoutId !== null) {
+        window.clearTimeout(resizeSessionTimeoutId);
+      }
+      resizeSessionTimeoutId = window.setTimeout(() => {
+        applyResizePreservation();
+        resizeSessionActive = false;
+        resizeSessionTimeoutId = null;
+        captureStableResizeAnchor();
+      }, 180);
+    };
+
+    const handleWindowScroll = () => {
+      if (resizeSessionActive || suppressAnchorCapture) {
+        return;
+      }
+      if (scrollCaptureFrameId !== null) {
+        return;
+      }
+      scrollCaptureFrameId = window.requestAnimationFrame(() => {
+        scrollCaptureFrameId = null;
+        captureStableResizeAnchor();
+      });
+    };
+    window.addEventListener('scroll', handleWindowScroll, { passive: true });
+
+    const resizePreservationObserver =
+      typeof ResizeObserver === 'undefined' || !editorRoot
+        ? null
+        : new ResizeObserver(() => {
+          const newWidth = editorRoot.offsetWidth;
+          if (newWidth === lastObservedEditorWidth) {
+            return;
+          }
+
+          lastObservedEditorWidth = newWidth;
+          beginOrExtendResizeSession();
+        });
+    resizePreservationObserver?.observe(editorRoot ?? editorElement);
+
+    editorInstance.on('selectionUpdate', () => {
+      captureStableResizeAnchor();
+    });
+    captureStableResizeAnchor();
+
     // Track editor focus state for toolbar and keep toolbar enabled while interacting with it
     const editorDom = editorInstance.view.dom;
     editorDom.addEventListener('focus', () => {
@@ -1924,6 +2054,14 @@ function initializeEditor(initialContent: string) {
       document.removeEventListener('click', documentClickHandler);
       document.removeEventListener('keydown', keydownHandler, { capture: true });
       editorInstance.view.dom.removeEventListener('click', handleLinkClick);
+      window.removeEventListener('scroll', handleWindowScroll);
+      resizePreservationObserver?.disconnect();
+      if (resizeSessionTimeoutId !== null) {
+        window.clearTimeout(resizeSessionTimeoutId);
+      }
+      if (scrollCaptureFrameId !== null) {
+        window.cancelAnimationFrame(scrollCaptureFrameId);
+      }
       console.log(`${BUILD_TAG} Editor destroyed, global listeners cleaned up`);
     });
 

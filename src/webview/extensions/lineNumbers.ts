@@ -52,6 +52,285 @@ export function setDocumentFilename(name: string): void {
   documentFilename = name;
 }
 
+function countTextLineBreaks(text: string | null | undefined): number {
+  if (!text) {
+    return 0;
+  }
+  return (text.match(/\n/g) || []).length;
+}
+
+function countAlertChildLines(node: any): number {
+  const typeName = node.type?.name;
+  if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
+    let itemCount = 0;
+    node.forEach(() => {
+      itemCount++;
+    });
+    return Math.max(1, itemCount);
+  }
+
+  let explicitBreakCount = 0;
+  if (typeof node.descendants === 'function') {
+    node.descendants((child: any) => {
+      if (child.type?.name === 'hardBreak') {
+        explicitBreakCount++;
+      } else if (typeof child.text === 'string') {
+        explicitBreakCount += countTextLineBreaks(child.text);
+      }
+    });
+  }
+  return Math.max(1, explicitBreakCount + 1);
+}
+
+function buildGitHubAlertLineInfos(
+  node: any,
+  offset: number,
+  startLineIndex: number,
+  lines: string[]
+): Array<{ lineNum: number; selFrom: number; selTo: number }> {
+  const blockLineCount = countBlockLines(node, lines, startLineIndex);
+  const contentLineCount = Math.max(0, blockLineCount - 1);
+  const infos: Array<{ lineNum: number; selFrom: number; selTo: number }> = [
+    { lineNum: startLineIndex + 1, selFrom: offset + 1, selTo: offset + 1 },
+  ];
+
+  const contentInfos: Array<{ lineNum: number; selFrom: number; selTo: number }> = [];
+  node.forEach((child: any, childOff: number) => {
+    const childAbsStart = offset + 1 + childOff + 1;
+    const childAbsEnd = offset + 1 + childOff + child.nodeSize - 1;
+    const lineCount = countAlertChildLines(child);
+    for (let i = 0; i < lineCount && contentInfos.length < contentLineCount; i++) {
+      contentInfos.push({
+        lineNum: startLineIndex + 2 + contentInfos.length,
+        selFrom: childAbsStart,
+        selTo: childAbsEnd,
+      });
+    }
+  });
+
+  const fallbackSelFrom = offset + 1;
+  const fallbackSelTo = offset + node.nodeSize - 1;
+  while (contentInfos.length < contentLineCount) {
+    contentInfos.push({
+      lineNum: startLineIndex + 2 + contentInfos.length,
+      selFrom: fallbackSelFrom,
+      selTo: fallbackSelTo,
+    });
+  }
+
+  return infos.concat(contentInfos);
+}
+
+function getRangeTopForTextNode(node: Text, offset: number): number | null {
+  const range = document.createRange();
+  const start = Math.min(offset, node.data.length);
+  const end = Math.min(start + 1, node.data.length);
+  range.setStart(node, start);
+  if (end > start) {
+    range.setEnd(node, end);
+  } else {
+    range.collapse(true);
+  }
+  const firstRect = range.getClientRects()[0];
+  const rect = firstRect ?? range.getBoundingClientRect();
+  return Number.isFinite(rect.top) ? rect.top : null;
+}
+
+function getFirstRenderablePositionInNode(
+  node: Node
+): { kind: 'text'; node: Text; offset: number } | { kind: 'element'; node: Element } | null {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const textNode = node as Text;
+    return textNode.data.length > 0 ? { kind: 'text', node: textNode, offset: 0 } : null;
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return null;
+  }
+
+  const element = node as Element;
+  if (element.tagName === 'BR') {
+    return null;
+  }
+
+  for (const child of Array.from(element.childNodes)) {
+    const result = getFirstRenderablePositionInNode(child);
+    if (result) {
+      return result;
+    }
+  }
+
+  return { kind: 'element', node: element };
+}
+
+function getNextNodeWithinBoundary(node: Node, boundary: Element): Node | null {
+  let current: Node | null = node;
+  while (current && current !== boundary) {
+    if (current.nextSibling) {
+      return current.nextSibling;
+    }
+    current = current.parentNode;
+  }
+  return null;
+}
+
+function getTopForFirstRenderablePositionAfterNode(node: Node, boundary: Element): number | null {
+  let current = getNextNodeWithinBoundary(node, boundary);
+  while (current) {
+    const position = getFirstRenderablePositionInNode(current);
+    if (position) {
+      if (position.kind === 'text') {
+        return getRangeTopForTextNode(position.node, position.offset);
+      }
+      const rect = position.node.getBoundingClientRect();
+      return Number.isFinite(rect.top) ? rect.top : null;
+    }
+    current = getNextNodeWithinBoundary(current, boundary);
+  }
+  return null;
+}
+
+function getEstimatedLineHeight(element: Element, logicalLineCount: number): number {
+  const style = getComputedStyle(element);
+  const parsedLineHeight = Number.parseFloat(style.lineHeight);
+  if (Number.isFinite(parsedLineHeight)) {
+    return parsedLineHeight;
+  }
+
+  const rect = element.getBoundingClientRect();
+  if (logicalLineCount > 0 && rect.height > 0) {
+    return rect.height / logicalLineCount;
+  }
+  return rect.height || 0;
+}
+
+function countExplicitLineBreaksInDom(node: Node): number {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return countTextLineBreaks(node.textContent);
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return 0;
+  }
+
+  const element = node as Element;
+  if (element.tagName === 'BR') {
+    return 1;
+  }
+
+  return Array.from(element.childNodes).reduce((sum, child) => sum + countExplicitLineBreaksInDom(child), 0);
+}
+
+function normalizeLogicalLineTop(
+  top: number | null,
+  tops: number[],
+  estimatedLineHeight: number
+): number | null {
+  if (top === null && tops.length > 0) {
+    return tops[tops.length - 1] + estimatedLineHeight;
+  }
+
+  if (top !== null && tops.length > 0 && Math.abs(top - tops[tops.length - 1]) <= 1) {
+    return tops[tops.length - 1] + estimatedLineHeight;
+  }
+
+  return top;
+}
+
+function collectLogicalLineTops(
+  node: Node,
+  tops: number[],
+  estimatedLineHeight: number,
+  boundary: Element
+): void {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const textNode = node as Text;
+    for (let i = 0; i < textNode.data.length; i++) {
+      if (textNode.data[i] !== '\n') {
+        continue;
+      }
+      const top = normalizeLogicalLineTop(
+        getRangeTopForTextNode(textNode, i + 1),
+        tops,
+        estimatedLineHeight
+      );
+      if (top !== null) {
+        tops.push(top);
+      }
+    }
+    return;
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return;
+  }
+
+  const element = node as Element;
+  if (element.tagName === 'BR') {
+    const top = normalizeLogicalLineTop(
+      getTopForFirstRenderablePositionAfterNode(element, boundary),
+      tops,
+      estimatedLineHeight
+    );
+    if (top !== null) {
+      tops.push(top);
+    }
+    return;
+  }
+
+  Array.from(element.childNodes).forEach(child =>
+    collectLogicalLineTops(child, tops, estimatedLineHeight, boundary)
+  );
+}
+
+function getLogicalLineTopsForElement(blockEl: Element): number[] {
+  if (blockEl.tagName === 'UL' || blockEl.tagName === 'OL') {
+    return Array.from(blockEl.querySelectorAll(':scope > li')).map(item => item.getBoundingClientRect().top);
+  }
+
+  const blockRect = blockEl.getBoundingClientRect();
+  const explicitLineBreakCount = countExplicitLineBreaksInDom(blockEl);
+  const logicalLineCount = explicitLineBreakCount + 1;
+  const estimatedLineHeight = getEstimatedLineHeight(blockEl, logicalLineCount);
+  const tops: number[] = [blockRect.top];
+
+  Array.from(blockEl.childNodes).forEach(child =>
+    collectLogicalLineTops(child, tops, estimatedLineHeight, blockEl)
+  );
+
+  return tops;
+}
+
+function getGitHubAlertLineTops(blockEl: Element): number[] {
+  const tops: number[] = [];
+  const header = blockEl.querySelector(':scope > .github-alert-header');
+  if (header) {
+    tops.push(header.getBoundingClientRect().top);
+  }
+
+  const contentChildren = Array.from(blockEl.querySelectorAll(':scope > .github-alert-content > *'));
+  contentChildren.forEach(child => {
+    tops.push(...getLogicalLineTopsForElement(child));
+  });
+
+  return tops;
+}
+
+function positionGitHubAlertSpans(wrapper: Element, blockEl: Element, spans: HTMLElement[]): void {
+  const wrapperRect = wrapper.getBoundingClientRect();
+  const tops = getGitHubAlertLineTops(blockEl);
+
+  tops.forEach((top, index) => {
+    if (index < spans.length) {
+      spans[index].style.top = `${top - wrapperRect.top}px`;
+      spans[index].style.visibility = '';
+    }
+  });
+
+  for (let i = tops.length; i < spans.length; i++) {
+    spans[i].style.visibility = 'hidden';
+  }
+}
+
 /**
  * Show a brief toast notification at the bottom of the screen.
  */
@@ -510,21 +789,42 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
         }, { side: -1, key: `ln-table-${offset}` });
 
         decorations.push(widget);
-      } else if (typeName === 'githubAlert' || typeName === 'blockquote') {
+      } else if (typeName === 'githubAlert') {
+        const alertLineInfos = buildGitHubAlertLineInfos(node, offset, contentLineIndex, lines);
+
+        const widget = Decoration.widget(offset, () => {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'line-number-table-anchor';
+
+          const spans: HTMLElement[] = [];
+          for (const info of alertLineInfos) {
+            const span = createGutterSpan(info.lineNum, null, info.selFrom, info.selTo);
+            span.style.position = 'absolute';
+            span.style.visibility = 'hidden';
+            wrapper.appendChild(span);
+            spans.push(span);
+          }
+
+          requestAnimationFrame(() => {
+            const blockEl = wrapper.nextElementSibling;
+            if (!blockEl) return;
+            positionGitHubAlertSpans(wrapper, blockEl, spans);
+          });
+
+          return wrapper;
+        }, { side: -1, key: `ln-alert-${offset}` });
+
+        decorations.push(widget);
+      } else if (typeName === 'blockquote') {
         // Single-anchor pattern: one widget with per-line absolute spans
         // Count the > lines in the markdown for this block
         const alertLineInfos: { lineNum: number; selFrom: number; selTo: number }[] = [];
         let childIdx = 0;
-        // First line is the header (> [!TYPE]) for githubAlert
-        if (typeName === 'githubAlert') {
-          alertLineInfos.push({ lineNum: lineNum, selFrom: offset + 1, selTo: offset + 1 });
-        }
         node.forEach((child: any, childOff: number) => {
           const childAbsStart = offset + 1 + childOff + 1;
           const childAbsEnd = offset + 1 + childOff + child.nodeSize - 1;
-          // Each child block corresponds to lines after the header
-          const childLine = contentLineIndex + (typeName === 'githubAlert' ? 1 : 0) + childIdx;
-          const childLineNum = childLine < lines.length ? childLine + 1 : lineNum + childIdx + 1;
+          const childLine = contentLineIndex + childIdx;
+          const childLineNum = childLine < lines.length ? childLine + 1 : lineNum + childIdx;
           alertLineInfos.push({ lineNum: childLineNum, selFrom: childAbsStart, selTo: childAbsEnd });
           childIdx++;
         });
@@ -546,9 +846,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
             const blockEl = wrapper.nextElementSibling;
             if (!blockEl) return;
             const wrapperRect = wrapper.getBoundingClientRect();
-            // For githubAlert: first span aligns to header, rest to content children
-            // For blockquote: spans align to direct children
-            const children = blockEl.querySelectorAll(':scope > *');
+            const children = Array.from(blockEl.querySelectorAll(':scope > *'));
             let spanIdx = 0;
             children.forEach((child: Element) => {
               if (spanIdx < spans.length) {
@@ -641,7 +939,6 @@ export function repositionGutterDecorations(): void {
   anchors.forEach(wrapper => {
     const sibling = wrapper.nextElementSibling;
     if (!sibling) return;
-    const wrapperRect = wrapper.getBoundingClientRect();
     const spans = wrapper.querySelectorAll('.line-number-gutter') as NodeListOf<HTMLElement>;
 
     // Determine what kind of sibling this is and get the child elements to align to
@@ -649,6 +946,9 @@ export function repositionGutterDecorations(): void {
     const table = sibling.querySelector('table');
     if (table) {
       children = table.querySelectorAll('tr');
+    } else if (sibling.classList.contains('github-alert')) {
+      positionGitHubAlertSpans(wrapper, sibling, Array.from(spans));
+      return;
     } else if (sibling.tagName === 'UL' || sibling.tagName === 'OL') {
       children = sibling.querySelectorAll(':scope > li');
     } else {
@@ -656,6 +956,7 @@ export function repositionGutterDecorations(): void {
       children = sibling.querySelectorAll(':scope > *');
     }
 
+    const wrapperRect = wrapper.getBoundingClientRect();
     children.forEach((child: Element, i: number) => {
       if (i < spans.length) {
         const childRect = child.getBoundingClientRect();
