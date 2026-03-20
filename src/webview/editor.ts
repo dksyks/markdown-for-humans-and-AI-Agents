@@ -1607,6 +1607,9 @@ function initializeEditor(initialContent: string) {
     const gutterShield = document.createElement('div');
     gutterShield.className = 'gutter-shield';
     editorElement.insertBefore(gutterShield, editorElement.firstChild);
+    // Prevent the browser from blurring the editor when clicking on the shield.
+    // Without this, clicking any non-focusable element automatically blurs the editor.
+    gutterShield.addEventListener('mousedown', (e) => { e.preventDefault(); });
 
     // Track editor focus state for toolbar and keep toolbar enabled while interacting with it
     const editorDom = editorInstance.view.dom;
