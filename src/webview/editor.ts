@@ -200,6 +200,7 @@ let hasAutoOpenedNav = false; // Track if we've already auto-opened nav for this
 let lastSyncedSourceLine = -1; // Debounce: only send syncSourceLine when line changes
 let isSyncFromSource = false; // Loop guard: true when scrolling due to source editor sync
 let isSourceViewOpen = false; // Track whether source view split is open
+let sourceSyncRequestCounter = 0;
 
 /** Check if source view is currently open (used by toolbar button) */
 (window as any).isSourceVisible = () => isSourceViewOpen;
@@ -349,6 +350,114 @@ function getScrollContainer(): HTMLElement {
   }
 
   return document.documentElement;
+}
+
+function readWebviewSelectionViewportRect(): {
+  top: number | null;
+  bottom: number | null;
+  left: number | null;
+  height: number | null;
+} {
+  try {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return { top: null, bottom: null, left: null, height: null };
+    }
+
+    const range = selection.getRangeAt(0).cloneRange();
+    if (range.collapsed) {
+      const rects = range.getClientRects();
+      const rect = rects.length > 0 ? rects[0] : range.getBoundingClientRect();
+      return {
+        top: Number.isFinite(rect.top) ? rect.top : null,
+        bottom: Number.isFinite(rect.bottom) ? rect.bottom : null,
+        left: Number.isFinite(rect.left) ? rect.left : null,
+        height: Number.isFinite(rect.height) ? rect.height : null,
+      };
+    }
+
+    const rect = range.getBoundingClientRect();
+    return {
+      top: Number.isFinite(rect.top) ? rect.top : null,
+      bottom: Number.isFinite(rect.bottom) ? rect.bottom : null,
+      left: Number.isFinite(rect.left) ? rect.left : null,
+      height: Number.isFinite(rect.height) ? rect.height : null,
+    };
+  } catch {
+    return { top: null, bottom: null, left: null, height: null };
+  }
+}
+
+function readSourceSyncViewportRatio(editorInstance: Editor): number | null {
+  try {
+    const editorRoot = document.querySelector('#editor') as HTMLElement | null;
+    const viewportRect = readWebviewSelectionViewportRect();
+    const selectionViewportTop = viewportRect.top;
+    const editorRect = editorRoot?.getBoundingClientRect() ?? null;
+    const visibleTop = Math.max(0, editorRect?.top ?? 0);
+    const visibleBottom = Math.min(window.innerHeight, editorRect?.bottom ?? window.innerHeight);
+    const visibleHeight = visibleBottom - visibleTop;
+
+    if (!Number.isFinite(selectionViewportTop) || visibleHeight <= 0) {
+      return null;
+    }
+
+    if (selectionViewportTop < visibleTop - 32 || selectionViewportTop > visibleBottom + 32) {
+      return null;
+    }
+
+    const ratio = (selectionViewportTop - visibleTop) / visibleHeight;
+    if (!Number.isFinite(ratio)) {
+      return null;
+    }
+
+    return Math.max(0, Math.min(1, ratio));
+  } catch {
+    return null;
+  }
+}
+
+function postSourceSync(
+  editorInstance: Editor,
+  options: { force?: boolean; reason?: string } = {}
+): void {
+  const { from } = editorInstance.state.selection;
+  const sourceLine = posToMarkdownLine(editorInstance, from);
+  const reason = options.reason ?? 'unspecified';
+  if (sourceLine <= 0) {
+    return;
+  }
+
+  if (!options.force && sourceLine === lastSyncedSourceLine) {
+    return;
+  }
+
+  lastSyncedSourceLine = sourceLine;
+  const viewportRatio = readSourceSyncViewportRatio(editorInstance);
+  const requestId = `webview-source-sync-${Date.now()}-${++sourceSyncRequestCounter}`;
+  vscode.postMessage({
+    type: 'syncSourceLine',
+    requestId,
+    reason,
+    line: sourceLine,
+    viewportRatio,
+  });
+}
+
+function postSourceResizeSession(
+  editorInstance: Editor,
+  phase: 'start' | 'extend' | 'settled'
+): void {
+  const requestId = `webview-source-resize-${Date.now()}-${++sourceSyncRequestCounter}`;
+  const sourceLine = posToMarkdownLine(editorInstance, editorInstance.state.selection.from);
+  const viewportRatio = readSourceSyncViewportRatio(editorInstance);
+  vscode.postMessage({
+    type: 'sourceResizeSession',
+    requestId,
+    phase,
+    line: sourceLine,
+    viewportRatio,
+  });
 }
 
 function setProposalTargetSpacer(height: number) {
@@ -1567,12 +1676,8 @@ function initializeEditor(initialContent: string) {
 
           // Sync cursor position to source view (if open)
           // Only sync when MFH has focus (user is interacting with it, not passive update)
-          if (!isSyncFromSource && document.hasFocus()) {
-            const sourceLine = posToMarkdownLine(editor, from);
-            if (sourceLine > 0 && sourceLine !== lastSyncedSourceLine) {
-              lastSyncedSourceLine = sourceLine;
-              vscode.postMessage({ type: 'syncSourceLine', line: sourceLine });
-            }
+          if (isSourceViewOpen && !isSyncFromSource && document.hasFocus()) {
+            postSourceSync(editor, { reason: 'mfhSelectionUpdate' });
           }
         } catch (error) {
           console.warn(`${BUILD_TAG} Selection update failed:`, error);
@@ -1708,6 +1813,9 @@ function initializeEditor(initialContent: string) {
         resizeSessionActive = false;
         resizeSessionTimeoutId = null;
         captureStableResizeAnchor();
+        if (isSourceViewOpen) {
+          postSourceResizeSession(editorInstance, 'settled');
+        }
       }, 180);
     };
 
@@ -2284,13 +2392,9 @@ window.addEventListener('message', (event: MessageEvent) => {
         break;
       }
       case 'requestCurrentLine': {
-        // Extension host requests the current cursor line (e.g., on source view open)
+        // Extension host requests the current cursor line and viewport anchor.
         if (!editor) break;
-        const { from: curFrom } = editor.state.selection;
-        const curLine = posToMarkdownLine(editor, curFrom);
-        if (curLine > 0) {
-          vscode.postMessage({ type: 'syncSourceLine', line: curLine });
-        }
+        postSourceSync(editor, { force: true, reason: 'requestCurrentLine' });
         break;
       }
       case 'sourceViewClosed':

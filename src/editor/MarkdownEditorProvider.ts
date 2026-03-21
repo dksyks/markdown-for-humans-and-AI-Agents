@@ -34,6 +34,28 @@ export const ACTIVE_INSTANCE_TEMP_FILE = path.join(
 );
 export const INSTANCE_TEMP_DIR_PREFIX = 'MarkdownForHumans-';
 
+interface SourceViewportAnchor {
+  activeLine: number;
+  selectionStartLine: number;
+  selectionEndLine: number;
+  visibleStartLine: number;
+  visibleEndLine: number;
+  visibleLineCount: number;
+  viewportRatio: number;
+  selectionIsEmpty: boolean;
+}
+
+interface SourceResizeSessionState {
+  active: boolean;
+  anchor: SourceViewportAnchor | null;
+  timeoutId: ReturnType<typeof setTimeout> | null;
+  applying: boolean;
+  lastRequestId: string | null;
+  lastPhase: string | null;
+  requestedLine: number | null;
+  requestedViewportRatio: number | null;
+}
+
 export function getInstanceTempDir(instanceId: string = getEditorHostInstanceId()): string {
   return path.join(os.tmpdir(), `${INSTANCE_TEMP_DIR_PREFIX}${instanceId}`);
 }
@@ -377,6 +399,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   private pendingSelectionResolve: ((result: string) => void) | undefined;
   // Loop guard for bidirectional source sync
   _isSyncFromWebview = false;
+  private pendingSourceAlignmentTimers = new Map<string, Array<ReturnType<typeof setTimeout>>>();
+  private latestSourceSyncContext = new Map<string, Record<string, unknown>>();
+  private sourceResizeSessions = new Map<string, SourceResizeSessionState>();
+  private pendingSourceOpenSync = new Set<string>();
 
   public static register(context: vscode.ExtensionContext): { disposable: vscode.Disposable; provider: MarkdownEditorProvider } {
     const provider = new MarkdownEditorProvider(context);
@@ -395,6 +421,462 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   constructor(private readonly context: vscode.ExtensionContext) {}
+
+  private getSourceEditor(document: vscode.TextDocument): vscode.TextEditor | undefined {
+    return vscode.window.visibleTextEditors.find(
+      ed => ed.document.uri.toString() === document.uri.toString()
+    );
+  }
+
+  private clearPendingSourceAlignmentTimers(documentUri: string): void {
+    const timers = this.pendingSourceAlignmentTimers.get(documentUri);
+    if (!timers) {
+      return;
+    }
+
+    timers.forEach(timer => clearTimeout(timer));
+    this.pendingSourceAlignmentTimers.delete(documentUri);
+  }
+
+  private getSourceResizeSession(documentUri: string): SourceResizeSessionState {
+    const existing = this.sourceResizeSessions.get(documentUri);
+    if (existing) {
+      return existing;
+    }
+
+    const created: SourceResizeSessionState = {
+      active: false,
+      anchor: null,
+      timeoutId: null,
+      applying: false,
+      lastRequestId: null,
+      lastPhase: null,
+      requestedLine: null,
+      requestedViewportRatio: null,
+    };
+    this.sourceResizeSessions.set(documentUri, created);
+    return created;
+  }
+
+  private clearSourceResizeSession(documentUri: string, _reason: string): void {
+    const session = this.sourceResizeSessions.get(documentUri);
+    if (!session) {
+      return;
+    }
+
+    if (session.timeoutId !== null) {
+      clearTimeout(session.timeoutId);
+      session.timeoutId = null;
+    }
+
+    session.active = false;
+    session.applying = false;
+    session.lastRequestId = null;
+    session.lastPhase = null;
+    session.requestedLine = null;
+    session.requestedViewportRatio = null;
+  }
+
+  private getEffectiveSourceSelectionLine(selection: vscode.Selection): number {
+    if (selection.isEmpty) {
+      return selection.active.line;
+    }
+
+    if (selection.end.character === 0 && selection.end.line > selection.start.line) {
+      return selection.end.line - 1;
+    }
+
+    return selection.active.line;
+  }
+
+  private captureSourceViewportAnchor(sourceEditor: vscode.TextEditor): SourceViewportAnchor | null {
+    const primaryVisibleRange = sourceEditor.visibleRanges[0];
+    if (!primaryVisibleRange) {
+      return null;
+    }
+
+    const selection = sourceEditor.selection;
+    const visibleStartLine = primaryVisibleRange.start.line;
+    const visibleEndLine = primaryVisibleRange.end.line;
+    const visibleLineCount = Math.max(1, visibleEndLine - visibleStartLine);
+    const activeLine = this.getEffectiveSourceSelectionLine(selection);
+    const viewportRatio = Math.min(
+      1,
+      Math.max(0, (activeLine - visibleStartLine) / visibleLineCount)
+    );
+
+    return {
+      activeLine,
+      selectionStartLine: selection.start.line,
+      selectionEndLine: selection.end.line,
+      visibleStartLine,
+      visibleEndLine,
+      visibleLineCount,
+      viewportRatio,
+      selectionIsEmpty: selection.isEmpty,
+    };
+  }
+
+  private noteSourceViewportAnchor(
+    documentUri: string,
+    sourceEditor: vscode.TextEditor,
+    _reason: string
+  ): void {
+    const session = this.getSourceResizeSession(documentUri);
+    const anchor = this.captureSourceViewportAnchor(sourceEditor);
+    if (!anchor) {
+      return;
+    }
+
+    session.anchor = anchor;
+  }
+
+  private computeCurrentSourceViewportRatio(
+    sourceEditor: vscode.TextEditor
+  ): { ratio: number; visibleLineCount: number } | null {
+    const primaryVisibleRange = sourceEditor.visibleRanges[0];
+    if (!primaryVisibleRange) {
+      return null;
+    }
+
+    const visibleLineCount = Math.max(1, primaryVisibleRange.end.line - primaryVisibleRange.start.line);
+    const effectiveLine = this.getEffectiveSourceSelectionLine(sourceEditor.selection);
+    const ratio = Math.min(
+      1,
+      Math.max(0, (effectiveLine - primaryVisibleRange.start.line) / visibleLineCount)
+    );
+
+    return { ratio, visibleLineCount };
+  }
+
+  private fineTuneSourceViewportWithWrappedScroll(
+    sourceEditor: vscode.TextEditor,
+    targetViewportRatio: number | null
+  ): void {
+    if (typeof targetViewportRatio !== 'number' || !Number.isFinite(targetViewportRatio)) {
+      return;
+    }
+
+    if (vscode.window.activeTextEditor !== sourceEditor) {
+      return;
+    }
+
+    const currentViewport = this.computeCurrentSourceViewportRatio(sourceEditor);
+    if (!currentViewport) {
+      return;
+    }
+
+    const deltaRatio = currentViewport.ratio - targetViewportRatio;
+    const scrollValue = Math.min(
+      12,
+      Math.max(0, Math.round(Math.abs(deltaRatio) * currentViewport.visibleLineCount))
+    );
+
+    if (scrollValue < 1) {
+      return;
+    }
+
+    void vscode.commands.executeCommand('editorScroll', {
+      to: deltaRatio > 0 ? 'down' : 'up',
+      by: 'wrappedLine',
+      value: scrollValue,
+      revealCursor: false,
+    });
+  }
+
+  private revealSourceTopLineWithCorrection(
+    sourceEditor: vscode.TextEditor,
+    targetTopLine: number,
+    context: {
+      documentUri: string;
+      requestId: string | null;
+      reason: string | null;
+      trigger: string;
+      targetSelectionLine?: number | null;
+      targetViewportRatio?: number | null;
+      onSettled?: (finalTopLine: number | null) => void;
+    }
+  ): void {
+    const clampedInitialTopLine = Math.max(
+      0,
+      Math.min(sourceEditor.document.lineCount - 1, targetTopLine)
+    );
+
+    const applyReveal = (requestedTopLine: number, remainingCorrections: number): void => {
+      const clampedRequestedTopLine = Math.max(
+        0,
+        Math.min(sourceEditor.document.lineCount - 1, requestedTopLine)
+      );
+      const topPos = new vscode.Position(clampedRequestedTopLine, 0);
+      sourceEditor.revealRange(
+        new vscode.Range(topPos, topPos),
+        vscode.TextEditorRevealType.AtTop
+      );
+
+      setTimeout(() => {
+        const primaryVisibleRange = sourceEditor.visibleRanges[0];
+        const actualTopLine = primaryVisibleRange?.start.line ?? null;
+        const actualVisibleLineCount = primaryVisibleRange
+          ? Math.max(1, primaryVisibleRange.end.line - primaryVisibleRange.start.line)
+          : null;
+        if (
+          remainingCorrections > 0 &&
+          actualTopLine !== null &&
+          actualTopLine !== clampedRequestedTopLine
+        ) {
+          let correctedTopLine: number | null = null;
+
+          if (
+            typeof context.targetSelectionLine === 'number' &&
+            Number.isFinite(context.targetSelectionLine) &&
+            typeof context.targetViewportRatio === 'number' &&
+            Number.isFinite(context.targetViewportRatio) &&
+            actualVisibleLineCount !== null
+          ) {
+            const recomputedTopLine = Math.max(
+              0,
+              Math.min(
+                sourceEditor.document.lineCount - 1,
+                context.targetSelectionLine -
+                  Math.round(context.targetViewportRatio * actualVisibleLineCount)
+              )
+            );
+
+            if (recomputedTopLine !== actualTopLine) {
+              correctedTopLine = recomputedTopLine;
+            }
+          }
+
+          if (
+            correctedTopLine === null ||
+            correctedTopLine === clampedRequestedTopLine
+          ) {
+            const correctionDelta = clampedRequestedTopLine - actualTopLine;
+            const deltaCorrectedTopLine = Math.max(
+              0,
+              Math.min(sourceEditor.document.lineCount - 1, clampedRequestedTopLine + correctionDelta)
+            );
+
+            if (deltaCorrectedTopLine !== clampedRequestedTopLine) {
+              correctedTopLine = deltaCorrectedTopLine;
+            }
+          }
+
+          if (correctedTopLine !== null && correctedTopLine !== clampedRequestedTopLine) {
+            applyReveal(correctedTopLine, remainingCorrections - 1);
+            return;
+          }
+        }
+
+        context.onSettled?.(actualTopLine);
+      }, 30);
+    };
+
+    applyReveal(clampedInitialTopLine, 1);
+  }
+
+  private applySourceResizePreservation(
+    document: vscode.TextDocument,
+    sourceEditor: vscode.TextEditor,
+    trigger: string
+  ): void {
+    const documentUri = document.uri.toString();
+    const session = this.getSourceResizeSession(documentUri);
+    if (session.applying) {
+      return;
+    }
+
+    const primaryVisibleRange = sourceEditor.visibleRanges[0];
+    if (!primaryVisibleRange) {
+      return;
+    }
+
+    if (
+      typeof session.requestedLine !== 'number' ||
+      !Number.isFinite(session.requestedLine) ||
+      typeof session.requestedViewportRatio !== 'number' ||
+      !Number.isFinite(session.requestedViewportRatio)
+    ) {
+      return;
+    }
+
+    const targetViewportRatio = session.requestedViewportRatio;
+    const targetSelectionLine = Math.max(
+      0,
+      Math.min(sourceEditor.document.lineCount - 1, session.requestedLine - 1)
+    );
+    const currentVisibleLineCount = Math.max(1, primaryVisibleRange.end.line - primaryVisibleRange.start.line);
+    const desiredTopLine = Math.max(
+      0,
+      Math.min(
+        sourceEditor.document.lineCount - 1,
+        targetSelectionLine - Math.round(targetViewportRatio * currentVisibleLineCount)
+      )
+    );
+    const currentTopLine = primaryVisibleRange.start.line;
+
+    if (currentTopLine === desiredTopLine) {
+      return;
+    }
+
+    session.applying = true;
+    this.revealSourceTopLineWithCorrection(sourceEditor, desiredTopLine, {
+      documentUri,
+      requestId: session.lastRequestId,
+      reason: session.lastPhase,
+      trigger,
+      targetSelectionLine,
+      targetViewportRatio,
+      onSettled: () => {
+        session.applying = false;
+        this.noteSourceViewportAnchor(documentUri, sourceEditor, `${trigger}:postApply`);
+      },
+    });
+  }
+
+  private handleSourceResizeSessionMessage(
+    document: vscode.TextDocument,
+    requestId: string | null,
+    phase: 'start' | 'extend' | 'settled',
+    line: number | null,
+    viewportRatio: number | null
+  ): void {
+    const documentUri = document.uri.toString();
+    const session = this.getSourceResizeSession(documentUri);
+    const sourceEditor = this.getSourceEditor(document);
+
+    if (!sourceEditor) {
+      return;
+    }
+
+    if (this.pendingSourceOpenSync.has(documentUri)) {
+      return;
+    }
+
+    session.lastRequestId = requestId;
+    session.lastPhase = phase;
+    if (typeof line === 'number') {
+      session.requestedLine = line;
+    }
+    if (typeof viewportRatio === 'number' && Number.isFinite(viewportRatio)) {
+      session.requestedViewportRatio = viewportRatio;
+    }
+
+    if (phase !== 'settled') {
+      return;
+    }
+
+    if (session.timeoutId !== null) {
+      clearTimeout(session.timeoutId);
+    }
+    session.timeoutId = setTimeout(() => {
+      session.timeoutId = null;
+      const latestSourceEditor = this.getSourceEditor(document);
+      if (!latestSourceEditor) {
+        return;
+      }
+      this.applySourceResizePreservation(document, latestSourceEditor, 'sourceResizeSession:debounced');
+    }, 120);
+  }
+
+  private computeSourceRevealTopLine(
+    sourceEditor: vscode.TextEditor,
+    line: number,
+    viewportRatio: number | null
+  ): number | null {
+    if (typeof viewportRatio !== 'number' || !Number.isFinite(viewportRatio)) {
+      return null;
+    }
+
+    const primaryVisibleRange = sourceEditor.visibleRanges[0];
+    if (!primaryVisibleRange) {
+      return null;
+    }
+
+    const visibleLineCount = Math.max(1, primaryVisibleRange.end.line - primaryVisibleRange.start.line);
+    const clampedRatio = Math.min(1, Math.max(0, viewportRatio));
+    const desiredLineOffset = Math.round(clampedRatio * visibleLineCount);
+    const targetTopLine = (line - 1) - desiredLineOffset;
+
+    return Math.max(0, Math.min(sourceEditor.document.lineCount - 1, targetTopLine));
+  }
+
+  private alignSourceEditorViewport(
+    sourceEditor: vscode.TextEditor,
+    line: number,
+    viewportRatio: number | null,
+    requestId: string | null,
+    reason: string | null,
+    passLabel: string
+  ): void {
+    const clampedLine = Math.max(1, Math.min(line, sourceEditor.document.lineCount));
+    const pos = new vscode.Position(clampedLine - 1, 0);
+    sourceEditor.selection = new vscode.Selection(pos, pos);
+
+    const targetTopLine = this.computeSourceRevealTopLine(sourceEditor, clampedLine, viewportRatio);
+    if (targetTopLine !== null) {
+      this.revealSourceTopLineWithCorrection(sourceEditor, targetTopLine, {
+        documentUri: sourceEditor.document.uri.toString(),
+        requestId,
+        reason,
+        trigger: `alignSourceEditorViewport:${passLabel}`,
+        targetSelectionLine: clampedLine - 1,
+        targetViewportRatio: viewportRatio,
+        onSettled: () => {
+          if (passLabel === '180ms') {
+            this.fineTuneSourceViewportWithWrappedScroll(sourceEditor, viewportRatio);
+          }
+        },
+      });
+      return;
+    }
+
+    sourceEditor.revealRange(
+      new vscode.Range(pos, pos),
+      vscode.TextEditorRevealType.InCenterIfOutsideViewport
+    );
+    if (passLabel === '180ms') {
+      setTimeout(() => {
+        this.fineTuneSourceViewportWithWrappedScroll(sourceEditor, viewportRatio);
+      }, 30);
+    }
+  }
+
+  private scheduleSourceAlignment(
+    document: vscode.TextDocument,
+    line: number,
+    viewportRatio: number | null,
+    requestId: string | null,
+    reason: string | null
+  ): void {
+    const documentUri = document.uri.toString();
+    this.clearPendingSourceAlignmentTimers(documentUri);
+    this.latestSourceSyncContext.set(documentUri, {
+      requestId,
+      reason,
+      line,
+      viewportRatio,
+      receivedAt: Date.now(),
+    });
+    const delays = [0, 75, 180];
+    const timers = delays.map(delay =>
+      setTimeout(() => {
+        const sourceEditor = this.getSourceEditor(document);
+        if (!sourceEditor) {
+          return;
+        }
+        this.alignSourceEditorViewport(
+          sourceEditor,
+          line,
+          viewportRatio,
+          requestId,
+          reason,
+          `${delay}ms`
+        );
+      }, delay)
+    );
+    this.pendingSourceAlignmentTimers.set(documentUri, timers);
+  }
 
   /**
    * Get the document directory for file-based documents, or workspace folder for untitled files
@@ -644,14 +1126,20 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     // tell the webview so it can scroll to the corresponding block.
     let lastSourceSyncLine = -1;
     const selectionSyncSubscription = vscode.window.onDidChangeTextEditorSelection(e => {
+      if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
       if (this._isSyncFromWebview) return;
       // Only sync from the editor the user is actively interacting with
       if (e.textEditor !== vscode.window.activeTextEditor) return;
-      if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
       const line = e.selections[0].active.line + 1; // 1-based
+      this.noteSourceViewportAnchor(document.uri.toString(), e.textEditor, 'sourceSelectionEvent');
       if (line === lastSourceSyncLine) return;
       lastSourceSyncLine = line;
       webviewPanel.webview.postMessage({ type: 'syncFromSourceLine', line });
+    });
+
+    const visibleRangesSub = vscode.window.onDidChangeTextEditorVisibleRanges(e => {
+      if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
+      this.noteSourceViewportAnchor(document.uri.toString(), e.textEditor, 'sourceVisibleRangesEvent');
     });
 
     // Detect when source editor is closed externally (user closes the tab)
@@ -669,7 +1157,12 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       changeDocumentSubscription.dispose();
       configChangeSubscription.dispose();
       selectionSyncSubscription.dispose();
+      visibleRangesSub.dispose();
       visibleEditorsSub.dispose();
+      this.clearPendingSourceAlignmentTimers(document.uri.toString());
+      this.clearSourceResizeSession(document.uri.toString(), 'dispose');
+      this.latestSourceSyncContext.delete(document.uri.toString());
+      this.pendingSourceOpenSync.delete(document.uri.toString());
       // Clean up pending edits tracking for this document
       this.pendingEdits.delete(document.uri.toString());
       this.lastWebviewContent.delete(document.uri.toString());
@@ -798,20 +1291,43 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       case 'openSourceView':
         // Open the source file in a split view with VS Code's default text editor
         void (async () => {
+          const documentUri = document.uri.toString();
+          this.clearPendingSourceAlignmentTimers(documentUri);
+          this.clearSourceResizeSession(documentUri, 'openSourceView');
+          this.latestSourceSyncContext.delete(documentUri);
+          this.pendingSourceOpenSync.add(documentUri);
           await vscode.commands.executeCommand(
             'vscode.openWith',
             document.uri,
             'default',
             vscode.ViewColumn.Beside
           );
-          // Request current cursor line from webview so source editor scrolls to it
+          // Request current cursor line plus viewport anchor from the webview.
           setTimeout(() => {
             webview.postMessage({ type: 'requestCurrentLine' });
           }, 300);
         })();
         break;
+      case 'sourceResizeSession': {
+        const requestId =
+          typeof message.requestId === 'string' ? message.requestId : null;
+        const phase =
+          message.phase === 'start' || message.phase === 'extend' || message.phase === 'settled'
+            ? message.phase
+            : null;
+        const line = typeof message.line === 'number' ? message.line : null;
+        const viewportRatio =
+          typeof message.viewportRatio === 'number' ? message.viewportRatio : null;
+        if (!phase) {
+          break;
+        }
+        this.handleSourceResizeSessionMessage(document, requestId, phase, line, viewportRatio);
+        break;
+      }
       case 'closeSourceView': {
         // Close the source text editor for this document
+        this.pendingSourceOpenSync.delete(document.uri.toString());
+        this.clearSourceResizeSession(document.uri.toString(), 'closeSourceView');
         const sourceTab = vscode.window.tabGroups.all
           .flatMap(g => g.tabs)
           .find(tab =>
@@ -826,20 +1342,19 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       case 'syncSourceLine': {
         // MFH cursor moved — sync source text editor cursor to the same line
         const line = message.line as number;
+        const viewportRatio =
+          typeof message.viewportRatio === 'number' ? message.viewportRatio : null;
+        const requestId =
+          typeof message.requestId === 'string' ? message.requestId : null;
+        const reason =
+          typeof message.reason === 'string' ? message.reason : null;
         if (typeof line !== 'number' || line < 1) break;
-        const sourceEditor = vscode.window.visibleTextEditors.find(
-          ed => ed.document.uri.toString() === document.uri.toString()
-        );
-        if (sourceEditor) {
-          this._isSyncFromWebview = true;
-          const pos = new vscode.Position(line - 1, 0);
-          sourceEditor.selection = new vscode.Selection(pos, pos);
-          sourceEditor.revealRange(
-            new vscode.Range(pos, pos),
-            vscode.TextEditorRevealType.InCenterIfOutsideViewport
-          );
-          setTimeout(() => { this._isSyncFromWebview = false; }, 300);
-        }
+        this.pendingSourceOpenSync.delete(document.uri.toString());
+        this._isSyncFromWebview = true;
+        this.scheduleSourceAlignment(document, line, viewportRatio, requestId, reason);
+        setTimeout(() => {
+          this._isSyncFromWebview = false;
+        }, 300);
         break;
       }
       case 'openExtensionSettings':

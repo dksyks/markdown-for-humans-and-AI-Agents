@@ -61,11 +61,14 @@ export const window = {
   createStatusBarItem: jest.fn(() => mockStatusBarItem),
   createWebviewPanel: jest.fn(),
   activeTextEditor: undefined as unknown,
+  visibleTextEditors: [] as unknown[],
   showErrorMessage: jest.fn(),
   showInformationMessage: jest.fn(),
   showWarningMessage: jest.fn(),
   onDidChangeActiveTextEditor: jest.fn(() => ({ dispose: jest.fn() })),
   onDidChangeTextEditorSelection: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidChangeTextEditorVisibleRanges: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidChangeVisibleTextEditors: jest.fn(() => ({ dispose: jest.fn() })),
   withProgress: jest.fn((_options, task) => {
     return task(
       {
@@ -129,6 +132,13 @@ export enum ConfigurationTarget {
   WorkspaceFolder = 3,
 }
 
+export const TextEditorRevealType = {
+  Default: 0,
+  InCenter: 1,
+  InCenterIfOutsideViewport: 2,
+  AtTop: 3,
+};
+
 // Mock TextDocument
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createMockTextDocument(content: string, languageId = 'markdown'): any {
@@ -180,6 +190,7 @@ export function resetAllMocks() {
   mockStatusBarItem.tooltip = '';
   mockStatusBarItem.command = undefined;
   window.activeTextEditor = undefined;
+  window.visibleTextEditors = [];
 }
 
 // Default export for module mock
