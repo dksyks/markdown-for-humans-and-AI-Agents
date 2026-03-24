@@ -10,6 +10,7 @@ import './editor.css';
 declare const __BUILD_TIME__: string;
 const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
 const SELECTION_DEBUG_LOGS = false;
+const SOURCE_SELECTION_SYNC_DEBUG_LOGS = true;
 import './codicon.css';
 
 import { Editor } from '@tiptap/core';
@@ -31,7 +32,14 @@ import { GitHubAlerts } from './extensions/githubAlerts';
 import { ImageEnterSpacing } from './extensions/imageEnterSpacing';
 import { MarkdownParagraph } from './extensions/markdownParagraph';
 import { OrderedListMarkdownFix } from './extensions/orderedListMarkdownFix';
-import { LineNumbers, setDocumentFilename, posToMarkdownLine, markdownLineToPos, installGutterResizeObserver } from './extensions/lineNumbers';
+import {
+  LineNumbers,
+  setDocumentFilename,
+  posToMarkdownLine,
+  markdownLineToPos,
+  markdownLineToSelectionRange,
+  installGutterResizeObserver,
+} from './extensions/lineNumbers';
 import { createFormattingToolbar, createTableMenu, updateToolbarStates, updateDisplaySettings } from './BubbleMenuView';
 import { getEditorMarkdownForSync } from './utils/markdownSerialization';
 import {
@@ -56,6 +64,31 @@ interface ResizeSelectionAnchor {
   left: number;
   scrollTop: number;
   editorWidth: number | null;
+}
+
+interface SourceSelectionSyncPayload {
+  activeLine: number;
+  startLine: number;
+  endLine: number;
+  isEmpty: boolean;
+  viewportRatio?: number | null;
+}
+
+interface SyncSourceSelectionMessage extends SourceSelectionSyncPayload {
+  type: 'syncSourceSelection';
+  requestId: string;
+  reason: string;
+}
+
+function logSourceSelectionSync(message: string, data?: unknown): void {
+  if (!SOURCE_SELECTION_SYNC_DEBUG_LOGS) {
+    return;
+  }
+  if (data === undefined) {
+    console.log(`${BUILD_TAG} [source->MFH] ${message}`);
+    return;
+  }
+  console.log(`${BUILD_TAG} [source->MFH] ${message}`, data);
 }
 import {
   buildProposalEditableMarkdown,
@@ -197,10 +230,14 @@ let pendingInitialContent: string | null = null; // Content from host before edi
 let hasSentReadySignal = false;
 let isDomReady = document.readyState !== 'loading';
 let hasAutoOpenedNav = false; // Track if we've already auto-opened nav for this webview
-let lastSyncedSourceLine = -1; // Debounce: only send syncSourceLine when line changes
+let lastSyncedSourceSelectionKey = '';
 let isSyncFromSource = false; // Loop guard: true when scrolling due to source editor sync
+let sourceSyncGuardTimeout: number | null = null;
+let sourceSelectionReplayTimeout: number | null = null;
 let isSourceViewOpen = false; // Track whether source view split is open
 let sourceSyncRequestCounter = 0;
+let lastSourceSelectionPayload: SourceSelectionSyncPayload | null = null;
+let pendingSourceSelectionReplay = false;
 
 /** Check if source view is currently open (used by toolbar button) */
 (window as any).isSourceVisible = () => isSourceViewOpen;
@@ -389,7 +426,7 @@ function readWebviewSelectionViewportRect(): {
   }
 }
 
-function readSourceSyncViewportRatio(editorInstance: Editor): number | null {
+function readSourceSyncViewportRatio(): number | null {
   try {
     const editorRoot = document.querySelector('#editor') as HTMLElement | null;
     const viewportRect = readWebviewSelectionViewportRect();
@@ -399,7 +436,7 @@ function readSourceSyncViewportRatio(editorInstance: Editor): number | null {
     const visibleBottom = Math.min(window.innerHeight, editorRect?.bottom ?? window.innerHeight);
     const visibleHeight = visibleBottom - visibleTop;
 
-    if (!Number.isFinite(selectionViewportTop) || visibleHeight <= 0) {
+    if (selectionViewportTop === null || !Number.isFinite(selectionViewportTop) || visibleHeight <= 0) {
       return null;
     }
 
@@ -418,31 +455,73 @@ function readSourceSyncViewportRatio(editorInstance: Editor): number | null {
   }
 }
 
+function getSourceSelectionSyncKey(payload: {
+  activeLine: number;
+  startLine: number;
+  endLine: number;
+  isEmpty: boolean;
+}): string {
+  return `${payload.activeLine}:${payload.startLine}:${payload.endLine}:${payload.isEmpty}`;
+}
+
+function buildSourceSelectionSyncMessage(
+  editorInstance: Editor,
+  reason: string
+): SyncSourceSelectionMessage | null {
+  const selection = editorInstance.state.selection;
+  const activePos =
+    typeof (selection as { head?: number }).head === 'number'
+      ? (selection as { head: number }).head
+      : selection.to;
+  const startPos = selection.from;
+  const endPos = selection.empty ? selection.to : Math.max(selection.from, selection.to - 1);
+  const activeLine = posToMarkdownLine(editorInstance, activePos);
+  const startLine = posToMarkdownLine(editorInstance, startPos);
+  const endLine = posToMarkdownLine(editorInstance, endPos);
+
+  if (activeLine <= 0 || startLine <= 0 || endLine <= 0) {
+    logSourceSelectionSync('skipped outbound source selection sync due to unmapped lines', {
+      activePos,
+      startPos,
+      endPos,
+      activeLine,
+      startLine,
+      endLine,
+      reason,
+    });
+    return null;
+  }
+
+  return {
+    type: 'syncSourceSelection',
+    requestId: `webview-source-sync-${Date.now()}-${++sourceSyncRequestCounter}`,
+    reason,
+    activeLine,
+    startLine: Math.min(startLine, endLine),
+    endLine: Math.max(startLine, endLine),
+    isEmpty: selection.empty,
+    viewportRatio: readSourceSyncViewportRatio(),
+  };
+}
+
 function postSourceSync(
   editorInstance: Editor,
   options: { force?: boolean; reason?: string } = {}
 ): void {
-  const { from } = editorInstance.state.selection;
-  const sourceLine = posToMarkdownLine(editorInstance, from);
   const reason = options.reason ?? 'unspecified';
-  if (sourceLine <= 0) {
+  const message = buildSourceSelectionSyncMessage(editorInstance, reason);
+  if (!message) {
+    return;
+  }
+  const selectionKey = getSourceSelectionSyncKey(message);
+
+  if (!options.force && selectionKey === lastSyncedSourceSelectionKey) {
     return;
   }
 
-  if (!options.force && sourceLine === lastSyncedSourceLine) {
-    return;
-  }
-
-  lastSyncedSourceLine = sourceLine;
-  const viewportRatio = readSourceSyncViewportRatio(editorInstance);
-  const requestId = `webview-source-sync-${Date.now()}-${++sourceSyncRequestCounter}`;
-  vscode.postMessage({
-    type: 'syncSourceLine',
-    requestId,
-    reason,
-    line: sourceLine,
-    viewportRatio,
-  });
+  lastSyncedSourceSelectionKey = selectionKey;
+  logSourceSelectionSync('posting outbound selection sync to source', message);
+  vscode.postMessage(message);
 }
 
 function postSourceResizeSession(
@@ -451,7 +530,7 @@ function postSourceResizeSession(
 ): void {
   const requestId = `webview-source-resize-${Date.now()}-${++sourceSyncRequestCounter}`;
   const sourceLine = posToMarkdownLine(editorInstance, editorInstance.state.selection.from);
-  const viewportRatio = readSourceSyncViewportRatio(editorInstance);
+  const viewportRatio = readSourceSyncViewportRatio();
   vscode.postMessage({
     type: 'sourceResizeSession',
     requestId,
@@ -459,6 +538,336 @@ function postSourceResizeSession(
     line: sourceLine,
     viewportRatio,
   });
+}
+
+function setSourceSyncGuard(durationMs = 700): void {
+  isSyncFromSource = true;
+  logSourceSelectionSync('source sync guard enabled', { durationMs });
+  if (sourceSyncGuardTimeout) {
+    clearTimeout(sourceSyncGuardTimeout);
+  }
+  sourceSyncGuardTimeout = window.setTimeout(() => {
+    sourceSyncGuardTimeout = null;
+    isSyncFromSource = false;
+    logSourceSelectionSync('source sync guard released');
+  }, durationMs);
+}
+
+function clearPendingSourceSelectionReplay(
+  reason: string,
+  options: { keepPayload?: boolean } = {}
+): void {
+  if (sourceSelectionReplayTimeout) {
+    clearTimeout(sourceSelectionReplayTimeout);
+    sourceSelectionReplayTimeout = null;
+  }
+  pendingSourceSelectionReplay = false;
+  if (!options.keepPayload) {
+    lastSourceSelectionPayload = null;
+  }
+  logSourceSelectionSync('cleared pending source selection replay', {
+    reason,
+    keepPayload: options.keepPayload === true,
+  });
+}
+
+function schedulePendingSourceSelectionReplay(editorInstance: Editor, reason: string): void {
+  if (!pendingSourceSelectionReplay || !lastSourceSelectionPayload) {
+    return;
+  }
+  if (sourceSelectionReplayTimeout) {
+    clearTimeout(sourceSelectionReplayTimeout);
+  }
+  logSourceSelectionSync('scheduled pending source selection replay', {
+    reason,
+    payload: lastSourceSelectionPayload,
+  });
+  sourceSelectionReplayTimeout = window.setTimeout(() => {
+    sourceSelectionReplayTimeout = null;
+    if (!pendingSourceSelectionReplay || !lastSourceSelectionPayload) {
+      logSourceSelectionSync('skipped pending source selection replay', {
+        reason,
+        hasPendingReplay: pendingSourceSelectionReplay,
+        hasPayload: Boolean(lastSourceSelectionPayload),
+      });
+      return;
+    }
+    const payload = lastSourceSelectionPayload;
+    pendingSourceSelectionReplay = false;
+    logSourceSelectionSync('replaying source selection after editor focus', {
+      reason,
+      payload,
+    });
+    applySourceSelectionSync(editorInstance, payload, false);
+  }, 80);
+}
+
+function revealEditorPos(editorInstance: Editor, pos: number): void {
+  requestAnimationFrame(() => {
+    try {
+      const view = editorInstance.view;
+      const domPos = view.domAtPos(pos);
+      let node: Node = domPos.node;
+      if (node.nodeType === Node.TEXT_NODE) {
+        node = node.parentElement as HTMLElement;
+      }
+      const target = node as HTMLElement;
+
+      const toolbar = document.querySelector('.formatting-toolbar');
+      const toolbarHeight = toolbar ? toolbar.getBoundingClientRect().height : 0;
+      const offset = toolbarHeight + 16;
+
+      const scrollContainer = document.documentElement;
+      const targetRect = target.getBoundingClientRect();
+      const currentScrollTop = scrollContainer.scrollTop;
+
+      if (targetRect.top < offset) {
+        scrollContainer.scrollTop = currentScrollTop + targetRect.top - offset;
+      } else if (targetRect.bottom > window.innerHeight) {
+        scrollContainer.scrollTop = currentScrollTop + targetRect.bottom - window.innerHeight + 16;
+      }
+    } catch (error) {
+      console.warn(`${BUILD_TAG} Could not reveal synced source selection:`, error);
+    }
+  });
+}
+
+function alignEditorPosToViewportRatio(
+  editorInstance: Editor,
+  pos: number,
+  viewportRatio: number,
+  passLabel: string
+): void {
+  try {
+    const clampedRatio = Math.min(1, Math.max(0, viewportRatio));
+    const editorRoot = document.querySelector('#editor') as HTMLElement | null;
+    const editorRect = editorRoot?.getBoundingClientRect() ?? null;
+    const visibleTop = Math.max(0, editorRect?.top ?? 0);
+    const visibleBottom = Math.min(window.innerHeight, editorRect?.bottom ?? window.innerHeight);
+    const visibleHeight = visibleBottom - visibleTop;
+    if (visibleHeight <= 0) {
+      return;
+    }
+
+    const coords = editorInstance.view.coordsAtPos(pos);
+    if (!Number.isFinite(coords.top)) {
+      return;
+    }
+
+    const desiredTop = visibleTop + clampedRatio * visibleHeight;
+    const delta = coords.top - desiredTop;
+    if (Math.abs(delta) <= 1) {
+      return;
+    }
+
+    const scrollContainer = getScrollContainer();
+    scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop + delta);
+    logSourceSelectionSync('aligned MFH selection to source viewport ratio', {
+      pos,
+      viewportRatio: clampedRatio,
+      passLabel,
+      selectionTop: coords.top,
+      desiredTop,
+      delta,
+      scrollTop: scrollContainer.scrollTop,
+    });
+  } catch (error) {
+    logSourceSelectionSync('failed to align MFH selection to source viewport ratio', {
+      pos,
+      viewportRatio,
+      passLabel,
+      error,
+    });
+  }
+}
+
+function scheduleSourceSelectionViewportAlignment(
+  editorInstance: Editor,
+  pos: number,
+  viewportRatio: number | null | undefined
+): void {
+  if (typeof viewportRatio !== 'number' || !Number.isFinite(viewportRatio)) {
+    return;
+  }
+
+  [32, 110, 220].forEach(delay => {
+    window.setTimeout(() => {
+      alignEditorPosToViewportRatio(editorInstance, pos, viewportRatio, `${delay}ms`);
+    }, delay);
+  });
+}
+
+function normalizeSourceSelectionSyncPayload(message: any): SourceSelectionSyncPayload | null {
+  logSourceSelectionSync('received raw sync message', message);
+  if (message?.type === 'syncFromSourceLine') {
+    const line = typeof message.line === 'number' ? message.line : null;
+    if (line === null || line < 1) {
+      logSourceSelectionSync('rejected legacy line sync message', { line });
+      return null;
+    }
+    const payload = {
+      activeLine: line,
+      startLine: line,
+      endLine: line,
+      isEmpty: true,
+      viewportRatio:
+        typeof message?.viewportRatio === 'number' ? message.viewportRatio : null,
+    };
+    logSourceSelectionSync('normalized legacy line sync payload', payload);
+    return payload;
+  }
+
+  const activeLine = typeof message?.activeLine === 'number' ? message.activeLine : null;
+  const startLine = typeof message?.startLine === 'number' ? message.startLine : activeLine;
+  const endLine = typeof message?.endLine === 'number' ? message.endLine : startLine;
+  if (activeLine === null || startLine === null || endLine === null) {
+    logSourceSelectionSync('rejected sync payload with missing line data', {
+      activeLine,
+      startLine,
+      endLine,
+    });
+    return null;
+  }
+  if (activeLine < 1 || startLine < 1 || endLine < 1) {
+    logSourceSelectionSync('rejected sync payload with invalid line data', {
+      activeLine,
+      startLine,
+      endLine,
+    });
+    return null;
+  }
+
+  const payload = {
+    activeLine,
+    startLine: Math.min(startLine, endLine),
+    endLine: Math.max(startLine, endLine),
+    isEmpty: typeof message?.isEmpty === 'boolean' ? message.isEmpty : startLine === endLine,
+    viewportRatio:
+      typeof message?.viewportRatio === 'number' ? message.viewportRatio : null,
+  };
+  logSourceSelectionSync('normalized source selection sync payload', payload);
+  return payload;
+}
+
+function readEditorSelectionSnapshot(editorInstance: Editor): {
+  from: number;
+  to: number;
+  empty: boolean;
+} | null {
+  const selection = editorInstance.state?.selection;
+  if (!selection) {
+    return null;
+  }
+  return {
+    from: selection.from,
+    to: selection.to,
+    empty: selection.empty,
+  };
+}
+
+function applySourceSelectionSync(
+  editorInstance: Editor,
+  payload: SourceSelectionSyncPayload,
+  reveal = true
+): boolean {
+  const beforeSelection = readEditorSelectionSnapshot(editorInstance);
+  const activePos = markdownLineToPos(editorInstance, payload.activeLine);
+  logSourceSelectionSync('applying source selection sync', {
+    payload,
+    reveal,
+    beforeSelection,
+    activePos,
+  });
+  if (activePos <= 0) {
+    logSourceSelectionSync('failed to map active line to editor position', {
+      activeLine: payload.activeLine,
+      activePos,
+    });
+    return false;
+  }
+
+  lastSourceSelectionPayload = { ...payload };
+  pendingSourceSelectionReplay = !document.hasFocus() || !editorInstance.isFocused;
+  logSourceSelectionSync('updated source selection replay state', {
+    payload: lastSourceSelectionPayload,
+    pendingSourceSelectionReplay,
+    documentHasFocus: document.hasFocus(),
+    editorIsFocused: editorInstance.isFocused,
+  });
+
+  setSourceSyncGuard();
+
+  if (payload.isEmpty) {
+    editorInstance.commands.setTextSelection(activePos);
+    logSourceSelectionSync('applied collapsed source selection', {
+      activePos,
+      afterSelection: readEditorSelectionSnapshot(editorInstance),
+    });
+    if (reveal) {
+      revealEditorPos(editorInstance, activePos);
+      scheduleSourceSelectionViewportAlignment(editorInstance, activePos, payload.viewportRatio);
+    }
+    window.setTimeout(() => {
+      logSourceSelectionSync('post-apply collapsed selection snapshot', {
+        activeElement: (document.activeElement as HTMLElement | null)?.tagName ?? null,
+        selection: readEditorSelectionSnapshot(editorInstance),
+      });
+    }, 0);
+    return true;
+  }
+
+  const startRange = markdownLineToSelectionRange(editorInstance, payload.startLine);
+  const endRange = markdownLineToSelectionRange(editorInstance, payload.endLine);
+  logSourceSelectionSync('mapped source selection lines to editor ranges', {
+    startLine: payload.startLine,
+    endLine: payload.endLine,
+    startRange,
+    endRange,
+  });
+  if (!startRange || !endRange) {
+    editorInstance.commands.setTextSelection(activePos);
+    logSourceSelectionSync('range mapping incomplete, fell back to active cursor sync', {
+      activePos,
+      startRange,
+      endRange,
+      afterSelection: readEditorSelectionSnapshot(editorInstance),
+    });
+    if (reveal) {
+      revealEditorPos(editorInstance, activePos);
+      scheduleSourceSelectionViewportAlignment(editorInstance, activePos, payload.viewportRatio);
+    }
+    window.setTimeout(() => {
+      logSourceSelectionSync('post-fallback selection snapshot', {
+        activeElement: (document.activeElement as HTMLElement | null)?.tagName ?? null,
+        selection: readEditorSelectionSnapshot(editorInstance),
+      });
+    }, 0);
+    return true;
+  }
+
+  const appliedRange = {
+    from: Math.min(startRange.from, endRange.from),
+    to: Math.max(startRange.to, endRange.to),
+  };
+  editorInstance.commands.setTextSelection({
+    from: appliedRange.from,
+    to: appliedRange.to,
+  });
+  logSourceSelectionSync('applied mapped source selection range', {
+    appliedRange,
+    afterSelection: readEditorSelectionSnapshot(editorInstance),
+  });
+  if (reveal) {
+    revealEditorPos(editorInstance, activePos);
+    scheduleSourceSelectionViewportAlignment(editorInstance, activePos, payload.viewportRatio);
+  }
+  window.setTimeout(() => {
+    logSourceSelectionSync('post-apply range selection snapshot', {
+      activeElement: (document.activeElement as HTMLElement | null)?.tagName ?? null,
+      selection: readEditorSelectionSnapshot(editorInstance),
+    });
+  }, 0);
+  return true;
 }
 
 function setProposalTargetSpacer(height: number) {
@@ -1649,6 +2058,15 @@ function initializeEditor(initialContent: string) {
           selectionUpdateTimeout = null;
           try {
             const { from, empty } = editor.state.selection;
+            if (isSyncFromSource) {
+              logSourceSelectionSync('onSelectionUpdate fired while source sync guard is active', {
+                from,
+                to: editor.state.selection.to,
+                empty,
+              });
+            } else if (document.hasFocus() && (pendingSourceSelectionReplay || lastSourceSelectionPayload)) {
+              clearPendingSourceSelectionReplay('user-driven MFH selection update');
+            }
             vscode.postMessage({ type: 'selectionChange', pos: from });
 
             // Record navigation history: always debounce; record when cursor stops for 1s
@@ -1871,6 +2289,7 @@ function initializeEditor(initialContent: string) {
     const editorDom = editorInstance.view.dom;
     editorDom.addEventListener('focus', () => {
       window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
+      schedulePendingSourceSelectionReplay(editorInstance, 'editor-focus');
     });
     editorDom.addEventListener('blur', (event: FocusEvent) => {
       const relatedTarget = event.relatedTarget as HTMLElement | null;
@@ -2397,17 +2816,16 @@ window.addEventListener('message', (event: MessageEvent) => {
         }
         break;
       }
+      case 'syncFromSourceSelection':
       case 'syncFromSourceLine': {
-        // Source editor cursor moved — scroll MFH to match without stealing focus
         if (!editor) break;
-        const syncLine = message.line as number;
-        if (typeof syncLine !== 'number' || syncLine < 1) break;
-        const syncPos = markdownLineToPos(editor, syncLine);
-        if (syncPos > 0) {
-          isSyncFromSource = true;
-          scrollToPos(editor, syncPos, true); // scroll without focus
-          setTimeout(() => { isSyncFromSource = false; }, 300);
-        }
+        logSourceSelectionSync('handling inbound source sync message', {
+          type: message.type,
+          message,
+        });
+        const syncPayload = normalizeSourceSelectionSyncPayload(message);
+        if (!syncPayload) break;
+        applySourceSelectionSync(editor, syncPayload);
         break;
       }
       case 'requestCurrentLine': {
@@ -3187,12 +3605,36 @@ export const __testing = {
   trackSentContentForTests(content: string) {
     trackSentContent(content);
   },
+  applySourceSelectionSyncForTests(payload: SourceSelectionSyncPayload) {
+    if (!editor) {
+      return false;
+    }
+    return applySourceSelectionSync(editor, payload, false);
+  },
+  postSourceSyncForTests(options: { force?: boolean; reason?: string } = {}) {
+    if (!editor) {
+      return;
+    }
+    postSourceSync(editor, options);
+  },
   getLastSentContentHash() {
     return lastSentContentHash;
   },
   resetSyncState() {
     lastSentContentHash = null;
     lastSentTimestamp = 0;
+    lastSyncedSourceSelectionKey = '';
+    isSyncFromSource = false;
+    pendingSourceSelectionReplay = false;
+    lastSourceSelectionPayload = null;
+    if (sourceSyncGuardTimeout) {
+      clearTimeout(sourceSyncGuardTimeout);
+      sourceSyncGuardTimeout = null;
+    }
+    if (sourceSelectionReplayTimeout) {
+      clearTimeout(sourceSelectionReplayTimeout);
+      sourceSelectionReplayTimeout = null;
+    }
   },
 };
 

@@ -12,7 +12,6 @@ import { scrollToHeading } from '../utils/scrollToHeading';
  * TOC Panel state
  */
 let tocWrapperElement: HTMLElement | null = null;
-let tocResizeHandle: HTMLElement | null = null;
 let isVisible = false;
 let panelWidth = 220; // default width in px
 const MIN_PANEL_WIDTH = 120;
@@ -131,7 +130,6 @@ export function createTocPanel(editor: Editor): HTMLElement {
   // Create resize handle
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'toc-panel-resize-handle';
-  tocResizeHandle = resizeHandle;
 
   // Assemble: panel holds list + resize handle
   panel.appendChild(listContainer);
@@ -312,7 +310,7 @@ export function showTocOverlay(editor: Editor): void {
 /**
  * Hide the TOC panel
  */
-export function hideTocOverlay(editor: Editor, restorePosition = true): void {
+export function hideTocOverlay(editor: Editor): void {
   if (!tocWrapperElement) return;
 
   tocWrapperElement.classList.remove('visible');

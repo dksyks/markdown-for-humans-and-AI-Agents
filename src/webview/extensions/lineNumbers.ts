@@ -652,6 +652,56 @@ export function markdownLineToPos(editor: any, targetLine: number): number {
 }
 
 /**
+ * Given a 1-based markdown line number, return the top-level block selection
+ * range that contains that line. Returns null if not found.
+ */
+export function markdownLineToSelectionRange(
+  editor: any,
+  targetLine: number
+): { from: number; to: number } | null {
+  const markdown = getEditorMarkdownForSync(editor);
+  if (!markdown) return null;
+  const lines = markdown.split('\n');
+  const doc = editor.state.doc;
+  let lineIndex = 0;
+  let result: { from: number; to: number } | null = null;
+
+  doc.forEach((node: any, offset: number) => {
+    if (result) return;
+
+    const typeName = node.type.name;
+    if (typeName === 'paragraph') {
+      const text = node.textContent || '';
+      if (
+        text.trim() === '' &&
+        (!node.content ||
+          node.content.size === 0 ||
+          (node.content.size === 1 && node.content.firstChild?.type?.name === 'hardBreak'))
+      ) {
+        return;
+      }
+    }
+
+    const contentLineIndex = findBlockLine(node, lines, lineIndex);
+    const countFrom = Math.max(lineIndex, contentLineIndex >= 0 ? contentLineIndex : lineIndex);
+    const blockLines = countBlockLines(node, lines, countFrom);
+    const blockEndLine = countFrom + blockLines;
+    const target0 = targetLine - 1;
+
+    if (contentLineIndex >= 0 && target0 >= contentLineIndex && target0 < blockEndLine) {
+      const from = offset + 1;
+      const to = Math.max(from, offset + node.nodeSize - 1);
+      result = { from, to };
+      return;
+    }
+
+    lineIndex = blockEndLine;
+  });
+
+  return result;
+}
+
+/**
  * Build decorations for all top-level blocks.
  */
 function buildDecorations(doc: any, editor: any): DecorationSet {

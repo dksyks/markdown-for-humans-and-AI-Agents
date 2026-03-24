@@ -6,6 +6,7 @@
 
 declare const __BUILD_TIME__: string;
 const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
+const SOURCE_SELECTION_SYNC_DEBUG_LOGS = true;
 
 import * as vscode from 'vscode';
 import * as path from 'path';
@@ -54,6 +55,107 @@ interface SourceResizeSessionState {
   lastPhase: string | null;
   requestedLine: number | null;
   requestedViewportRatio: number | null;
+}
+
+export interface SourceSelectionSyncPayload {
+  type: 'syncFromSourceSelection';
+  activeLine: number;
+  startLine: number;
+  endLine: number;
+  isEmpty: boolean;
+  viewportRatio?: number | null;
+}
+
+interface SyncSourceSelectionMessage {
+  type: 'syncSourceSelection';
+  activeLine: number;
+  startLine: number;
+  endLine: number;
+  isEmpty: boolean;
+  viewportRatio?: number | null;
+  requestId?: string | null;
+  reason?: string | null;
+}
+
+function getInclusiveSourceSelectionEndLine(selection: vscode.Selection): number {
+  if (selection.isEmpty) {
+    return selection.end.line;
+  }
+
+  if (selection.end.character === 0 && selection.end.line > selection.start.line) {
+    return selection.end.line - 1;
+  }
+
+  return selection.end.line;
+}
+
+export function getEffectiveSourceSelectionLine(selection: vscode.Selection): number {
+  if (selection.isEmpty) {
+    return selection.active.line;
+  }
+
+  if (selection.end.character === 0 && selection.end.line > selection.start.line) {
+    return selection.end.line - 1;
+  }
+
+  return selection.active.line;
+}
+
+export function buildSourceSelectionSyncPayload(
+  selection: vscode.Selection,
+  viewportRatio: number | null = null
+): SourceSelectionSyncPayload {
+  return {
+    type: 'syncFromSourceSelection',
+    activeLine: getEffectiveSourceSelectionLine(selection) + 1,
+    startLine: selection.start.line + 1,
+    endLine: getInclusiveSourceSelectionEndLine(selection) + 1,
+    isEmpty: selection.isEmpty,
+    viewportRatio,
+  };
+}
+
+function logSourceSelectionSync(message: string, data?: unknown): void {
+  if (!SOURCE_SELECTION_SYNC_DEBUG_LOGS) {
+    return;
+  }
+  if (data === undefined) {
+    console.log(`${BUILD_TAG} [source->MFH] ${message}`);
+    return;
+  }
+  console.log(`${BUILD_TAG} [source->MFH] ${message}`, data);
+}
+
+function getDocumentPathLike(document: vscode.TextDocument): string {
+  const uriFsPath = (document.uri as { fsPath?: unknown }).fsPath;
+  if (typeof uriFsPath === 'string' && uriFsPath.length > 0) {
+    return uriFsPath;
+  }
+
+  if (typeof document.fileName === 'string' && document.fileName.length > 0) {
+    return document.fileName;
+  }
+
+  const uriPath = (document.uri as { path?: unknown }).path;
+  if (typeof uriPath === 'string' && uriPath.length > 0) {
+    return uriPath;
+  }
+
+  const uriString = document.uri.toString();
+  const normalizedUri = uriString.replace(/^[a-z]+:(\/\/)?/i, '');
+  return normalizedUri || 'document';
+}
+
+function getDocumentDisplayName(document: vscode.TextDocument): string {
+  if (document.uri.scheme === 'untitled') {
+    return 'Untitled';
+  }
+
+  return path.basename(getDocumentPathLike(document)) || 'document';
+}
+
+function createNoopDisposable(): vscode.Disposable {
+  return { dispose() {} } as vscode.Disposable;
 }
 
 export function getInstanceTempDir(instanceId: string = getEditorHostInstanceId()): string {
@@ -477,18 +579,6 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     session.requestedViewportRatio = null;
   }
 
-  private getEffectiveSourceSelectionLine(selection: vscode.Selection): number {
-    if (selection.isEmpty) {
-      return selection.active.line;
-    }
-
-    if (selection.end.character === 0 && selection.end.line > selection.start.line) {
-      return selection.end.line - 1;
-    }
-
-    return selection.active.line;
-  }
-
   private captureSourceViewportAnchor(sourceEditor: vscode.TextEditor): SourceViewportAnchor | null {
     const primaryVisibleRange = sourceEditor.visibleRanges[0];
     if (!primaryVisibleRange) {
@@ -499,7 +589,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     const visibleStartLine = primaryVisibleRange.start.line;
     const visibleEndLine = primaryVisibleRange.end.line;
     const visibleLineCount = Math.max(1, visibleEndLine - visibleStartLine);
-    const activeLine = this.getEffectiveSourceSelectionLine(selection);
+    const activeLine = getEffectiveSourceSelectionLine(selection);
     const viewportRatio = Math.min(
       1,
       Math.max(0, (activeLine - visibleStartLine) / visibleLineCount)
@@ -540,7 +630,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     }
 
     const visibleLineCount = Math.max(1, primaryVisibleRange.end.line - primaryVisibleRange.start.line);
-    const effectiveLine = this.getEffectiveSourceSelectionLine(sourceEditor.selection);
+    const effectiveLine = getEffectiveSourceSelectionLine(sourceEditor.selection);
     const ratio = Math.min(
       1,
       Math.max(0, (effectiveLine - primaryVisibleRange.start.line) / visibleLineCount)
@@ -801,17 +891,70 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     return Math.max(0, Math.min(sourceEditor.document.lineCount - 1, targetTopLine));
   }
 
+  private buildWholeLineSourceSelection(
+    sourceEditor: vscode.TextEditor,
+    startLine: number,
+    endLine: number
+  ): vscode.Selection {
+    const clampedStartLine = Math.max(1, Math.min(startLine, sourceEditor.document.lineCount));
+    const clampedEndLine = Math.max(
+      clampedStartLine,
+      Math.min(endLine, sourceEditor.document.lineCount)
+    );
+    const selectionStart = new vscode.Position(clampedStartLine - 1, 0);
+
+    if (clampedEndLine < sourceEditor.document.lineCount) {
+      return new vscode.Selection(new vscode.Position(clampedEndLine, 0), selectionStart);
+    }
+
+    const lastLineText = sourceEditor.document.lineAt(clampedEndLine - 1).text;
+    return new vscode.Selection(
+      new vscode.Position(clampedEndLine - 1, lastLineText.length),
+      selectionStart
+    );
+  }
+
   private alignSourceEditorViewport(
     sourceEditor: vscode.TextEditor,
-    line: number,
+    selectionPayload:
+      | number
+      | {
+          activeLine: number;
+          startLine: number;
+          endLine: number;
+          isEmpty: boolean;
+        },
     viewportRatio: number | null,
     requestId: string | null,
     reason: string | null,
     passLabel: string
   ): void {
-    const clampedLine = Math.max(1, Math.min(line, sourceEditor.document.lineCount));
-    const pos = new vscode.Position(clampedLine - 1, 0);
-    sourceEditor.selection = new vscode.Selection(pos, pos);
+    const normalizedSelection =
+      typeof selectionPayload === 'number'
+        ? {
+            activeLine: selectionPayload,
+            startLine: selectionPayload,
+            endLine: selectionPayload,
+            isEmpty: true,
+          }
+        : selectionPayload;
+    const clampedLine = Math.max(
+      1,
+      Math.min(normalizedSelection.activeLine, sourceEditor.document.lineCount)
+    );
+    const clampedStartLine = Math.max(
+      1,
+      Math.min(normalizedSelection.startLine, sourceEditor.document.lineCount)
+    );
+    const clampedEndLine = Math.max(
+      clampedStartLine,
+      Math.min(normalizedSelection.endLine, sourceEditor.document.lineCount)
+    );
+    sourceEditor.selection = this.buildWholeLineSourceSelection(
+      sourceEditor,
+      clampedStartLine,
+      clampedEndLine
+    );
 
     const targetTopLine = this.computeSourceRevealTopLine(sourceEditor, clampedLine, viewportRatio);
     if (targetTopLine !== null) {
@@ -832,7 +975,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     }
 
     sourceEditor.revealRange(
-      new vscode.Range(pos, pos),
+      new vscode.Range(sourceEditor.selection.active, sourceEditor.selection.active),
       vscode.TextEditorRevealType.InCenterIfOutsideViewport
     );
     if (passLabel === '180ms') {
@@ -844,17 +987,34 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
 
   private scheduleSourceAlignment(
     document: vscode.TextDocument,
-    line: number,
+    selectionPayload:
+      | number
+      | {
+          activeLine: number;
+          startLine: number;
+          endLine: number;
+          isEmpty: boolean;
+        },
     viewportRatio: number | null,
     requestId: string | null,
     reason: string | null
   ): void {
     const documentUri = document.uri.toString();
     this.clearPendingSourceAlignmentTimers(documentUri);
+    const normalizedSelection =
+      typeof selectionPayload === 'number'
+        ? {
+            activeLine: selectionPayload,
+            startLine: selectionPayload,
+            endLine: selectionPayload,
+            isEmpty: true,
+          }
+        : selectionPayload;
     this.latestSourceSyncContext.set(documentUri, {
       requestId,
       reason,
-      line,
+      selectionPayload: normalizedSelection,
+      line: normalizedSelection.activeLine,
       viewportRatio,
       receivedAt: Date.now(),
     });
@@ -867,7 +1027,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         }
         this.alignSourceEditorViewport(
           sourceEditor,
-          line,
+          normalizedSelection,
           viewportRatio,
           requestId,
           reason,
@@ -1008,6 +1168,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
+    const documentPathLike = getDocumentPathLike(document);
+
     // Setup webview options
     // Allow loading resources from extension and the workspace folder containing the document
     let workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
@@ -1078,10 +1240,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     // Track this editor so proposal routing can find the correct document in this window.
     registerWebviewPanel(webviewPanel, document);
     setActiveWebviewPanel(webviewPanel, document);
-    writeActiveInstanceMetadata(document.uri.fsPath);
-    const initialSelectionPayload = buildSelectionPayload(document.uri.fsPath, {});
+    writeActiveInstanceMetadata(documentPathLike);
+    const initialSelectionPayload = buildSelectionPayload(documentPathLike, {});
     writeSelectionToTempFile(initialSelectionPayload);
-    writeSelectionStateForDocument(document.uri.fsPath, initialSelectionPayload);
+    writeSelectionStateForDocument(documentPathLike, initialSelectionPayload);
 
     // Send initial content to webview
     this.updateWebview(document, webviewPanel.webview);
@@ -1114,7 +1276,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     webviewPanel.onDidChangeViewState(() => {
       if (webviewPanel.active) {
         markWebviewPanelActive(webviewPanel);
-        writeActiveInstanceMetadata(document.uri.fsPath);
+        writeActiveInstanceMetadata(documentPathLike);
         webviewPanel.webview.postMessage({ type: 'getSelection' });
         webviewPanel.webview.postMessage({ type: 'getOutline' });
       } else if (getActiveWebviewPanel() === webviewPanel) {
@@ -1124,33 +1286,72 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
 
     // Source-to-MFH cursor sync: when cursor moves in the source text editor,
     // tell the webview so it can scroll to the corresponding block.
-    let lastSourceSyncLine = -1;
-    const selectionSyncSubscription = vscode.window.onDidChangeTextEditorSelection(e => {
-      if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
-      if (this._isSyncFromWebview) return;
-      // Only sync from the editor the user is actively interacting with
-      if (e.textEditor !== vscode.window.activeTextEditor) return;
-      const line = e.selections[0].active.line + 1; // 1-based
-      this.noteSourceViewportAnchor(document.uri.toString(), e.textEditor, 'sourceSelectionEvent');
-      if (line === lastSourceSyncLine) return;
-      lastSourceSyncLine = line;
-      webviewPanel.webview.postMessage({ type: 'syncFromSourceLine', line });
-    });
+    let lastSourceSyncSelectionKey = '';
+    const selectionSyncSubscription =
+      typeof vscode.window.onDidChangeTextEditorSelection === 'function'
+        ? vscode.window.onDidChangeTextEditorSelection(e => {
+            if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
+            if (this._isSyncFromWebview) return;
+            // Only sync from the editor the user is actively interacting with
+            if (e.textEditor !== vscode.window.activeTextEditor) return;
+            const selection = e.textEditor.selection ?? e.selections[0];
+            if (!selection) return;
+            const viewportRatio = this.computeCurrentSourceViewportRatio(e.textEditor)?.ratio ?? null;
+            const payload = buildSourceSelectionSyncPayload(selection, viewportRatio);
+            const selectionKey =
+              `${payload.activeLine}:${payload.startLine}:${payload.endLine}:${payload.isEmpty}:${payload.viewportRatio ?? 'null'}`;
+            logSourceSelectionSync('selection event', {
+              document: document.uri.toString(),
+              selectionKey,
+              anchor: {
+                line: selection.anchor.line + 1,
+                character: selection.anchor.character,
+              },
+              active: {
+                line: selection.active.line + 1,
+                character: selection.active.character,
+              },
+              start: {
+                line: selection.start.line + 1,
+                character: selection.start.character,
+              },
+              end: {
+                line: selection.end.line + 1,
+                character: selection.end.character,
+              },
+              payload,
+            });
+            this.noteSourceViewportAnchor(document.uri.toString(), e.textEditor, 'sourceSelectionEvent');
+            if (selectionKey === lastSourceSyncSelectionKey) {
+              logSourceSelectionSync('selection event deduped', { selectionKey });
+              return;
+            }
+            lastSourceSyncSelectionKey = selectionKey;
+            logSourceSelectionSync('posting selection payload to webview', payload);
+            webviewPanel.webview.postMessage(payload);
+          })
+        : createNoopDisposable();
 
-    const visibleRangesSub = vscode.window.onDidChangeTextEditorVisibleRanges(e => {
-      if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
-      this.noteSourceViewportAnchor(document.uri.toString(), e.textEditor, 'sourceVisibleRangesEvent');
-    });
+    const visibleRangesSub =
+      typeof vscode.window.onDidChangeTextEditorVisibleRanges === 'function'
+        ? vscode.window.onDidChangeTextEditorVisibleRanges(e => {
+            if (e.textEditor.document.uri.toString() !== document.uri.toString()) return;
+            this.noteSourceViewportAnchor(document.uri.toString(), e.textEditor, 'sourceVisibleRangesEvent');
+          })
+        : createNoopDisposable();
 
     // Detect when source editor is closed externally (user closes the tab)
-    const visibleEditorsSub = vscode.window.onDidChangeVisibleTextEditors(editors => {
-      const sourceStillOpen = editors.some(
-        ed => ed.document.uri.toString() === document.uri.toString()
-      );
-      if (!sourceStillOpen) {
-        webviewPanel.webview.postMessage({ type: 'sourceViewClosed' });
-      }
-    });
+    const visibleEditorsSub =
+      typeof vscode.window.onDidChangeVisibleTextEditors === 'function'
+        ? vscode.window.onDidChangeVisibleTextEditors(editors => {
+            const sourceStillOpen = editors.some(
+              ed => ed.document.uri.toString() === document.uri.toString()
+            );
+            if (!sourceStillOpen) {
+              webviewPanel.webview.postMessage({ type: 'sourceViewClosed' });
+            }
+          })
+        : createNoopDisposable();
 
     // Cleanup
     webviewPanel.onDidDispose(() => {
@@ -1166,8 +1367,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       // Clean up pending edits tracking for this document
       this.pendingEdits.delete(document.uri.toString());
       this.lastWebviewContent.delete(document.uri.toString());
-      clearSelectionTempFileIfMatches(document.uri.fsPath);
-      clearSelectionStateFileForDocument(document.uri.fsPath);
+      clearSelectionTempFileIfMatches(documentPathLike);
+      clearSelectionStateFileForDocument(documentPathLike);
       unregisterWebviewPanel(webviewPanel);
     });
   }
@@ -1210,9 +1411,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     );
 
     // Extract filename for webview display
-    const fileName = document.uri.scheme === 'untitled'
-      ? 'Untitled'
-      : path.basename(document.uri.fsPath);
+    const fileName = getDocumentDisplayName(document);
 
     webview.postMessage({
       type: 'update',
@@ -1233,6 +1432,8 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     document: vscode.TextDocument,
     webview: vscode.Webview
   ) {
+    const documentPathLike = getDocumentPathLike(document);
+
     switch (message.type) {
       case 'edit':
         // Fire-and-forget: errors are handled inside applyEdit and shown to user
@@ -1273,10 +1474,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         break;
       }
       case 'selectionPush': {
-        const selectionPayload = buildSelectionPayload(document.uri.fsPath, message);
+        const selectionPayload = buildSelectionPayload(documentPathLike, message);
         writeSelectionToTempFile(selectionPayload);
-        writeSelectionStateForDocument(document.uri.fsPath, selectionPayload);
-        writeActiveInstanceMetadata(document.uri.fsPath);
+        writeSelectionStateForDocument(documentPathLike, selectionPayload);
+        writeActiveInstanceMetadata(documentPathLike);
         break;
       }
       case 'saveImage':
@@ -1337,6 +1538,43 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         if (sourceTab) {
           void vscode.window.tabGroups.close(sourceTab);
         }
+        break;
+      }
+      case 'syncSourceSelection': {
+        const syncMessage = message as unknown as SyncSourceSelectionMessage;
+        const activeLine = syncMessage.activeLine;
+        const startLine =
+          typeof syncMessage.startLine === 'number' ? syncMessage.startLine : activeLine;
+        const endLine =
+          typeof syncMessage.endLine === 'number' ? syncMessage.endLine : startLine;
+        const isEmpty =
+          typeof syncMessage.isEmpty === 'boolean' ? syncMessage.isEmpty : startLine === endLine;
+        const viewportRatio =
+          typeof syncMessage.viewportRatio === 'number' ? syncMessage.viewportRatio : null;
+        const requestId =
+          typeof syncMessage.requestId === 'string' ? syncMessage.requestId : null;
+        const reason =
+          typeof syncMessage.reason === 'string' ? syncMessage.reason : null;
+        if (typeof activeLine !== 'number' || activeLine < 1) break;
+        if (typeof startLine !== 'number' || startLine < 1) break;
+        if (typeof endLine !== 'number' || endLine < 1) break;
+        this.pendingSourceOpenSync.delete(document.uri.toString());
+        this._isSyncFromWebview = true;
+        this.scheduleSourceAlignment(
+          document,
+          {
+            activeLine,
+            startLine: Math.min(startLine, endLine),
+            endLine: Math.max(startLine, endLine),
+            isEmpty,
+          },
+          viewportRatio,
+          requestId,
+          reason
+        );
+        setTimeout(() => {
+          this._isSyncFromWebview = false;
+        }, 300);
         break;
       }
       case 'syncSourceLine': {
@@ -1421,10 +1659,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         void this.handleOpenImage(message, document);
         break;
       case 'selectionResult': {
-        const selectionResult = buildSelectionPayload(document.uri.fsPath, message);
+        const selectionResult = buildSelectionPayload(documentPathLike, message);
         writeSelectionToTempFile(selectionResult);
-        writeSelectionStateForDocument(document.uri.fsPath, selectionResult);
-        writeActiveInstanceMetadata(document.uri.fsPath);
+        writeSelectionStateForDocument(documentPathLike, selectionResult);
+        writeActiveInstanceMetadata(documentPathLike);
         if (this.pendingSelectionResolve) {
           this.pendingSelectionResolve(JSON.stringify(selectionResult));
           this.pendingSelectionResolve = undefined;
@@ -1436,7 +1674,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           selection_request_id: message.id,
           id: message.id,
           status: message.status === 'revealed' ? 'revealed' : 'error',
-          file: document.uri.fsPath,
+          file: documentPathLike,
           ...(message.error ? { error: message.error } : {}),
           ...(message.debug ? { debug: message.debug } : {}),
         });
@@ -1458,7 +1696,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         if (this.pendingSelectionResolve) {
           const timedOutSelectionResult = {
             instance_id: getEditorHostInstanceId(),
-            file: document.uri.fsPath,
+            file: getDocumentPathLike(document),
             selected: null,
           };
           this.pendingSelectionResolve(JSON.stringify(timedOutSelectionResult));

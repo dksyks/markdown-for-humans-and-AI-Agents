@@ -99,6 +99,13 @@ describe('ProposalPanel', () => {
       type: 'revealCurrentProposalSelection',
     });
     expect(postMessage).toHaveBeenNthCalledWith(4, {
+      type: 'revealCurrentProposalSelection',
+    });
+
+    jest.advanceTimersByTime(200);
+
+    expect(postMessage).toHaveBeenCalledTimes(5);
+    expect(postMessage).toHaveBeenNthCalledWith(5, {
       type: 'selectProposalSelection',
       original: '**Note:** Test',
       context_before: 'Before',

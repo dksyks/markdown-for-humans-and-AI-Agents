@@ -168,6 +168,26 @@ export class Selection {
     public active: { line: number; character: number }
   ) {}
 
+  get start(): { line: number; character: number } {
+    if (this.anchor.line < this.active.line) {
+      return this.anchor;
+    }
+    if (this.anchor.line > this.active.line) {
+      return this.active;
+    }
+    return this.anchor.character <= this.active.character ? this.anchor : this.active;
+  }
+
+  get end(): { line: number; character: number } {
+    if (this.anchor.line > this.active.line) {
+      return this.anchor;
+    }
+    if (this.anchor.line < this.active.line) {
+      return this.active;
+    }
+    return this.anchor.character >= this.active.character ? this.anchor : this.active;
+  }
+
   get isEmpty(): boolean {
     return this.anchor.line === this.active.line && this.anchor.character === this.active.character;
   }

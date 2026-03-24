@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
-import { MarkdownEditorProvider } from '../../editor/MarkdownEditorProvider';
+import {
+  buildSourceSelectionSyncPayload,
+  MarkdownEditorProvider,
+} from '../../editor/MarkdownEditorProvider';
 
 type TestDocument = {
   uri: { toString: () => string };
@@ -14,6 +17,56 @@ function createDocument(lineCount = 200): TestDocument {
     lineCount,
   };
 }
+
+describe('buildSourceSelectionSyncPayload', () => {
+  it('builds a 1-based collapsed selection payload from the active source cursor', () => {
+    const selection = new vscode.Selection(
+      new vscode.Position(6, 4),
+      new vscode.Position(6, 4)
+    );
+
+    expect(buildSourceSelectionSyncPayload(selection)).toEqual({
+      type: 'syncFromSourceSelection',
+      activeLine: 7,
+      startLine: 7,
+      endLine: 7,
+      isEmpty: true,
+      viewportRatio: null,
+    });
+  });
+
+  it('treats a trailing whole-line source selection end as inclusive of the previous line', () => {
+    const selection = new vscode.Selection(
+      new vscode.Position(2, 0),
+      new vscode.Position(5, 0)
+    );
+
+    expect(buildSourceSelectionSyncPayload(selection)).toEqual({
+      type: 'syncFromSourceSelection',
+      activeLine: 5,
+      startLine: 3,
+      endLine: 5,
+      isEmpty: false,
+      viewportRatio: null,
+    });
+  });
+
+  it('includes the source viewport ratio when provided', () => {
+    const selection = new vscode.Selection(
+      new vscode.Position(10, 2),
+      new vscode.Position(10, 2)
+    );
+
+    expect(buildSourceSelectionSyncPayload(selection, 0.375)).toEqual({
+      type: 'syncFromSourceSelection',
+      activeLine: 11,
+      startLine: 11,
+      endLine: 11,
+      isEmpty: true,
+      viewportRatio: 0.375,
+    });
+  });
+});
 
 describe('MarkdownEditorProvider source sync alignment', () => {
   beforeEach(() => {
@@ -114,6 +167,58 @@ describe('MarkdownEditorProvider source sync alignment', () => {
       }),
       vscode.TextEditorRevealType.InCenterIfOutsideViewport
     );
+  });
+
+  it('applies a whole-line selection range when MFH sends a source selection sync', () => {
+    const provider = new MarkdownEditorProvider({} as vscode.ExtensionContext);
+    const document = createDocument(200);
+    const revealRange = jest.fn();
+    const sourceEditor = {
+      document: {
+        uri: document.uri,
+        lineCount: 200,
+        lineAt: (line: number) => ({ text: `line-${line}` }),
+      },
+      visibleRanges: [
+        new vscode.Range(
+          new vscode.Position(10, 0),
+          new vscode.Position(30, 0)
+        ),
+      ],
+      selection: null as unknown as vscode.Selection,
+      revealRange,
+    };
+
+    (vscode.window as unknown as { visibleTextEditors: unknown[] }).visibleTextEditors = [sourceEditor];
+
+    (
+      provider as unknown as {
+        handleWebviewMessage: (
+          message: { type: string; [key: string]: unknown },
+          document: vscode.TextDocument,
+          webview: vscode.Webview
+        ) => void;
+      }
+    ).handleWebviewMessage(
+      {
+        type: 'syncSourceSelection',
+        activeLine: 12,
+        startLine: 10,
+        endLine: 12,
+        isEmpty: false,
+        viewportRatio: 0.5,
+      },
+      document as unknown as vscode.TextDocument,
+      {} as vscode.Webview
+    );
+
+    jest.runAllTimers();
+
+    expect(sourceEditor.selection.start.line).toBe(9);
+    expect(sourceEditor.selection.start.character).toBe(0);
+    expect(sourceEditor.selection.end.line).toBe(12);
+    expect(sourceEditor.selection.end.character).toBe(0);
+    expect(sourceEditor.selection.active.line).toBe(9);
   });
 
   it('compensates when AtTop reveal lands above the desired logical line during resize preservation', () => {
