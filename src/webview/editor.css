@@ -1615,6 +1615,8 @@
     border-radius: 6px;
     box-shadow: 0 4px 12px var(--vscode-widget-shadow);
     min-width: 160px;
+    max-width: calc(100vw - 16px);
+    box-sizing: border-box;
     z-index: 1000;
     overflow: hidden;
   }
@@ -1662,6 +1664,42 @@
   .toolbar-dropdown-checkbox {
     margin-right: 4px;
     font-size: 0.9em;
+  }
+
+  .toolbar-dropdown-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+
+  .toolbar-dropdown-input-label {
+    color: var(--vscode-dropdown-foreground);
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: text;
+  }
+
+  .toolbar-dropdown-input {
+    flex: 0 0 70px;
+    width: 70px;
+    min-width: 70px;
+    padding: 4px 6px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, var(--vscode-dropdown-border));
+    border-radius: 4px;
+    color: var(--vscode-input-foreground);
+    font-size: 12px;
+  }
+
+  .toolbar-dropdown-input:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 0;
+  }
+
+  .toolbar-dropdown-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   /* Heading widget — groups Hx/P + arrows + dropdown as one flex row */
@@ -1998,6 +2036,15 @@
 
   .line-copy-toast.fade-out {
     opacity: 0;
+  }
+
+  .line-copy-toast.goto-line-warning-toast {
+    background-color: var(
+      --vscode-inputValidation-warningBackground,
+      color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 22%, var(--vscode-editor-background) 78%)
+    );
+    color: var(--vscode-editor-foreground);
+    border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground, #cca700));
   }
 
   /* ============================================
@@ -2360,8 +2407,10 @@
     border: 1px solid var(--vscode-editorWidget-border);
     border-radius: 8px;
     box-shadow: 0 4px 16px var(--vscode-widget-shadow);
-    min-width: 380px;
-    max-width: 600px;
+    width: min(600px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    min-width: 0;
+    box-sizing: border-box;
   }
 
   .search-overlay-chevron {
@@ -2479,6 +2528,75 @@
     display: flex;
     align-items: center;
     gap: 2px;
+  }
+
+  @media (max-width: 560px) {
+    .search-overlay {
+      padding-left: 6px;
+      padding-right: 6px;
+    }
+
+    .search-overlay-panel {
+      width: calc(100vw - 12px);
+      max-width: calc(100vw - 12px);
+      padding: 8px;
+      gap: 8px;
+      align-items: flex-start;
+    }
+
+    .search-overlay-rows {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .search-overlay-find-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .search-overlay-replace-row.visible {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .search-overlay-find-actions,
+    .search-overlay-replace-actions {
+      width: 100%;
+      min-width: 0;
+      justify-content: space-between;
+    }
+
+    .search-overlay-toggles,
+    .search-overlay-buttons {
+      flex-wrap: nowrap;
+    }
+
+    .search-overlay-toggles {
+      margin-right: 0;
+    }
+
+    .search-overlay-buttons {
+      margin-left: 0;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+
+    .search-overlay-input {
+      min-width: 0;
+    }
+
+    .search-overlay-counter,
+    .search-overlay-replace-counter {
+      min-width: 0;
+      width: auto;
+    }
+
+    .search-overlay-btn {
+      padding: 4px;
+    }
   }
   
   .search-overlay-btn {

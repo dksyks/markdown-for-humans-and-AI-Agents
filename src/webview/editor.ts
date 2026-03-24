@@ -40,7 +40,13 @@ import {
   markdownLineToSelectionRange,
   installGutterResizeObserver,
 } from './extensions/lineNumbers';
-import { createFormattingToolbar, createTableMenu, updateToolbarStates } from './BubbleMenuView';
+import {
+  createFormattingToolbar,
+  createTableMenu,
+  openGotoLineInput,
+  setVisibleGotoLineInputValue,
+  updateToolbarStates,
+} from './BubbleMenuView';
 import { getEditorMarkdownForSync } from './utils/markdownSerialization';
 import {
   setupImageDragDrop,
@@ -48,7 +54,17 @@ import {
   getPendingImageCount,
 } from './features/imageDragDrop';
 import { toggleTocOverlay, setTocPanelWidth, showTocOverlay, isTocVisible, updateActiveHeading, refreshTocList } from './features/tocOverlay';
-import { toggleSearchOverlay, toggleReplaceOverlay, isSearchVisible, searchNext, searchPrev, replaceAll } from './features/searchOverlay';
+import {
+  toggleSearchOverlay,
+  toggleReplaceOverlay,
+  isSearchVisible,
+  hideSearchOverlay,
+  focusVisibleSearchInput,
+  searchNext,
+  searchPrev,
+  replaceAll,
+  consumePendingSelectionNavigationHistorySuppression,
+} from './features/searchOverlay';
 import { showLinkDialog } from './features/linkDialog';
 import { processPasteContent, parseFencedCode } from './utils/pasteHandler';
 import { copySelectionAsMarkdown, getRangeAsMarkdown, getSelectionAsMarkdown } from './utils/copyMarkdown';
@@ -58,6 +74,7 @@ import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
 import { renderProposalRedlineHtml, renderMarkdownHtml } from './utils/proposalRedline';
 import { updateDisplaySettings } from './displaySettings';
+import { shouldPreserveFocusedElementOnWindowFocus } from './utils/focusRouting';
 
 interface ResizeSelectionAnchor {
   pos: number;
@@ -303,6 +320,77 @@ function navRecordPosition(pos: number, immediate = false): void {
   }
 }
 
+function pushNavigationBackEntry(pos: number): void {
+  const lastBackEntry = navBack.length > 0 ? navBack[navBack.length - 1] : null;
+  if (lastBackEntry !== null && Math.abs(lastBackEntry - pos) < 100) {
+    return;
+  }
+  navBack.push(pos);
+  if (navBack.length > NAV_HISTORY_MAX) {
+    navBack.shift();
+  }
+}
+
+function showGotoLineWarning(message: string): void {
+  document.querySelectorAll('.goto-line-warning-toast').forEach(toast => toast.remove());
+
+  const toast = document.createElement('div');
+  toast.className = 'line-copy-toast goto-line-warning-toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add('fade-out');
+    setTimeout(() => toast.remove(), 300);
+  }, 2200);
+}
+
+function goToMarkdownLine(editorInstance: Editor, requestedLineNumber: number): boolean {
+  const lineNumber = Math.trunc(requestedLineNumber);
+  const markdown = getEditorMarkdownForSync(editorInstance) ?? '';
+  const maxLineCount = Math.max(1, markdown.split('\n').length);
+
+  if (!Number.isFinite(lineNumber) || lineNumber < 1 || lineNumber > maxLineCount) {
+    setVisibleGotoLineInputValue(String(maxLineCount));
+    showGotoLineWarning(`Line ${lineNumber} is outside document range 1-${maxLineCount}.`);
+    return false;
+  }
+
+  let resolvedLineNumber = lineNumber;
+  let dest = markdownLineToPos(editorInstance, resolvedLineNumber);
+
+  while (dest < 0 && resolvedLineNumber > 1) {
+    resolvedLineNumber--;
+    dest = markdownLineToPos(editorInstance, resolvedLineNumber);
+  }
+
+  if (dest < 0) {
+    showGotoLineWarning(`Could not find markdown line ${lineNumber} or any earlier mappable line.`);
+    return false;
+  }
+
+  const currentPos = editorInstance.state.selection.from;
+  if (navDebounceTimer !== null) {
+    clearTimeout(navDebounceTimer);
+    navDebounceTimer = null;
+  }
+
+  if (currentPos !== dest) {
+    pushNavigationBackEntry(currentPos);
+    navForward = [];
+  }
+  navLastRecorded = dest;
+
+  navIsJumping = true;
+  try {
+    scrollToPos(editorInstance, dest, true, true);
+  } finally {
+    navIsJumping = false;
+  }
+
+  return true;
+}
+
 /**
  * Simple hash function (djb2 algorithm) for content deduplication
  */
@@ -454,6 +542,16 @@ function readSourceSyncViewportRatio(): number | null {
   } catch {
     return null;
   }
+}
+
+function recordSelectionUpdateNavigationPosition(pos: number): void {
+  if (consumePendingSelectionNavigationHistorySuppression()) {
+    return;
+  }
+  if (isSearchVisible()) {
+    return;
+  }
+  navRecordPosition(pos);
 }
 
 function getSourceSelectionSyncKey(payload: {
@@ -2073,8 +2171,9 @@ function initializeEditor(initialContent: string) {
             }
             vscode.postMessage({ type: 'selectionChange', pos: from });
 
-            // Record navigation history: always debounce; record when cursor stops for 1s
-            navRecordPosition(from);
+            // Record navigation history for ordinary cursor movement, but not
+            // for passive search-driven selection updates.
+            recordSelectionUpdateNavigationPosition(from);
             let selected = empty ? null : getSelectionAsMarkdown(editor);
             const fullMarkdown = getEditorMarkdownForSync(editor);
             let context_before: string | null = null;
@@ -2319,9 +2418,7 @@ function initializeEditor(initialContent: string) {
       if (editorInstance && !editorInstance.isFocused) {
         setTimeout(() => {
           const active = document.activeElement;
-          const isInNavPane = active?.closest('#toc-panel-wrapper');
-          const isInToolbar = active?.closest('.formatting-toolbar');
-          if (!isInNavPane && !isInToolbar) {
+          if (!shouldPreserveFocusedElementOnWindowFocus(active)) {
             editorInstance.commands.focus();
           }
         }, 50);
@@ -2408,6 +2505,14 @@ function initializeEditor(initialContent: string) {
     const keydownHandler = (e: KeyboardEvent) => {
       const isMod = e.metaKey || e.ctrlKey; // Cmd on Mac, Ctrl on Windows/Linux
 
+      if (e.key === 'Escape' && isSearchVisible()) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (editor) hideSearchOverlay(editor, false);
+        return;
+      }
+
       // Save shortcut - immediate save
       if (isMod && e.key === 's') {
         console.log(`${BUILD_TAG} *** SAVE SHORTCUT TRIGGERED ***`);
@@ -2451,10 +2556,14 @@ function initializeEditor(initialContent: string) {
       }
 
       // Intercept Cmd/Ctrl+F for in-document search
-      if (isMod && e.key === 'f') {
+      if (isMod && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         e.stopPropagation();
-        if (editor) toggleSearchOverlay(editor);
+        e.stopImmediatePropagation();
+        if (editor) {
+          toggleSearchOverlay(editor);
+          focusVisibleSearchInput();
+        }
         return;
       }
 
@@ -3276,6 +3385,10 @@ window.addEventListener('message', (event: MessageEvent) => {
         navIsJumping = false;
         break;
       }
+      case 'openGotoLine': {
+        openGotoLineInput();
+        break;
+      }
       case 'fileSearchResults': {
         import('./features/linkDialog').then(({ handleFileSearchResults }) => {
           const results = message.results as Array<{ filename: string; path: string }>;
@@ -3308,7 +3421,6 @@ function updateEditorContent(markdown: string) {
       // Also check timestamp to allow legitimate identical content after a delay
       const timeSinceLastSend = Date.now() - lastSentTimestamp;
       if (timeSinceLastSend < 2000) {
-        console.log(`${BUILD_TAG} Ignoring update (matches content we just sent)`);
         return;
       }
     }
@@ -3316,7 +3428,6 @@ function updateEditorContent(markdown: string) {
     // Don't update if user edited recently (within 2 seconds)
     const timeSinceLastEdit = Date.now() - lastUserEditTime;
     if (timeSinceLastEdit < 2000) {
-      console.log(`${BUILD_TAG} Skipping update - user recently edited (${timeSinceLastEdit}ms ago)`);
       return;
     }
 
@@ -3325,18 +3436,14 @@ function updateEditorContent(markdown: string) {
     const startTime = performance.now();
     const docSize = markdown.length;
 
-    console.log(`${BUILD_TAG} Updating content (${docSize} chars)...`);
-
     // Skip if content is already in sync
     const currentMarkdown = getEditorMarkdownForSync(editor);
     if (currentMarkdown === markdown) {
-      console.log(`${BUILD_TAG} Update skipped (content unchanged)`);
       return;
     }
 
     // Save cursor position
     const { from, to } = editor.state.selection;
-    console.log(`${BUILD_TAG} Saving cursor position: ${from}-${to}`);
 
     // Set content
     editor.commands.setContent(markdown, { contentType: 'markdown' });
@@ -3344,7 +3451,6 @@ function updateEditorContent(markdown: string) {
     // Restore cursor position
     try {
       editor.commands.setTextSelection({ from, to });
-      console.log(`${BUILD_TAG} Restored cursor position: ${from}-${to}`);
     } catch {
       console.warn(`${BUILD_TAG} Could not restore exact cursor position, using safe position`);
       // If exact position fails, move to end of document
@@ -3355,7 +3461,6 @@ function updateEditorContent(markdown: string) {
     pushOutlineUpdate();
 
     const duration = performance.now() - startTime;
-    console.log(`${BUILD_TAG} Content updated in ${duration.toFixed(2)}ms`);
 
     if (duration > 1000) {
       console.warn(`${BUILD_TAG} Slow update: ${duration.toFixed(2)}ms for ${docSize} chars`);
@@ -3401,6 +3506,7 @@ if (document.readyState === 'loading') {
 window.addEventListener('openFind', () => {
   if (editor) {
     toggleSearchOverlay(editor);
+    focusVisibleSearchInput();
   }
 });
 
@@ -3423,6 +3529,13 @@ window.addEventListener('navigateForward', () => {
   navLastRecorded = dest;
   scrollToPos(editor, dest);
   navIsJumping = false;
+});
+
+window.addEventListener('gotoLine', (e: Event) => {
+  if (!editor) return;
+  const detail = (e as CustomEvent<{ lineNumber?: number }>).detail;
+  if (!detail || typeof detail.lineNumber !== 'number') return;
+  goToMarkdownLine(editor, detail.lineNumber);
 });
 
 window.addEventListener('navRecordPosition', (e: Event) => {
@@ -3639,6 +3752,32 @@ export const __testing = {
       clearTimeout(sourceSelectionReplayTimeout);
       sourceSelectionReplayTimeout = null;
     }
+  },
+  resetNavigationHistoryForTests() {
+    navBack = [];
+    navForward = [];
+    navLastRecorded = null;
+    navIsJumping = false;
+    if (navDebounceTimer !== null) {
+      clearTimeout(navDebounceTimer);
+      navDebounceTimer = null;
+    }
+  },
+  getNavigationHistoryForTests() {
+    return {
+      back: [...navBack],
+      forward: [...navForward],
+      lastRecorded: navLastRecorded,
+    };
+  },
+  recordSelectionUpdateNavigationForTests(pos: number) {
+    recordSelectionUpdateNavigationPosition(pos);
+  },
+  goToMarkdownLineForTests(lineNumber: number) {
+    if (!editor) {
+      return false;
+    }
+    return goToMarkdownLine(editor, lineNumber);
   },
 };
 

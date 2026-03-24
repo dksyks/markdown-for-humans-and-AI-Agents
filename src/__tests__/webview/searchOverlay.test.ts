@@ -57,6 +57,8 @@ import {
   findMatches,
   showSearchOverlay,
   hideSearchOverlay,
+  isSearchVisible,
+  toggleSearchOverlay,
 } from '../../webview/features/searchOverlay';
 
 type MockEditor = {
@@ -345,6 +347,57 @@ describe('Search Overlay UI behaviors', () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it('retries focusing the search input after the overlay opens', () => {
+    const focusSpy = jest.spyOn(HTMLInputElement.prototype, 'focus');
+
+    showSearchOverlay(editor as unknown as Editor);
+    jest.runOnlyPendingTimers();
+
+    const input = document.querySelector('.search-overlay-input') as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    expect(focusSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    focusSpy.mockRestore();
+  });
+
+  it('keeps the visible search overlay open and refocuses the input when find is requested again', () => {
+    showSearchOverlay(editor as unknown as Editor);
+    jest.runOnlyPendingTimers();
+
+    const input = document.querySelector('.search-overlay-input') as HTMLInputElement;
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+
+    toggleSearchOverlay(editor as unknown as Editor);
+    jest.runOnlyPendingTimers();
+
+    expect(isSearchVisible()).toBe(true);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('does not record breadcrumbs when search opens, auto-matches, refines, or closes', () => {
+    const navRecordHandler = jest.fn();
+    window.addEventListener('navRecordPosition', navRecordHandler as EventListener);
+
+    showSearchOverlay(editor as unknown as Editor);
+    const input = document.querySelector('.search-overlay-input') as HTMLInputElement;
+
+    input.value = 'he';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    jest.runOnlyPendingTimers();
+
+    input.value = 'hello';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    jest.runOnlyPendingTimers();
+
+    hideSearchOverlay(editor as unknown as Editor, false);
+
+    expect(navRecordHandler).not.toHaveBeenCalled();
+
+    window.removeEventListener('navRecordPosition', navRecordHandler as EventListener);
+  });
+
   it('Cmd/Ctrl+A selects all text within the search input', () => {
     showSearchOverlay(editor as unknown as Editor);
     const input = document.querySelector('.search-overlay-input') as HTMLInputElement;
@@ -378,6 +431,46 @@ describe('Search Overlay UI behaviors', () => {
     const secondSelection = editor.commands.setTextSelection.mock.calls.at(-1)?.[0];
     expect(secondSelection?.from).toBeGreaterThan(firstSelection.from);
     expect(document.activeElement).toBe(input);
+  });
+
+  it('records a breadcrumb only when navigating to the next search result', () => {
+    const navRecordHandler = jest.fn();
+    window.addEventListener('navRecordPosition', navRecordHandler as EventListener);
+
+    showSearchOverlay(editor as unknown as Editor);
+    const input = document.querySelector('.search-overlay-input') as HTMLInputElement;
+    input.value = 'hello';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    jest.runOnlyPendingTimers();
+
+    const firstSelection = editor.commands.setTextSelection.mock.calls.at(-1)?.[0];
+    expect(firstSelection?.from).toBeDefined();
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    expect(navRecordHandler).toHaveBeenCalledTimes(1);
+    const navEvent = navRecordHandler.mock.calls[0][0] as CustomEvent<{ pos: number; immediate: boolean }>;
+    expect(navEvent.detail).toEqual({
+      pos: firstSelection.from,
+      immediate: true,
+    });
+
+    window.removeEventListener('navRecordPosition', navRecordHandler as EventListener);
+  });
+
+  it('Escape closes search without bubbling to document-level navigation handlers', () => {
+    showSearchOverlay(editor as unknown as Editor);
+    const input = document.querySelector('.search-overlay-input') as HTMLInputElement;
+    const docEscapeHandler = jest.fn();
+    document.addEventListener('keydown', docEscapeHandler);
+
+    const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
+    input.dispatchEvent(escapeEvent);
+
+    expect(isSearchVisible()).toBe(false);
+    expect(docEscapeHandler).not.toHaveBeenCalled();
+
+    document.removeEventListener('keydown', docEscapeHandler);
   });
 });
 

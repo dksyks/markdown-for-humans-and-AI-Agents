@@ -28,6 +28,7 @@ jest.mock('../../webview/features/imageInsertDialog', () => ({
 describe('BubbleMenuView', () => {
   let createFormattingToolbar: (editor: Editor) => HTMLElement;
   let createTableMenu: (editor: Editor) => HTMLElement;
+  let openGotoLineInput: () => boolean;
   let updateToolbarStates: () => void;
 
   beforeEach(async () => {
@@ -38,6 +39,7 @@ describe('BubbleMenuView', () => {
     const module = await import('../../webview/BubbleMenuView');
     createFormattingToolbar = module.createFormattingToolbar;
     createTableMenu = module.createTableMenu;
+    openGotoLineInput = module.openGotoLineInput;
     updateToolbarStates = module.updateToolbarStates;
   });
 
@@ -72,6 +74,9 @@ describe('BubbleMenuView', () => {
 
     return {
       chain,
+      commands: {
+        focus: jest.fn(),
+      },
       isActive: jest.fn().mockReturnValue(false),
       on: jest.fn(), // Event listener registration
       off: jest.fn(), // Event listener removal
@@ -160,6 +165,172 @@ describe('BubbleMenuView', () => {
       expect(systemSettingsItem?.title).toBe(
         'Open the full Markdown for Humans settings in VS Code.'
       );
+    });
+
+    it('repositions the settings dropdown to stay inside the right viewport edge', () => {
+      const editor = createMockEditor();
+      const toolbar = createFormattingToolbar(editor);
+      document.body.appendChild(toolbar);
+
+      const settingsButton = toolbar.querySelector('button.settings-dropdown') as HTMLButtonElement;
+      const settingsMenuCandidate = Array.from(document.body.querySelectorAll('.toolbar-dropdown-menu')).find(menu =>
+        menu.textContent?.includes('Text Colors')
+      ) as HTMLDivElement | undefined;
+
+      expect(settingsButton).toBeTruthy();
+      expect(settingsMenuCandidate).toBeTruthy();
+      const settingsMenu = settingsMenuCandidate as HTMLDivElement;
+
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: 1000,
+      });
+
+      settingsButton.getBoundingClientRect = jest.fn(() => ({
+        x: 930,
+        y: 12,
+        left: 930,
+        top: 12,
+        right: 954,
+        bottom: 36,
+        width: 24,
+        height: 24,
+        toJSON: () => ({}),
+      })) as typeof settingsButton.getBoundingClientRect;
+
+      settingsMenu.getBoundingClientRect = jest.fn(() => ({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 180,
+        bottom: 220,
+        width: 180,
+        height: 220,
+        toJSON: () => ({}),
+      })) as typeof settingsMenu.getBoundingClientRect;
+
+      settingsButton.click();
+
+      expect(settingsMenu.style.display).toBe('block');
+      expect(settingsMenu.style.left).toBe('812px');
+      expect(settingsMenu.style.top).toBe('40px');
+    });
+
+    it('closes regular toolbar dropdowns when Escape is pressed', () => {
+      const editor = createMockEditor();
+      const toolbar = createFormattingToolbar(editor);
+      document.body.appendChild(toolbar);
+
+      const settingsButton = toolbar.querySelector('button.settings-dropdown') as HTMLButtonElement;
+      const settingsMenuCandidate = Array.from(document.body.querySelectorAll('.toolbar-dropdown-menu')).find(menu =>
+        menu.textContent?.includes('Text Colors')
+      ) as HTMLDivElement | undefined;
+      expect(settingsMenuCandidate).toBeTruthy();
+      const settingsMenu = settingsMenuCandidate as HTMLDivElement;
+
+      settingsButton.click();
+      expect(settingsMenu.style.display).toBe('block');
+      expect(settingsButton.getAttribute('aria-expanded')).toBe('true');
+      settingsButton.focus();
+      expect(document.activeElement).toBe(settingsButton);
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      expect(settingsMenu.style.display).toBe('none');
+      expect(settingsButton.getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement).not.toBe(settingsButton);
+    });
+
+    it('closes the heading widget dropdown when Escape is pressed', () => {
+      const editor = createMockEditor();
+      const toolbar = createFormattingToolbar(editor);
+      document.body.appendChild(toolbar);
+      window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
+
+      const headingButton = toolbar.querySelector(
+        '.toolbar-heading-widget button[aria-label="Heading level"]'
+      ) as HTMLButtonElement;
+      const headingMenuCandidate = Array.from(document.body.querySelectorAll('.toolbar-dropdown-menu')).find(menu =>
+        menu.textContent?.includes('Paragraph (P)')
+      ) as HTMLDivElement | undefined;
+      expect(headingMenuCandidate).toBeTruthy();
+      const headingMenu = headingMenuCandidate as HTMLDivElement;
+
+      headingButton.click();
+      expect(headingMenu.style.display).toBe('block');
+      expect(headingButton.getAttribute('aria-expanded')).toBe('true');
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      expect(headingMenu.style.display).toBe('none');
+      expect(headingButton.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('adds a persistent Goto Line input under the Go menu and keeps it open on Enter', () => {
+      const editor = createMockEditor();
+      const toolbar = createFormattingToolbar(editor);
+      document.body.appendChild(toolbar);
+
+      const goButton = toolbar.querySelector(
+        'button[aria-label="Navigate insertion point history"]'
+      ) as HTMLButtonElement;
+      const gotoLineHandler = jest.fn();
+      window.addEventListener('gotoLine', gotoLineHandler as EventListener);
+
+      goButton.click();
+
+      const goMenu = Array.from(document.body.querySelectorAll('.toolbar-dropdown-menu')).find(menu =>
+        menu.textContent?.includes('Go Back')
+      ) as HTMLDivElement | undefined;
+      expect(goMenu).toBeTruthy();
+
+      const separator = goMenu?.querySelector('.toolbar-dropdown-sep');
+      const gotoInputRow = goMenu?.querySelector('.toolbar-dropdown-input-row') as HTMLDivElement | null;
+      const gotoInput = goMenu?.querySelector('.toolbar-dropdown-input') as HTMLInputElement | null;
+      const gotoLabel = goMenu?.querySelector('.toolbar-dropdown-input-label');
+
+      expect(separator).toBeTruthy();
+      expect(gotoLabel?.textContent).toBe('Goto Line');
+      expect(gotoInputRow?.title).toBe('Go to markdown source line (Ctrl+Alt+G)');
+      expect(gotoInput).toBeTruthy();
+
+      gotoInput!.focus();
+      gotoInput!.value = '42';
+      gotoInput!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+      expect(goMenu?.style.display).toBe('block');
+      expect(document.activeElement).toBe(gotoInput);
+      expect(gotoLineHandler).toHaveBeenCalledTimes(1);
+      let event = gotoLineHandler.mock.calls[0][0] as CustomEvent<{ lineNumber: number }>;
+      expect(event.detail.lineNumber).toBe(42);
+
+      gotoInput!.value = '200';
+      gotoInput!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+      expect(goMenu?.style.display).toBe('block');
+      expect(gotoLineHandler).toHaveBeenCalledTimes(2);
+      event = gotoLineHandler.mock.calls[1][0] as CustomEvent<{ lineNumber: number }>;
+      expect(event.detail.lineNumber).toBe(200);
+
+      window.removeEventListener('gotoLine', gotoLineHandler as EventListener);
+    });
+
+    it('opens the Go menu and focuses the Goto Line input when requested programmatically', () => {
+      const editor = createMockEditor();
+      const toolbar = createFormattingToolbar(editor);
+      document.body.appendChild(toolbar);
+
+      expect(openGotoLineInput()).toBe(true);
+
+      const goMenu = Array.from(document.body.querySelectorAll('.toolbar-dropdown-menu')).find(menu => {
+        const input = menu.querySelector('.toolbar-dropdown-input') as HTMLInputElement | null;
+        return input && (menu as HTMLDivElement).style.display === 'block';
+      }) as HTMLDivElement | undefined;
+      const gotoInput = goMenu?.querySelector('.toolbar-dropdown-input') as HTMLInputElement | null;
+
+      expect(goMenu?.style.display).toBe('block');
+      expect(document.activeElement).toBe(gotoInput);
     });
   });
 

@@ -39,6 +39,7 @@ let currentQuery = '';
 let currentMatches: Array<{ from: number; to: number }> = [];
 let currentMatchIndex = -1;
 let searchPlugin: Plugin | null = null;
+let pendingSelectionNavigationHistorySuppressions = 0;
 
 // Search mode state
 let isCaseSensitive = false;
@@ -223,6 +224,7 @@ function clearSearchDecorations(editor: Editor) {
 function scrollToMatch(editor: Editor, match: { from: number; to: number }) {
   const shouldRefocusInput = isVisible;
 
+  pendingSelectionNavigationHistorySuppressions++;
   editor.commands.setTextSelection({ from: match.from, to: match.to });
 
   try {
@@ -251,7 +253,7 @@ function scrollToMatch(editor: Editor, match: { from: number; to: number }) {
     const replaceInput = searchOverlayElement?.querySelector('.search-overlay-replace-input') as HTMLInputElement | null;
     const activeIsReplace = document.activeElement === replaceInput;
     if (isReplaceVisible && activeIsReplace) {
-      replaceInput?.focus();
+      focusReplaceInput();
     } else {
       focusSearchInput(false);
     }
@@ -462,6 +464,12 @@ function performSearch(editor: Editor, query: string) {
 
 function goToNextMatch(editor: Editor) {
   if (currentMatches.length === 0) return;
+  const currentMatch = currentMatches[currentMatchIndex];
+  if (currentMatch) {
+    window.dispatchEvent(
+      new CustomEvent('navRecordPosition', { detail: { pos: currentMatch.from, immediate: true } })
+    );
+  }
   currentMatchIndex = (currentMatchIndex + 1) % currentMatches.length;
   applySearchDecorations(editor, currentMatches, currentMatchIndex);
   scrollToMatch(editor, currentMatches[currentMatchIndex]);
@@ -474,6 +482,12 @@ function goToNextMatch(editor: Editor) {
 
 function goToPreviousMatch(editor: Editor) {
   if (currentMatches.length === 0) return;
+  const currentMatch = currentMatches[currentMatchIndex];
+  if (currentMatch) {
+    window.dispatchEvent(
+      new CustomEvent('navRecordPosition', { detail: { pos: currentMatch.from, immediate: true } })
+    );
+  }
   currentMatchIndex = (currentMatchIndex - 1 + currentMatches.length) % currentMatches.length;
   applySearchDecorations(editor, currentMatches, currentMatchIndex);
   scrollToMatch(editor, currentMatches[currentMatchIndex]);
@@ -894,9 +908,9 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
       : '<span class="codicon codicon-chevron-right"></span>';
     replaceRow.classList.toggle('visible', isReplaceVisible);
     if (isReplaceVisible) {
-      setTimeout(() => replaceInput.focus(), 0);
+      focusReplaceInput();
     } else {
-      searchInput.focus();
+      focusSearchInput(false);
     }
   };
 
@@ -933,6 +947,7 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
 
     if (e.key === 'Escape') {
       e.preventDefault();
+      e.stopPropagation();
       hideSearchOverlay(editor);
     } else if (e.key === 'Enter' && !isMod) {
       e.preventDefault();
@@ -962,6 +977,7 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
     const isMod = e.metaKey || e.ctrlKey;
     if (e.key === 'Escape') {
       e.preventDefault();
+      e.stopPropagation();
       hideSearchOverlay(editor);
     } else if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
@@ -982,6 +998,14 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
   });
 
   overlay.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (document.activeElement !== searchInput && document.activeElement !== replaceInput) {
+        hideSearchOverlay(editor);
+      }
+      return;
+    }
     if (document.activeElement === searchInput) return;
     if (document.activeElement === replaceInput) return;
     if (e.key !== 'Tab') e.stopPropagation();
@@ -995,13 +1019,45 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
 
 // ─── Focus ────────────────────────────────────────────────────────────────────
 
+function scheduleOverlayFocus(applyFocus: () => void) {
+  applyFocus();
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => applyFocus());
+  }
+  setTimeout(applyFocus, 0);
+  setTimeout(applyFocus, 75);
+}
+
 function focusSearchInput(selectText = true) {
   const searchInput = searchOverlayElement?.querySelector(
     '.search-overlay-input'
   ) as HTMLInputElement | null;
   if (!searchInput) return;
-  searchInput.focus();
-  if (selectText) searchInput.select();
+  const applyFocus = () => {
+    try {
+      searchInput.focus({ preventScroll: true });
+    } catch {
+      searchInput.focus();
+    }
+    if (selectText) searchInput.select();
+  };
+  scheduleOverlayFocus(applyFocus);
+}
+
+function focusReplaceInput(selectText = false) {
+  const replaceInput = searchOverlayElement?.querySelector(
+    '.search-overlay-replace-input'
+  ) as HTMLInputElement | null;
+  if (!replaceInput) return;
+  const applyFocus = () => {
+    try {
+      replaceInput.focus({ preventScroll: true });
+    } catch {
+      replaceInput.focus();
+    }
+    if (selectText) replaceInput.select();
+  };
+  scheduleOverlayFocus(applyFocus);
 }
 
 // ─── Show / Hide / Toggle ─────────────────────────────────────────────────────
@@ -1018,7 +1074,6 @@ export function showSearchOverlay(editor: Editor, openReplace = false): void {
 
   const { from, to } = editor.state.selection;
   savedSelection = { from, to };
-  window.dispatchEvent(new CustomEvent('navRecordPosition', { detail: { pos: from, immediate: true } }));
 
   const selectedText = editor.state.doc.textBetween(from, to, ' ');
 
@@ -1048,10 +1103,7 @@ export function showSearchOverlay(editor: Editor, openReplace = false): void {
   }
 
   if (openReplace && isReplaceVisible) {
-    const replaceInput = searchOverlayElement?.querySelector(
-      '.search-overlay-replace-input'
-    ) as HTMLInputElement | null;
-    replaceInput?.focus();
+    focusReplaceInput();
   } else {
     focusSearchInput();
   }
@@ -1089,6 +1141,7 @@ export function hideSearchOverlay(editor: Editor, restorePosition = false): void
 
   if (restorePosition && savedSelection) {
     try {
+      pendingSelectionNavigationHistorySuppressions++;
       editor.commands.setTextSelection(savedSelection);
     } catch {
       // ignore
@@ -1096,17 +1149,14 @@ export function hideSearchOverlay(editor: Editor, restorePosition = false): void
   }
 
   editor.commands.focus();
-  // Record final landing position as breadcrumb
-  window.dispatchEvent(new CustomEvent('navRecordPosition', { detail: { pos: editor.state.selection.from, immediate: true } }));
 }
 
 export function toggleSearchOverlay(editor: Editor): void {
   if (isVisible) {
-    hideSearchOverlay(editor, true);
-    showSearchOverlay(editor, false);
-  } else {
-    showSearchOverlay(editor, false);
+    focusSearchInput();
+    return;
   }
+  showSearchOverlay(editor, false);
 }
 
 export function toggleReplaceOverlay(editor: Editor): void {
@@ -1128,12 +1178,9 @@ export function toggleReplaceOverlay(editor: Editor): void {
   }
   if (replaceRow) replaceRow.classList.toggle('visible', isReplaceVisible);
   if (isReplaceVisible) {
-    setTimeout(() => {
-      const replaceInput = searchOverlayElement?.querySelector('.search-overlay-replace-input') as HTMLInputElement | null;
-      replaceInput?.focus();
-    }, 50);
+    focusReplaceInput();
   } else {
-    focusSearchInput();
+    focusSearchInput(false);
   }
 }
 
@@ -1141,6 +1188,11 @@ export function toggleReplaceOverlay(editor: Editor): void {
 
 export function isSearchVisible(): boolean {
   return isVisible;
+}
+
+export function focusVisibleSearchInput(selectText = true): void {
+  if (!isVisible) return;
+  focusSearchInput(selectText);
 }
 
 export function getCurrentMatches(): Array<{ from: number; to: number }> {
@@ -1163,4 +1215,12 @@ export function replaceAll(editor: Editor): void {
   replaceAllMatches(editor);
   const searchInput = searchOverlayElement?.querySelector('.search-overlay-input') as HTMLInputElement | null;
   if (searchInput) searchInput.focus();
+}
+
+export function consumePendingSelectionNavigationHistorySuppression(): boolean {
+  if (pendingSelectionNavigationHistorySuppressions <= 0) {
+    return false;
+  }
+  pendingSelectionNavigationHistorySuppressions--;
+  return true;
 }

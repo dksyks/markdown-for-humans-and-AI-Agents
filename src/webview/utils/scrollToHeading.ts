@@ -9,7 +9,7 @@ const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
 
 import { Editor } from '@tiptap/core';
 
-export function scrollToPos(editor: Editor, pos: number, noFocus = false) {
+export function scrollToPos(editor: Editor, pos: number, noFocus = false, centerInViewport = false) {
   editor.commands.setTextSelection(pos);
   if (!noFocus) editor.commands.focus();
 
@@ -30,6 +30,15 @@ export function scrollToPos(editor: Editor, pos: number, noFocus = false) {
       const scrollContainer = document.documentElement;
       const targetRect = target.getBoundingClientRect();
       const currentScrollTop = scrollContainer.scrollTop;
+
+      if (centerInViewport) {
+        const visibleTop = offset;
+        const visibleBottomPadding = 16;
+        const visibleHeight = Math.max(0, window.innerHeight - visibleTop - visibleBottomPadding);
+        const desiredTop = visibleTop + visibleHeight / 2 - targetRect.height / 2;
+        scrollContainer.scrollTop = currentScrollTop + targetRect.top - desiredTop;
+        return;
+      }
 
       // Only scroll if the target is obscured by the toolbar or out of view
       if (targetRect.top < offset) {

@@ -3553,7 +3553,6 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     try {
       const config = vscode.workspace.getConfiguration();
       await config.update(key, value, vscode.ConfigurationTarget.Global);
-      console.log(`${BUILD_TAG} Setting updated: ${key} = ${value}`);
 
       // Immediately notify webview of the setting change
       // This ensures the setting takes effect right away without waiting for next update

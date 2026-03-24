@@ -45,6 +45,8 @@ jest.mock('./../../webview/extensions/lineNumbers', () => ({
 jest.mock('./../../webview/BubbleMenuView', () => ({
   createFormattingToolbar: () => ({}),
   createTableMenu: () => ({}),
+  openGotoLineInput: jest.fn(() => false),
+  setVisibleGotoLineInputValue: jest.fn(() => false),
   updateToolbarStates: jest.fn(),
 }));
 jest.mock('./../../webview/displaySettings', () => ({
@@ -72,9 +74,12 @@ jest.mock('./../../webview/features/searchOverlay', () => ({
   toggleSearchOverlay: jest.fn(),
   toggleReplaceOverlay: jest.fn(),
   isSearchVisible: jest.fn(() => false),
+  hideSearchOverlay: jest.fn(),
+  focusVisibleSearchInput: jest.fn(),
   searchNext: jest.fn(),
   searchPrev: jest.fn(),
   replaceAll: jest.fn(),
+  consumePendingSelectionNavigationHistorySuppression: jest.fn(() => false),
 }));
 jest.mock('./../../webview/utils/exportContent', () => ({
   collectExportContent: jest.fn(),

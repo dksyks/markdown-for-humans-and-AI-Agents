@@ -82,6 +82,7 @@ function setCodeBlockNormalized(editor: Editor, language: string): void {
 // Track editor focus state
 let isEditorFocused = false;
 let focusChangeListener: ((e: Event) => void) | null = null;
+let activeDropdownOwnerEditor: Editor | null = null;
 
 type ToolbarIcon = {
   name?: string;
@@ -100,7 +101,8 @@ type ToolbarActionButton = {
   requiresFocus?: boolean; // Whether this button requires editor focus to be enabled
 };
 
-type ToolbarDropdownItem = {
+type ToolbarDropdownActionItem = {
+  type?: 'action';
   label: string;
   title?: string;
   action: () => void;
@@ -109,6 +111,23 @@ type ToolbarDropdownItem = {
   isActive?: () => boolean; // Function to check if item should appear highlighted (toggle)
   noClose?: boolean; // If true, clicking this item does not close the dropdown
 };
+
+type ToolbarDropdownInputItem = {
+  type: 'input';
+  label: string;
+  title?: string;
+  placeholder?: string;
+  inputAriaLabel?: string;
+  isEnabled?: () => boolean;
+  onSubmit: (value: string) => void;
+};
+
+type ToolbarDropdownSeparatorItem = { type: 'separator'; label: string };
+
+type ToolbarDropdownItem =
+  | ToolbarDropdownActionItem
+  | ToolbarDropdownInputItem
+  | ToolbarDropdownSeparatorItem;
 
 type ToolbarDropdown = {
   type: 'dropdown';
@@ -128,7 +147,10 @@ type ToolbarItem = ToolbarActionButton | ToolbarDropdown | ToolbarSeparator | To
 
 let codiconCheckScheduled = false;
 let documentClickListenerRegistered = false;
+let documentKeydownListenerRegistered = false;
 let headingWidgetUpdater: (() => void) | null = null;
+const FLOATING_MENU_VIEWPORT_PADDING = 8;
+const FLOATING_MENU_VERTICAL_OFFSET = 4;
 
 function ensureCodiconFont() {
   if (codiconCheckScheduled) return;
@@ -182,7 +204,39 @@ function createIconElement(icon: ToolbarIcon | undefined, baseClass: string): HT
   return span;
 }
 
-function closeAllDropdowns() {
+function isToolbarDropdownSeparatorItem(
+  item: ToolbarDropdownItem
+): item is ToolbarDropdownSeparatorItem {
+  return item.type === 'separator';
+}
+
+function isToolbarDropdownInputItem(item: ToolbarDropdownItem): item is ToolbarDropdownInputItem {
+  return item.type === 'input';
+}
+
+function isToolbarDropdownActionItem(item: ToolbarDropdownItem): item is ToolbarDropdownActionItem {
+  return !item.type || item.type === 'action';
+}
+
+function closeAllDropdowns(options: { blurActiveElement?: boolean; focusEditor?: boolean } = {}): boolean {
+  const hadOpenDropdowns = (
+    Array.from(document.querySelectorAll('.toolbar-dropdown-menu')).some(
+      menu => (menu as HTMLElement).style.display === 'block'
+    )
+    || Array.from(document.querySelectorAll('.toolbar-overflow-menu')).some(menu =>
+      (menu as HTMLElement).classList.contains('open')
+    )
+    || Array.from(document.querySelectorAll('.toolbar-overflow-submenu')).some(
+      menu => (menu as HTMLElement).style.display === 'block'
+    )
+    || Array.from(document.querySelectorAll('.toolbar-dropdown button')).some(
+      btn => (btn as HTMLElement).getAttribute('aria-expanded') === 'true'
+    )
+    || Array.from(document.querySelectorAll('.toolbar-overflow-trigger')).some(
+      btn => (btn as HTMLElement).getAttribute('aria-expanded') === 'true'
+    )
+  );
+
   document.querySelectorAll('.toolbar-dropdown-menu').forEach(menu => {
     (menu as HTMLElement).style.display = 'none';
   });
@@ -195,6 +249,225 @@ function closeAllDropdowns() {
   document.querySelectorAll('.toolbar-dropdown button[aria-expanded="true"]').forEach(btn => {
     (btn as HTMLElement).setAttribute('aria-expanded', 'false');
   });
+  document.querySelectorAll('.toolbar-overflow-trigger[aria-expanded="true"]').forEach(btn => {
+    (btn as HTMLElement).setAttribute('aria-expanded', 'false');
+  });
+
+  if (options.blurActiveElement) {
+    const activeElement = document.activeElement as HTMLElement | null;
+    if (
+      activeElement
+      && (
+        activeElement.closest('.formatting-toolbar')
+        || activeElement.closest('.toolbar-dropdown-menu')
+        || activeElement.closest('.toolbar-overflow-menu')
+        || activeElement.closest('.toolbar-overflow-submenu')
+      )
+    ) {
+      activeElement.blur();
+    }
+  }
+
+  const editorToFocus = options.focusEditor && hadOpenDropdowns ? activeDropdownOwnerEditor : null;
+  activeDropdownOwnerEditor = null;
+
+  if (editorToFocus) {
+    try {
+      editorToFocus.commands.focus();
+      window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
+    } catch {
+      // ignore focus restoration failures
+    }
+  }
+
+  return hadOpenDropdowns;
+}
+
+function positionFloatingMenu(trigger: HTMLElement, menu: HTMLElement): void {
+  const triggerRect = trigger.getBoundingClientRect();
+
+  menu.style.top = `${triggerRect.bottom + FLOATING_MENU_VERTICAL_OFFSET}px`;
+  menu.style.right = 'auto';
+  menu.style.maxWidth = `calc(100vw - ${FLOATING_MENU_VIEWPORT_PADDING * 2}px)`;
+  menu.style.visibility = 'hidden';
+  menu.style.display = 'block';
+
+  const measuredRect = menu.getBoundingClientRect();
+  const measuredWidth = measuredRect.width || menu.offsetWidth || 0;
+  const maxLeft = Math.max(
+    FLOATING_MENU_VIEWPORT_PADDING,
+    window.innerWidth - measuredWidth - FLOATING_MENU_VIEWPORT_PADDING
+  );
+  const left = Math.min(Math.max(FLOATING_MENU_VIEWPORT_PADDING, triggerRect.left), maxLeft);
+
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.visibility = '';
+}
+
+function isElementVisible(element: HTMLElement | null): boolean {
+  if (!element || !element.isConnected) {
+    return false;
+  }
+
+  let current: HTMLElement | null = element;
+  while (current) {
+    const styles = window.getComputedStyle(current);
+    if (
+      current.style.display === 'none'
+      || styles.display === 'none'
+      || styles.visibility === 'hidden'
+      || current.hidden
+    ) {
+      return false;
+    }
+    current = current.parentElement;
+  }
+
+  return true;
+}
+
+function getVisibleGotoLineInput(): HTMLInputElement | null {
+  const inputs = Array.from(document.querySelectorAll('.toolbar-dropdown-input')) as HTMLInputElement[];
+  return inputs.find(input => isElementVisible(input)) ?? null;
+}
+
+function focusGotoLineInput(input: HTMLInputElement, selectText = true): void {
+  try {
+    input.focus({ preventScroll: true });
+  } catch {
+    input.focus();
+  }
+  if (selectText) {
+    input.select();
+  }
+}
+
+export function setVisibleGotoLineInputValue(value: string, selectText = true): boolean {
+  const input = getVisibleGotoLineInput();
+  if (!input) {
+    return false;
+  }
+  input.value = value;
+  focusGotoLineInput(input, selectText);
+  return true;
+}
+
+export function openGotoLineInput(): boolean {
+  const existingInput = getVisibleGotoLineInput();
+  if (existingInput) {
+    focusGotoLineInput(existingInput);
+    return true;
+  }
+
+  const goButton = Array.from(
+    document.querySelectorAll('.toolbar-dropdown > .toolbar-button[aria-label="Navigate insertion point history"]')
+  ).find(button => isElementVisible(button as HTMLElement)) as HTMLButtonElement | undefined;
+
+  if (goButton) {
+    goButton.click();
+    const openedInput = getVisibleGotoLineInput();
+    if (openedInput) {
+      focusGotoLineInput(openedInput);
+      return true;
+    }
+  }
+
+  const overflowTrigger = document.querySelector('.toolbar-overflow-trigger') as HTMLButtonElement | null;
+  if (overflowTrigger && isElementVisible(overflowTrigger)) {
+    if (overflowTrigger.getAttribute('aria-expanded') !== 'true') {
+      overflowTrigger.click();
+    }
+
+    const goOverflowButton = Array.from(document.querySelectorAll('.toolbar-overflow-row-btn')).find(
+      button => (button as HTMLButtonElement).title === 'Navigate insertion point history'
+    ) as HTMLButtonElement | undefined;
+
+    if (goOverflowButton && isElementVisible(goOverflowButton)) {
+      goOverflowButton.click();
+      const openedInput = getVisibleGotoLineInput();
+      if (openedInput) {
+        focusGotoLineInput(openedInput);
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function isToolbarMenuTarget(target: EventTarget | null): boolean {
+  return Boolean(
+    target instanceof HTMLElement
+    && (
+      target.closest('.toolbar-dropdown')
+      || target.closest('.toolbar-dropdown-menu')
+      || target.closest('.toolbar-overflow-menu')
+      || target.closest('.toolbar-overflow-submenu')
+    )
+  );
+}
+
+function createDropdownInputRow(
+  item: ToolbarDropdownInputItem
+): { container: HTMLDivElement; input: HTMLInputElement } {
+  const container = document.createElement('div');
+  container.className = 'toolbar-dropdown-input-row';
+  container.title = item.title || item.label;
+
+  const label = document.createElement('label');
+  label.className = 'toolbar-dropdown-input-label';
+  label.textContent = item.label;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.className = 'toolbar-dropdown-input';
+  input.placeholder = item.placeholder || 'Line';
+  input.spellcheck = false;
+  input.autocomplete = 'off';
+  input.setAttribute('aria-label', item.inputAriaLabel || item.title || item.label);
+
+  const stopMenuClose = (e: Event) => {
+    e.stopPropagation();
+  };
+
+  container.addEventListener('mousedown', stopMenuClose);
+  container.addEventListener('click', stopMenuClose);
+  input.addEventListener('mousedown', stopMenuClose);
+  input.addEventListener('click', stopMenuClose);
+
+  input.addEventListener('input', () => {
+    input.value = input.value.replace(/[^\d]/g, '');
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      item.onSubmit(input.value);
+      try {
+        input.focus({ preventScroll: true });
+      } catch {
+        input.focus();
+      }
+      input.select();
+      return;
+    }
+
+    if (e.key !== 'Escape') {
+      e.stopPropagation();
+    }
+  });
+
+  label.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    input.focus();
+    input.select();
+  });
+
+  container.append(label, input);
+  return { container, input };
 }
 
 /**
@@ -253,6 +526,21 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
           label: 'Go Forward (Ctrl+Alt+Right)',
           action: () => {
             window.dispatchEvent(new CustomEvent('navigateForward'));
+          },
+        },
+        { type: 'separator', label: '────' },
+        {
+          type: 'input',
+          label: 'Goto Line',
+          title: 'Go to markdown source line (Ctrl+Alt+G)',
+          placeholder: 'Line number',
+          inputAriaLabel: 'Go to markdown source line number',
+          onSubmit: value => {
+            const lineNumber = Number.parseInt(value.trim(), 10);
+            if (!Number.isFinite(lineNumber)) {
+              return;
+            }
+            window.dispatchEvent(new CustomEvent('gotoLine', { detail: { lineNumber } }));
           },
         },
       ],
@@ -734,13 +1022,15 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
 
   const actionButtons: Array<{ config: ToolbarActionButton; element: HTMLButtonElement }> = [];
   const dropdownButtons: Array<{ config: ToolbarDropdown; element: HTMLButtonElement }> = [];
-  const dropdownItems: Array<{ config: ToolbarDropdownItem; element: HTMLButtonElement }> = [];
+  const dropdownItems: Array<{ config: ToolbarDropdownActionItem; element: HTMLButtonElement }> = [];
+  const dropdownInputs: Array<{ config: ToolbarDropdownInputItem; element: HTMLInputElement }> = [];
   // All fixed-position menus appended to body (to escape sticky/transform stacking contexts)
   const bodyMenus: HTMLElement[] = [];
 
   // Overflow item state tracking (populated by buildOverflowMenu)
   const overflowActionItems: Array<{ config: ToolbarActionButton; element: HTMLButtonElement }> = [];
-  const overflowDropdownItems: Array<{ config: ToolbarDropdownItem; element: HTMLButtonElement }> = [];
+  const overflowDropdownItems: Array<{ config: ToolbarDropdownActionItem; element: HTMLButtonElement }> = [];
+  const overflowDropdownInputs: Array<{ config: ToolbarDropdownInputItem; element: HTMLInputElement }> = [];
 
   const refreshActiveStates = () => {
     // Update action buttons active and enabled states
@@ -800,6 +1090,12 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       }
     });
 
+    dropdownInputs.forEach(({ config, element }) => {
+      const enabled = config.isEnabled ? config.isEnabled() : true;
+      element.disabled = !enabled;
+      element.setAttribute('aria-disabled', String(!enabled));
+    });
+
     // Sync overflow action button states
     overflowActionItems.forEach(({ config, element }) => {
       const active = config.isActive ? config.isActive() : false;
@@ -822,6 +1118,12 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
           cb.classList.toggle('checked', active);
         }
       }
+    });
+
+    overflowDropdownInputs.forEach(({ config, element }) => {
+      const enabled = config.isEnabled ? config.isEnabled() : true;
+      element.disabled = !enabled;
+      element.setAttribute('aria-disabled', String(!enabled));
     });
 
     // Update heading widget
@@ -929,11 +1231,8 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         const isVisible = hdropMenu.style.display === 'block';
         closeAllDropdowns();
         if (!isVisible) {
-          const rect = hdropBtn.getBoundingClientRect();
-          hdropMenu.style.top = rect.bottom + 4 + 'px';
-          hdropMenu.style.left = rect.left + 'px';
-          hdropMenu.style.right = 'auto';
-          hdropMenu.style.display = 'block';
+          activeDropdownOwnerEditor = editor;
+          positionFloatingMenu(hdropBtn, hdropMenu);
           hdropBtn.setAttribute('aria-expanded', 'true');
         } else {
           hdropBtn.setAttribute('aria-expanded', 'false');
@@ -1031,13 +1330,32 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
 
       const menu = document.createElement('div');
       menu.className = 'toolbar-dropdown-menu';
+      menu.style.display = 'none';
 
       btn.items.forEach(item => {
-        // Render dashes separator as a thin hr
+        if (isToolbarDropdownInputItem(item)) {
+          const { container: inputRow, input } = createDropdownInputRow(item);
+          dropdownInputs.push({ config: item, element: input });
+          menu.appendChild(inputRow);
+          return;
+        }
+
+        if (isToolbarDropdownSeparatorItem(item)) {
+          const hr = document.createElement('hr');
+          hr.className = 'toolbar-dropdown-sep';
+          menu.appendChild(hr);
+          return;
+        }
+
+        // Render separators and custom controls
         if (/^─+$/.test(item.label.trim())) {
           const hr = document.createElement('hr');
           hr.className = 'toolbar-dropdown-sep';
           menu.appendChild(hr);
+          return;
+        }
+
+        if (!isToolbarDropdownActionItem(item)) {
           return;
         }
 
@@ -1100,12 +1418,9 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         closeAllDropdowns();
 
         if (!isVisible) {
+          activeDropdownOwnerEditor = editor;
           refreshActiveStates();
-          const rect = button.getBoundingClientRect();
-          menu.style.top = rect.bottom + 4 + 'px';
-          menu.style.left = rect.left + 'px';
-          menu.style.right = 'auto';
-          menu.style.display = 'block';
+          positionFloatingMenu(button, menu);
           button.setAttribute('aria-expanded', 'true');
         } else {
           button.setAttribute('aria-expanded', 'false');
@@ -1172,13 +1487,11 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     const isOpen = overflowMenu.classList.contains('open');
     closeAllDropdowns();
     if (!isOpen) {
+      activeDropdownOwnerEditor = editor;
       // Rebuild with fresh state before showing
       refreshActiveStates();
       buildOverflowMenuRef?.();
-      const rect = overflowTrigger.getBoundingClientRect();
-      overflowMenu.style.top = rect.bottom + 4 + 'px';
-      overflowMenu.style.left = rect.left + 'px';
-      overflowMenu.style.right = 'auto';
+      positionFloatingMenu(overflowTrigger, overflowMenu);
       overflowMenu.classList.add('open');
       overflowTrigger.setAttribute('aria-expanded', 'true');
     } else {
@@ -1194,6 +1507,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     overflowMenu.innerHTML = '';
     overflowActionItems.length = 0;
     overflowDropdownItems.length = 0;
+    overflowDropdownInputs.length = 0;
 
     // Remove old sub-menus from body
     subMenus.forEach(m => m.parentNode?.removeChild(m));
@@ -1345,11 +1659,28 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         subMenu.style.display = 'none';
 
         dropConfig.items.forEach(subItem => {
+          if (isToolbarDropdownInputItem(subItem)) {
+            const { container: inputRow, input } = createDropdownInputRow(subItem);
+            overflowDropdownInputs.push({ config: subItem, element: input });
+            subMenu.appendChild(inputRow);
+            return;
+          }
+
+          if (isToolbarDropdownSeparatorItem(subItem)) {
+            const hr = document.createElement('hr');
+            hr.className = 'toolbar-overflow-submenu-sep';
+            subMenu.appendChild(hr);
+            return;
+          }
+
           // Render dashes separator as a thin hr
           if (/^─+$/.test(subItem.label.trim())) {
             const hr = document.createElement('hr');
             hr.className = 'toolbar-overflow-submenu-sep';
             subMenu.appendChild(hr);
+            return;
+          }
+          if (!isToolbarDropdownActionItem(subItem)) {
             return;
           }
           const mi = dropdownItems.find(d => d.config === subItem)?.element;
@@ -1562,6 +1893,9 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
   // Clean up listeners when editor is destroyed
   editor.on('destroy', () => {
     resizeObserver?.disconnect();
+    if (activeDropdownOwnerEditor === editor) {
+      activeDropdownOwnerEditor = null;
+    }
     if (focusChangeListener) {
       window.removeEventListener('editorFocusChange', focusChangeListener);
       focusChangeListener = null;
@@ -1580,9 +1914,23 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
   if (!documentClickListenerRegistered) {
     documentClickListenerRegistered = true;
     document.addEventListener('click', e => {
-      if (!(e.target as HTMLElement)?.closest('.toolbar-dropdown')) {
-        closeAllDropdowns();
+      if (isToolbarMenuTarget(e.target)) return;
+      closeAllDropdowns();
+    });
+  }
+
+  if (!documentKeydownListenerRegistered) {
+    documentKeydownListenerRegistered = true;
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') {
+        return;
       }
+      if (!closeAllDropdowns({ blurActiveElement: true, focusEditor: true })) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
     });
   }
 

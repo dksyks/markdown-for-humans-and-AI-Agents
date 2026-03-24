@@ -333,6 +333,25 @@ export async function showImageInsertDialog(editor: Editor, vscodeApi: VsCodeApi
       window.removeEventListener('drop', blockWindowDrop, { capture: true });
       window.removeEventListener('dragleave', handleWindowDragLeave, { capture: true });
     };
+    let isClosed = false;
+    let handleEscape: ((e: KeyboardEvent) => void) | null = null;
+
+    const cleanupDialog = () => {
+      if (isClosed) return false;
+      isClosed = true;
+
+      cleanupWindowListeners();
+
+      if (handleEscape) {
+        document.removeEventListener('keydown', handleEscape);
+        handleEscape = null;
+      }
+
+      overlay.parentNode?.removeChild(overlay);
+      fileInput.parentNode?.removeChild(fileInput);
+
+      return true;
+    };
 
     // Insert images
     const handleInsert = async () => {
@@ -380,12 +399,7 @@ export async function showImageInsertDialog(editor: Editor, vscodeApi: VsCodeApi
         await insertImage(editor, file, vscodeApi, targetFolder, 'pasted', pos, resizeOptions);
       }
 
-      // Clean up window listeners
-      cleanupWindowListeners();
-
-      // Close dialog
-      document.body.removeChild(overlay);
-      document.body.removeChild(fileInput);
+      if (!cleanupDialog()) return;
       resolve();
     };
 
@@ -393,12 +407,7 @@ export async function showImageInsertDialog(editor: Editor, vscodeApi: VsCodeApi
 
     // Cancel
     const handleCancel = () => {
-      // Clean up window listeners
-      cleanupWindowListeners();
-
-      // Remove dialog elements
-      document.body.removeChild(overlay);
-      document.body.removeChild(fileInput);
+      if (!cleanupDialog()) return;
       resolve();
     };
 
@@ -488,12 +497,13 @@ export async function showImageInsertDialog(editor: Editor, vscodeApi: VsCodeApi
     dialog.addEventListener('drop', handleDropAnywhere);
 
     // Escape to close
-    const handleEscape = (e: KeyboardEvent) => {
+    handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
         handleCancel();
       }
     };
     document.addEventListener('keydown', handleEscape);
-    (overlay as any)._escapeHandler = handleEscape;
   });
 }
