@@ -5,6 +5,8 @@
  */
 
 import { Editor } from '@tiptap/core';
+import { formatNavigationLabel } from '../../utils/navigationLabel';
+import { editorDisplaySettings } from '../displaySettings';
 import { buildOutlineFromEditor } from '../utils/outline';
 import { scrollToHeading } from '../utils/scrollToHeading';
 
@@ -243,7 +245,10 @@ function renderTocList(editor: Editor, listContainer: HTMLElement): void {
 
     const textContent = document.createElement('span');
     textContent.className = 'toc-panel-item-text';
-    textContent.textContent = entry.text || '(Untitled)';
+    textContent.textContent = formatNavigationLabel(
+      entry,
+      editorDisplaySettings.showNavigationLineNumbers
+    );
 
     item.appendChild(textContent);
 

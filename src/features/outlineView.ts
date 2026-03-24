@@ -5,12 +5,14 @@
  */
 
 import * as vscode from 'vscode';
+import { formatNavigationLabel } from '../utils/navigationLabel';
 
 export interface OutlineEntry {
   level: number;
   text: string;
   pos: number;
   sectionEnd: number;
+  line?: number | null;
 }
 
 export interface OutlineNode extends OutlineEntry {
@@ -23,11 +25,12 @@ class OutlineTreeItem extends vscode.TreeItem {
   constructor(
     readonly node: OutlineNode,
     readonly ancestorState: AncestorState,
+    showNavigationLineNumbers: boolean,
     collapsible?: vscode.TreeItemCollapsibleState
   ) {
     // Add extra indent prefix: 1 extra space per level beyond the first to double the effective indent
     const extraSpaces = node.level > 1 ? ' '.repeat(node.level - 1) : '';
-    const labelText = node.text || '(Untitled)';
+    const labelText = formatNavigationLabel(node, showNavigationLineNumbers);
     const displayText = extraSpaces + labelText;
     // H1 items are always bold; active/ancestor items are also bold via highlights
     const isBold = node.level === 1 || ancestorState !== 'none';
@@ -67,6 +70,7 @@ export class OutlineViewProvider implements vscode.TreeDataProvider<OutlineTreeI
   private activePos: number | null = null;
   private activeNode: OutlineNode | null = null; // Cached active node to avoid redundant traversals
   private filterText = '';
+  private showNavigationLineNumbers = false;
   private treeView?: vscode.TreeView<OutlineTreeItem>;
   private itemMap = new WeakMap<OutlineNode, OutlineTreeItem>();
   private parentMap = new Map<OutlineNode, OutlineNode | null>();
@@ -105,6 +109,16 @@ export class OutlineViewProvider implements vscode.TreeDataProvider<OutlineTreeI
     this.filteredTree = this.applyFilter(this.tree, this.filterText);
     this.itemMap = new WeakMap();
     this.updateFilterContext();
+    this.refresh();
+  }
+
+  setShowNavigationLineNumbers(enabled: boolean) {
+    if (this.showNavigationLineNumbers === enabled) {
+      return;
+    }
+
+    this.showNavigationLineNumbers = enabled;
+    this.itemMap = new WeakMap();
     this.refresh();
   }
 
@@ -168,12 +182,7 @@ export class OutlineViewProvider implements vscode.TreeDataProvider<OutlineTreeI
     let item = this.itemMap.get(this.activeNode);
     if (!item) {
       // Create item if needed (supports auto-expand in collapsed mode)
-      item = new OutlineTreeItem(
-        this.activeNode,
-        'active',
-        this.getCollapsibleState(this.activeNode)
-      );
-      this.itemMap.set(this.activeNode, item);
+      item = this.createTreeItem(this.activeNode, 'active');
     }
 
     targetView.reveal(item, { expand: true, focus: true, select: true });
@@ -215,9 +224,7 @@ export class OutlineViewProvider implements vscode.TreeDataProvider<OutlineTreeI
       }
 
       // Create fresh TreeItem for new items or state changes
-      const item = new OutlineTreeItem(node, ancestorState, this.getCollapsibleState(node));
-      this.itemMap.set(node, item);
-      return item;
+      return this.createTreeItem(node, ancestorState);
     });
 
     // After root items are created, do pending reveal
@@ -228,6 +235,17 @@ export class OutlineViewProvider implements vscode.TreeDataProvider<OutlineTreeI
     }
 
     return items;
+  }
+
+  private createTreeItem(node: OutlineNode, ancestorState: AncestorState): OutlineTreeItem {
+    const item = new OutlineTreeItem(
+      node,
+      ancestorState,
+      this.showNavigationLineNumbers,
+      this.getCollapsibleState(node)
+    );
+    this.itemMap.set(node, item);
+    return item;
   }
 
   private isEntryActive(entry: OutlineEntry): boolean {
@@ -315,12 +333,7 @@ export class OutlineViewProvider implements vscode.TreeDataProvider<OutlineTreeI
     // Create parent item if it doesn't exist yet (parent might be collapsed)
     let item = this.itemMap.get(parentNode);
     if (!item) {
-      item = new OutlineTreeItem(
-        parentNode,
-        this.getAncestorState(parentNode),
-        this.getCollapsibleState(parentNode)
-      );
-      this.itemMap.set(parentNode, item);
+      item = this.createTreeItem(parentNode, this.getAncestorState(parentNode));
     }
     return item;
   }
@@ -378,12 +391,7 @@ export class OutlineViewProvider implements vscode.TreeDataProvider<OutlineTreeI
     // Ensure item exists in map
     let item = this.itemMap.get(this.activeNode);
     if (!item) {
-      item = new OutlineTreeItem(
-        this.activeNode,
-        'active',
-        this.getCollapsibleState(this.activeNode)
-      );
-      this.itemMap.set(this.activeNode, item);
+      item = this.createTreeItem(this.activeNode, 'active');
     }
 
     targetView.reveal(item, { expand: true, focus: false, select: true });

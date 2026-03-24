@@ -23,25 +23,10 @@ import { showColorSettingsPanel } from './features/colorSettings';
 import type { Editor } from '@tiptap/core';
 import { isTocVisible } from './features/tocOverlay';
 import { updateGutterWidth } from './extensions/lineNumbers';
+import { editorDisplaySettings } from './displaySettings';
 
 // Store reference to refresh function so it can be called externally
 let toolbarRefreshFunction: (() => void) | null = null;
-
-// Editor display settings state (synced from extension host via editor.ts)
-export const editorDisplaySettings: Record<string, boolean> = {
-  showHeadingGutter: true,
-  showLineNumbers: false,
-};
-
-/** Update display settings state (called from editor.ts when settings arrive) */
-export function updateDisplaySettings(settings: Record<string, unknown>): void {
-  if (typeof settings.showHeadingGutter === 'boolean') {
-    editorDisplaySettings.showHeadingGutter = settings.showHeadingGutter;
-  }
-  if (typeof settings.showLineNumbers === 'boolean') {
-    editorDisplaySettings.showLineNumbers = settings.showLineNumbers;
-  }
-}
 
 /**
  * Normalize selection and create a code block
@@ -117,6 +102,7 @@ type ToolbarActionButton = {
 
 type ToolbarDropdownItem = {
   label: string;
+  title?: string;
   action: () => void;
   icon?: ToolbarIcon;
   isEnabled?: () => boolean; // Function to check if item should be enabled
@@ -655,12 +641,13 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
     {
       type: 'dropdown',
       label: 'Settings',
-      title: 'Settings',
+      title: 'Display and editor settings',
       icon: { name: 'gear', fallback: '⚙' },
       className: 'settings-dropdown',
       items: [
         {
-          label: ' Heading',
+          label: ' Heading Labels',
+          title: 'Show H1-H6 labels in the document gutter beside headings.',
           action: () => {
             const next = !editorDisplaySettings.showHeadingGutter;
             editorDisplaySettings.showHeadingGutter = next;
@@ -674,17 +661,44 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
           noClose: true,
         },
         {
-          label: ' Line Numbers',
+          label: ' Document Line Numbers',
+          title:
+            'Show markdown source line numbers in the document gutter. Clicking a number selects that source line.',
           action: () => {
-            const next = !editorDisplaySettings.showLineNumbers;
-            editorDisplaySettings.showLineNumbers = next;
+            const next = !editorDisplaySettings.showDocumentLineNumbers;
+            editorDisplaySettings.showDocumentLineNumbers = next;
             const editorEl = document.querySelector('.markdown-editor') as HTMLElement | null;
             if (editorEl) editorEl.classList.toggle('show-line-numbers', next);
             const vscodeApi = (window as any).vscode;
-            if (vscodeApi) vscodeApi.postMessage({ type: 'updateSetting', key: 'markdownForHumans.showLineNumbers', value: next });
+            if (vscodeApi) {
+              vscodeApi.postMessage({
+                type: 'updateSetting',
+                key: 'markdownForHumans.showDocumentLineNumbers',
+                value: next,
+              });
+            }
             updateGutterWidth();
           },
-          isActive: () => editorDisplaySettings.showLineNumbers,
+          isActive: () => editorDisplaySettings.showDocumentLineNumbers,
+          noClose: true,
+        },
+        {
+          label: ' Navigation Line Numbers',
+          title:
+            'Show source line numbers before headings in the Navigation pane and Explorer outline.',
+          action: () => {
+            const next = !editorDisplaySettings.showNavigationLineNumbers;
+            editorDisplaySettings.showNavigationLineNumbers = next;
+            const vscodeApi = (window as any).vscode;
+            if (vscodeApi) {
+              vscodeApi.postMessage({
+                type: 'updateSetting',
+                key: 'markdownForHumans.showNavigationLineNumbers',
+                value: next,
+              });
+            }
+          },
+          isActive: () => editorDisplaySettings.showNavigationLineNumbers,
           noClose: true,
         },
         {
@@ -694,6 +708,8 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         },
         {
           label: ' Text Colors',
+          title:
+            'Adjust heading, bold, italic, and gutter-label colors used in the editor.',
           icon: { name: 'symbol-color', fallback: '🎨' },
           action: () => {
             showColorSettingsPanel();
@@ -706,6 +722,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         },
         {
           label: ' System Settings',
+          title: 'Open the full Markdown for Humans settings in VS Code.',
           icon: { name: 'settings-gear', fallback: '⚙' },
           action: () => {
             window.dispatchEvent(new CustomEvent('openExtensionSettings'));
@@ -1027,8 +1044,9 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
         const menuItem = document.createElement('button');
         menuItem.type = 'button';
         menuItem.className = 'toolbar-dropdown-item';
-        menuItem.title = item.label;
-        menuItem.setAttribute('aria-label', item.label);
+        const menuItemTitle = item.title || item.label;
+        menuItem.title = menuItemTitle;
+        menuItem.setAttribute('aria-label', menuItemTitle);
 
         // For toggle items, show a checkbox indicator
         let checkboxSpan: HTMLSpanElement | null = null;

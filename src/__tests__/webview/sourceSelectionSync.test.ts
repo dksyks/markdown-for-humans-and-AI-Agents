@@ -46,7 +46,14 @@ jest.mock('./../../webview/BubbleMenuView', () => ({
   createFormattingToolbar: () => ({}),
   createTableMenu: () => ({}),
   updateToolbarStates: jest.fn(),
+}));
+jest.mock('./../../webview/displaySettings', () => ({
   updateDisplaySettings: jest.fn(),
+  editorDisplaySettings: {
+    showHeadingGutter: true,
+    showDocumentLineNumbers: false,
+    showNavigationLineNumbers: false,
+  },
 }));
 jest.mock('./../../webview/features/imageDragDrop', () => ({
   setupImageDragDrop: jest.fn(),

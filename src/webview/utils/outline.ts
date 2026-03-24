@@ -5,6 +5,7 @@
  */
 
 import { Editor } from '@tiptap/core';
+import { posToMarkdownLine } from '../extensions/lineNumbers';
 
 export interface OutlineEntry {
   level: number;
@@ -12,6 +13,7 @@ export interface OutlineEntry {
   pos: number;
   sectionStart: number;
   sectionEnd: number;
+  line?: number | null;
 }
 
 export interface SimpleHeading {
@@ -19,6 +21,7 @@ export interface SimpleHeading {
   text: string;
   pos: number;
   nodeSize?: number;
+  line?: number | null;
 }
 
 export function computeOutline(headings: SimpleHeading[], docSize: number): OutlineEntry[] {
@@ -28,6 +31,7 @@ export function computeOutline(headings: SimpleHeading[], docSize: number): Outl
     pos: h.pos,
     sectionStart: h.pos,
     sectionEnd: (h.pos || 0) + (h.nodeSize || 0),
+    line: h.line ?? null,
   }));
 
   for (let i = 0; i < outline.length; i++) {
@@ -61,6 +65,7 @@ export function buildOutlineFromEditor(editor: Editor): OutlineEntry[] {
         text,
         pos,
         nodeSize: node.nodeSize,
+        line: posToMarkdownLine(editor, pos),
       });
     }
     return true;

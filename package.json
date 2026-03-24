@@ -256,10 +256,15 @@
           "default": true,
           "description": "Show H1–H6 labels in the editor gutter."
         },
-        "markdownForHumans.showLineNumbers": {
+        "markdownForHumans.showDocumentLineNumbers": {
           "type": "boolean",
           "default": false,
-          "description": "Show markdown source line numbers in the editor gutter."
+          "description": "Show markdown source line numbers in the document gutter."
+        },
+        "markdownForHumans.showNavigationLineNumbers": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show markdown source line numbers in the Navigation pane and Explorer outline."
         },
         "markdownForHumans.showNavigationPane": {
           "type": "boolean",

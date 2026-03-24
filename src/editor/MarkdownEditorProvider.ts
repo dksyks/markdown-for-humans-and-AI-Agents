@@ -1110,9 +1110,9 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   /**
-   * Read all color settings from VS Code configuration.
+   * Read editor display settings from VS Code configuration.
    */
-  private getColorSettings(): Record<string, unknown> {
+  private getDisplaySettings(): Record<string, unknown> {
     const config = vscode.workspace.getConfiguration();
     return {
       h1: config.get<string>('markdownForHumans.colors.h1', '#1560c1'),
@@ -1126,8 +1126,16 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       boldItalic: config.get<string>('markdownForHumans.colors.boldItalic', '#ff7300'),
       labelOpacity: config.get<number>('markdownForHumans.colors.labelOpacity', 0.10),
       showHeadingGutter: config.get<boolean>('markdownForHumans.showHeadingGutter', true),
-      showLineNumbers: config.get<boolean>('markdownForHumans.showLineNumbers', false),
+      showDocumentLineNumbers: config.get<boolean>(
+        'markdownForHumans.showDocumentLineNumbers',
+        false
+      ),
+      showNavigationLineNumbers: config.get<boolean>(
+        'markdownForHumans.showNavigationLineNumbers',
+        false
+      ),
       showNavigationPane: config.get<boolean>('markdownForHumans.showNavigationPane', false),
+      outlinePanelWidth: config.get<number>('markdownForHumans.outlinePanelWidth', 220),
     };
   }
 
@@ -1254,7 +1262,12 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         e.affectsConfiguration('markdownForHumans.imageResize.skipWarning') ||
         e.affectsConfiguration('markdownForHumans.imagePath') ||
         e.affectsConfiguration('markdownForHumans.imagePathBase') ||
-        e.affectsConfiguration('markdownForHumans.colors')
+        e.affectsConfiguration('markdownForHumans.colors') ||
+        e.affectsConfiguration('markdownForHumans.showHeadingGutter') ||
+        e.affectsConfiguration('markdownForHumans.showDocumentLineNumbers') ||
+        e.affectsConfiguration('markdownForHumans.showNavigationLineNumbers') ||
+        e.affectsConfiguration('markdownForHumans.showNavigationPane') ||
+        e.affectsConfiguration('markdownForHumans.outlinePanelWidth')
       ) {
         const config = vscode.workspace.getConfiguration();
         const skipWarning = config.get<boolean>('markdownForHumans.imageResize.skipWarning', false);
@@ -1268,7 +1281,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           skipResizeWarning: skipWarning,
           imagePath: imagePath,
           imagePathBase: imagePathBase,
-          colors: this.getColorSettings(),
+          displaySettings: this.getDisplaySettings(),
         });
       }
     });
@@ -1419,7 +1432,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       skipResizeWarning: skipWarning,
       imagePath: imagePath,
       imagePathBase: imagePathBase,
-      colors: this.getColorSettings(),
+      displaySettings: this.getDisplaySettings(),
       fileName,
     });
   }
@@ -1459,7 +1472,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           skipResizeWarning: skipWarning,
           imagePath: imagePath,
           imagePathBase: imagePathBase,
-          colors: this.getColorSettings(),
+          displaySettings: this.getDisplaySettings(),
         });
         break;
       }
@@ -3555,7 +3568,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         skipResizeWarning: skipWarning,
         imagePath: imagePath,
         imagePathBase: imagePathBase,
-        colors: this.getColorSettings(),
+        displaySettings: this.getDisplaySettings(),
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

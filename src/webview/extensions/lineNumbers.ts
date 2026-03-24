@@ -8,7 +8,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
 import { getEditorMarkdownForSync } from '../utils/markdownSerialization';
-import { editorDisplaySettings } from '../BubbleMenuView';
+import { editorDisplaySettings } from '../displaySettings';
 
 const LINE_NUMBERS_PLUGIN_KEY = new PluginKey('lineNumbers');
 
@@ -31,6 +31,13 @@ type MarkdownLineMappingInfo = {
   rowIndex?: number;
 };
 
+type ResolvedListItemEntry = {
+  lineNum: number;
+  selFrom: number;
+  selTo: number;
+  depth: number;
+};
+
 /**
  * Recalculate and apply the --gutter-width CSS variable based on which
  * decorations are currently enabled and the document line count.
@@ -40,7 +47,7 @@ export function updateGutterWidth(totalLines?: number): void {
   const digits = String(cachedTotalLines || 1).length;
 
   const showHeading = editorDisplaySettings.showHeadingGutter !== false;
-  const showLines = editorDisplaySettings.showLineNumbers === true;
+  const showLines = editorDisplaySettings.showDocumentLineNumbers === true;
 
   /** these are used to calculate the gutter width - the get the right value but the calculation is not quite right 
    * It is all based upon how the gutter decorations are done so perhaps it doesn't matter how the individual 
@@ -567,33 +574,183 @@ function countBlockLines(node: any, lines: string[], startLine: number): number 
   return Math.max(count, 1);
 }
 
-/**
- * Find the markdown line for the Nth list item within a list block.
- * Returns 0-based line index, or -1 if not found.
- */
-function findListItemLine(
-  listType: string,
-  itemIndex: number,
+function isListNodeType(typeName: string | null | undefined): boolean {
+  return typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList';
+}
+
+function getMarkdownListLineInfo(line: string): { listType: string; indent: number } | null {
+  const expandedLine = line.replace(/\t/g, '    ');
+
+  let match = expandedLine.match(/^(\s*)- \[[ xX]\]\s+/);
+  if (match) {
+    return {
+      listType: 'taskList',
+      indent: match[1].length,
+    };
+  }
+
+  match = expandedLine.match(/^(\s*)\d+[.)]\s+/);
+  if (match) {
+    return {
+      listType: 'orderedList',
+      indent: match[1].length,
+    };
+  }
+
+  match = expandedLine.match(/^(\s*)[-*+]\s+/);
+  if (match) {
+    return {
+      listType: 'bulletList',
+      indent: match[1].length,
+    };
+  }
+
+  return null;
+}
+
+function findNextMarkdownListLine(
+  lines: string[],
+  startLine: number,
+  endLine: number,
+  listType?: string,
+  indent?: number | null
+): { lineIndex: number; indent: number } | null {
+  for (let i = startLine; i < endLine; i++) {
+    const lineInfo = getMarkdownListLineInfo(lines[i]);
+    if (!lineInfo) {
+      continue;
+    }
+    if (listType && lineInfo.listType !== listType) {
+      continue;
+    }
+    if (indent !== undefined && indent !== null && lineInfo.indent !== indent) {
+      continue;
+    }
+    return {
+      lineIndex: i,
+      indent: lineInfo.indent,
+    };
+  }
+
+  return null;
+}
+
+function collectResolvedListItemEntries(
+  listNode: any,
+  listOffset: number,
   lines: string[],
   listStartLine: number
-): number {
-  const pattern = listType === 'bulletList'
-    ? /^\s*[-*+] /
-    : listType === 'orderedList'
-      ? /^\s*\d+[.)]\s/
-      : /^\s*- \[/;
+): ResolvedListItemEntry[] {
+  const entries: ResolvedListItemEntry[] = [];
+  const listEndLine = Math.min(lines.length, listStartLine + countBlockLines(listNode, lines, listStartLine));
 
-  let found = 0;
-  for (let i = listStartLine; i < lines.length; i++) {
-    if (lines[i].trim() === '') continue;
-    // Stop if we hit a non-list, non-continuation line
-    if (!pattern.test(lines[i]) && !/^(\s{2,}|\t)/.test(lines[i])) break;
-    if (pattern.test(lines[i])) {
-      if (found === itemIndex) return i;
-      found++;
+  const getListItemSelectionRange = (listItem: any, itemOffset: number): { from: number; to: number } => {
+    const fallbackRange = {
+      from: itemOffset + 1,
+      to: itemOffset + listItem.nodeSize - 1,
+    };
+
+    if (typeof listItem?.forEach !== 'function') {
+      return fallbackRange;
+    }
+
+    let firstNestedListStart: number | null = null;
+    listItem.forEach((child: any, childOff: number) => {
+      if (firstNestedListStart !== null || !isListNodeType(child.type?.name)) {
+        return;
+      }
+      firstNestedListStart = itemOffset + 1 + childOff;
+    });
+
+    if (firstNestedListStart === null) {
+      return fallbackRange;
+    }
+
+    return {
+      from: fallbackRange.from,
+      to: Math.max(fallbackRange.from, firstNestedListStart - 1),
+    };
+  };
+
+  const appendEntries = (
+    node: any,
+    offset: number,
+    searchStartLine: number,
+    searchEndLine: number,
+    depth: number
+  ): number => {
+    const directItems: Array<{ node: any; offset: number }> = [];
+    node.forEach((listItem: any, itemOff: number) => {
+      directItems.push({
+        node: listItem,
+        offset: offset + 1 + itemOff,
+      });
+    });
+
+    let cursor = searchStartLine;
+    let expectedIndent: number | null = null;
+
+    directItems.forEach(({ node: listItem, offset: itemOffset }, index) => {
+      const directMatch = findNextMarkdownListLine(
+        lines,
+        cursor,
+        searchEndLine,
+        node.type?.name,
+        expectedIndent
+      );
+      const fallbackMatch = directMatch
+        ?? findNextMarkdownListLine(lines, cursor, searchEndLine);
+      const fallbackLineIndex = Math.min(searchEndLine - 1, Math.max(searchStartLine, cursor + index));
+      const lineIndex = fallbackMatch?.lineIndex ?? fallbackLineIndex;
+
+      if (directMatch && expectedIndent === null) {
+        expectedIndent = directMatch.indent;
+      }
+
+      const selectionRange = getListItemSelectionRange(listItem, itemOffset);
+
+      entries.push({
+        lineNum: lineIndex + 1,
+        selFrom: selectionRange.from,
+        selTo: selectionRange.to,
+        depth,
+      });
+
+      cursor = lineIndex + 1;
+
+      if (typeof listItem.forEach === 'function') {
+        listItem.forEach((child: any, childOff: number) => {
+          if (!isListNodeType(child.type?.name)) {
+            return;
+          }
+          cursor = appendEntries(child, itemOffset + 1 + childOff, cursor, searchEndLine, depth + 1);
+        });
+      }
+    });
+
+    return cursor;
+  };
+
+  appendEntries(listNode, listOffset, listStartLine, listEndLine, 0);
+  return entries;
+}
+
+function findDeepestResolvedListItemEntryForPos(
+  entries: ResolvedListItemEntry[],
+  pos: number
+): ResolvedListItemEntry | null {
+  let matchedEntry: ResolvedListItemEntry | null = null;
+
+  for (const entry of entries) {
+    if (pos < entry.selFrom || pos > entry.selTo) {
+      continue;
+    }
+    if (!matchedEntry || entry.depth >= matchedEntry.depth) {
+      matchedEntry = entry;
     }
   }
-  return -1;
+
+  return matchedEntry;
 }
 
 function findSequentialListItemLineForPos(
@@ -730,28 +887,15 @@ function findNestedMarkdownLineForPos(
   }
 
   if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
-    let itemIndex = 0;
-    let matchedLine: {
-      lineNum: number;
-      strategy: string;
-      itemIndex?: number;
-    } | null = null;
-    node.forEach((listItem: any, itemOff: number) => {
-      if (matchedLine) return;
-      const itemAbsStart = offset + 1 + itemOff + 1;
-      const itemAbsEnd = offset + 1 + itemOff + listItem.nodeSize - 1;
-      if (pos >= itemAbsStart && pos <= itemAbsEnd) {
-        const itemLine = findListItemLine(typeName, itemIndex, lines, contentLineIndex);
-        matchedLine = {
-          lineNum: itemLine >= 0 ? itemLine + 1 : lineNum + itemIndex,
-          strategy: 'topLevelListItem',
-          itemIndex,
-        };
-        return;
-      }
-      itemIndex++;
-    });
-    return matchedLine;
+    const entries = collectResolvedListItemEntries(node, offset, lines, contentLineIndex);
+    const matchedEntry = findDeepestResolvedListItemEntryForPos(entries, pos);
+    if (!matchedEntry) {
+      return null;
+    }
+    return {
+      lineNum: matchedEntry.lineNum,
+      strategy: matchedEntry.depth > 0 ? 'nestedListItem' : 'topLevelListItem',
+    };
   }
 
   if (typeName === 'blockquote') {
@@ -870,6 +1014,15 @@ export function markdownLineToPos(editor: any, targetLine: number): number {
 
     const target0 = targetLine - 1; // 0-based
     if (contentLineIndex >= 0 && target0 >= contentLineIndex && target0 < blockEndLine) {
+      if (isListNodeType(typeName)) {
+        const matchedEntry = collectResolvedListItemEntries(node, offset, lines, countFrom)
+          .find(entry => entry.lineNum === targetLine);
+        if (matchedEntry) {
+          result = matchedEntry.selFrom;
+          return;
+        }
+      }
+
       result = offset + 1; // +1 to get inside the node content
       return;
     }
@@ -918,6 +1071,18 @@ export function markdownLineToSelectionRange(
     const target0 = targetLine - 1;
 
     if (contentLineIndex >= 0 && target0 >= contentLineIndex && target0 < blockEndLine) {
+      if (isListNodeType(typeName)) {
+        const matchedEntry = collectResolvedListItemEntries(node, offset, lines, countFrom)
+          .find(entry => entry.lineNum === targetLine);
+        if (matchedEntry) {
+          result = {
+            from: matchedEntry.selFrom,
+            to: matchedEntry.selTo,
+          };
+          return;
+        }
+      }
+
       const from = offset + 1;
       const to = Math.max(from, offset + node.nodeSize - 1);
       result = { from, to };
@@ -986,7 +1151,12 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
       const lineNum = contentLineIndex + 1; // 1-based
 
       // Helper: build a gutter span for a given line number
-      const createGutterSpan = (ln: number, hLevel: number | null, selFrom: number, selTo: number): HTMLElement => {
+      const createGutterSpan = (
+        ln: number,
+        hLevel: number | null,
+        selFrom: number,
+        selTo: number
+      ): HTMLElement => {
         const span = document.createElement('span');
         span.className = 'line-number-gutter';
         if (hLevel) {
@@ -1043,13 +1213,17 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
         const tableNode = node;
 
         // Collect row info
-        const rowInfos: { lineNum: number; selFrom: number; selTo: number }[] = [];
+        const rowInfos: Array<{ lineNum: number; selFrom: number; selTo: number }> = [];
         let ri = 0;
         tableNode.forEach((row: any, rowOff: number) => {
           const rl = ri === 0 ? lineNum : lineNum + ri + 1;
           const rowAbsStart = tableOffset + 1 + rowOff + 1;
           const rowAbsEnd = tableOffset + 1 + rowOff + row.nodeSize - 1;
-          rowInfos.push({ lineNum: rl, selFrom: rowAbsStart, selTo: rowAbsEnd });
+          rowInfos.push({
+            lineNum: rl,
+            selFrom: rowAbsStart,
+            selTo: rowAbsEnd,
+          });
           ri++;
         });
 
@@ -1119,14 +1293,18 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
       } else if (typeName === 'blockquote') {
         // Single-anchor pattern: one widget with per-line absolute spans
         // Count the > lines in the markdown for this block
-        const alertLineInfos: { lineNum: number; selFrom: number; selTo: number }[] = [];
+        const alertLineInfos: Array<{ lineNum: number; selFrom: number; selTo: number }> = [];
         let childIdx = 0;
         node.forEach((child: any, childOff: number) => {
           const childAbsStart = offset + 1 + childOff + 1;
           const childAbsEnd = offset + 1 + childOff + child.nodeSize - 1;
           const childLine = contentLineIndex + childIdx;
           const childLineNum = childLine < lines.length ? childLine + 1 : lineNum + childIdx;
-          alertLineInfos.push({ lineNum: childLineNum, selFrom: childAbsStart, selTo: childAbsEnd });
+          alertLineInfos.push({
+            lineNum: childLineNum,
+            selFrom: childAbsStart,
+            selTo: childAbsEnd,
+          });
           childIdx++;
         });
 
@@ -1166,16 +1344,12 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
         decorations.push(widget);
       } else if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
         // Single-anchor pattern (like tables): one widget with per-item absolute spans
-        const itemInfos: { lineNum: number; selFrom: number; selTo: number }[] = [];
-        let itemIdx = 0;
-        node.forEach((listItem: any, itemOff: number) => {
-          const itemAbsStart = offset + 1 + itemOff + 1; // into listItem content
-          const itemAbsEnd = offset + 1 + itemOff + listItem.nodeSize - 1;
-          const itemLine = findListItemLine(typeName, itemIdx, lines, contentLineIndex);
-          const itemLineNum = itemLine >= 0 ? itemLine + 1 : lineNum + itemIdx;
-          itemInfos.push({ lineNum: itemLineNum, selFrom: itemAbsStart, selTo: itemAbsEnd });
-          itemIdx++;
-        });
+        const itemInfos = collectResolvedListItemEntries(node, offset, lines, contentLineIndex)
+          .map(({ lineNum, selFrom, selTo }) => ({
+            lineNum,
+            selFrom,
+            selTo,
+          }));
 
         const widget = Decoration.widget(offset, () => {
           const wrapper = document.createElement('div');
@@ -1195,7 +1369,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
             if (!listEl) return;
             syncAnchorExtent(wrapper, listEl);
             const wrapperRect = wrapper.getBoundingClientRect();
-            const items = listEl.querySelectorAll(':scope > li');
+            const items = listEl.querySelectorAll('li');
             items.forEach((li: Element, i: number) => {
               if (i < spans.length) {
                 const liRect = li.getBoundingClientRect();
@@ -1254,7 +1428,7 @@ export function repositionGutterDecorations(): void {
       positionGitHubAlertSpans(wrapper, sibling, Array.from(spans));
       return;
     } else if (sibling.tagName === 'UL' || sibling.tagName === 'OL') {
-      children = sibling.querySelectorAll(':scope > li');
+      children = sibling.querySelectorAll('li');
     } else {
       // blockquote / githubAlert: direct children
       children = sibling.querySelectorAll(':scope > *');

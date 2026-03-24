@@ -110,6 +110,57 @@ describe('BubbleMenuView', () => {
       // Toolbar should register for selection updates
       expect(editor.on).toHaveBeenCalledWith('selectionUpdate', expect.any(Function));
     });
+
+    it('shows informative labels and tooltips in the settings menu', () => {
+      const editor = createMockEditor();
+      const toolbar = createFormattingToolbar(editor);
+      document.body.appendChild(toolbar);
+
+      const settingsButton = toolbar.querySelector('button.settings-dropdown') as HTMLButtonElement;
+      expect(settingsButton.title).toBe('Display and editor settings');
+
+      const menuItems = Array.from(document.body.querySelectorAll('.toolbar-dropdown-item'));
+      const headingLabelsItem = menuItems.find(
+        item => item.getAttribute('title') === 'Show H1-H6 labels in the document gutter beside headings.'
+      ) as HTMLButtonElement | undefined;
+      const documentLineNumbersItem = menuItems.find(
+        item =>
+          item.getAttribute('title') ===
+          'Show markdown source line numbers in the document gutter. Clicking a number selects that source line.'
+      ) as HTMLButtonElement | undefined;
+      const navigationLineNumbersItem = menuItems.find(
+        item =>
+          item.getAttribute('title') ===
+          'Show source line numbers before headings in the Navigation pane and Explorer outline.'
+      ) as HTMLButtonElement | undefined;
+      const textColorsItem = menuItems.find(
+        item =>
+          item.getAttribute('title') ===
+          'Adjust heading, bold, italic, and gutter-label colors used in the editor.'
+      ) as HTMLButtonElement | undefined;
+      const systemSettingsItem = menuItems.find(
+        item => item.getAttribute('title') === 'Open the full Markdown for Humans settings in VS Code.'
+      ) as HTMLButtonElement | undefined;
+
+      expect(menuItems.some(item => item.textContent?.includes('Heading Labels'))).toBe(true);
+      expect(menuItems.some(item => item.textContent?.includes('Document Line Numbers'))).toBe(true);
+      expect(menuItems.some(item => item.textContent?.includes('Navigation Line Numbers'))).toBe(true);
+      expect(headingLabelsItem?.title).toBe(
+        'Show H1-H6 labels in the document gutter beside headings.'
+      );
+      expect(documentLineNumbersItem?.title).toBe(
+        'Show markdown source line numbers in the document gutter. Clicking a number selects that source line.'
+      );
+      expect(navigationLineNumbersItem?.title).toBe(
+        'Show source line numbers before headings in the Navigation pane and Explorer outline.'
+      );
+      expect(textColorsItem?.title).toBe(
+        'Adjust heading, bold, italic, and gutter-label colors used in the editor.'
+      );
+      expect(systemSettingsItem?.title).toBe(
+        'Open the full Markdown for Humans settings in VS Code.'
+      );
+    });
   });
 
   describe('createTableMenu', () => {

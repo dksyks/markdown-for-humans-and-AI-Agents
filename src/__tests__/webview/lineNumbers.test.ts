@@ -2,10 +2,11 @@
  * @jest-environment jsdom
  */
 
-jest.mock('../../webview/BubbleMenuView', () => ({
+jest.mock('../../webview/displaySettings', () => ({
   editorDisplaySettings: {
     showHeadingGutter: true,
-    showLineNumbers: true,
+    showDocumentLineNumbers: true,
+    showNavigationLineNumbers: false,
   },
 }));
 
@@ -14,7 +15,55 @@ jest.mock('../../webview/utils/markdownSerialization', () => ({
 }));
 
 import { getEditorMarkdownForSync } from '../../webview/utils/markdownSerialization';
-import { posToMarkdownLine, repositionGutterDecorations } from '../../webview/extensions/lineNumbers';
+import {
+  markdownLineToPos,
+  markdownLineToSelectionRange,
+  posToMarkdownLine,
+  repositionGutterDecorations,
+} from '../../webview/extensions/lineNumbers';
+
+function createNestedListEditor() {
+  const innerListItems = [
+    { nodeSize: 7 },
+    { nodeSize: 7 },
+  ];
+  const innerListNode = {
+    type: { name: 'bulletList' },
+    nodeSize: 16,
+    forEach: (cb: (node: { nodeSize: number }, offset: number) => void) => {
+      cb(innerListItems[0], 0);
+      cb(innerListItems[1], 7);
+    },
+  };
+
+  const outerListItems = [
+    { nodeSize: 8 },
+    {
+      nodeSize: 25,
+      forEach: (cb: (node: { nodeSize: number; type?: { name: string } }, offset: number) => void) => {
+        cb({ nodeSize: 7, type: { name: 'paragraph' } }, 0);
+        cb(innerListNode, 7);
+      },
+    },
+    { nodeSize: 8 },
+  ];
+  const outerListNode = {
+    type: { name: 'bulletList' },
+    nodeSize: 43,
+    forEach: (cb: (node: typeof outerListItems[number], offset: number) => void) => {
+      cb(outerListItems[0], 0);
+      cb(outerListItems[1], 8);
+      cb(outerListItems[2], 33);
+    },
+  };
+  const doc = {
+    forEach: (cb: (node: typeof outerListNode, offset: number) => void) => cb(outerListNode, 0),
+  };
+
+  return {
+    state: { doc },
+  };
+}
 
 describe('repositionGutterDecorations', () => {
   const originalCreateRange = document.createRange.bind(document);
@@ -272,6 +321,129 @@ describe('repositionGutterDecorations', () => {
     expect(wrapper.style.height).toBe('80px');
     expect(wrapper.style.marginBottom).toBe('-80px');
   });
+
+  it('positions nested list gutter labels against inner list items in source order', () => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'line-number-table-anchor';
+    Object.defineProperty(wrapper, 'nextElementSibling', {
+      configurable: true,
+      get: () => list,
+    });
+    wrapper.getBoundingClientRect = jest.fn(() => ({
+      top: 10,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 10,
+      toJSON: () => ({}),
+    }));
+
+    const spans = Array.from({ length: 5 }, () => {
+      const span = document.createElement('span');
+      span.className = 'line-number-gutter';
+      wrapper.appendChild(span);
+      return span;
+    });
+
+    const list = document.createElement('ul');
+    list.getBoundingClientRect = jest.fn(() => ({
+      top: 20,
+      left: 0,
+      right: 0,
+      bottom: 120,
+      width: 0,
+      height: 100,
+      x: 0,
+      y: 20,
+      toJSON: () => ({}),
+    }));
+
+    const outerOne = document.createElement('li');
+    outerOne.getBoundingClientRect = jest.fn(() => ({
+      top: 20,
+      left: 0,
+      right: 0,
+      bottom: 30,
+      width: 0,
+      height: 10,
+      x: 0,
+      y: 20,
+      toJSON: () => ({}),
+    }));
+
+    const outerTwo = document.createElement('li');
+    outerTwo.getBoundingClientRect = jest.fn(() => ({
+      top: 40,
+      left: 0,
+      right: 0,
+      bottom: 90,
+      width: 0,
+      height: 50,
+      x: 0,
+      y: 40,
+      toJSON: () => ({}),
+    }));
+
+    const innerList = document.createElement('ul');
+    const innerOne = document.createElement('li');
+    innerOne.getBoundingClientRect = jest.fn(() => ({
+      top: 60,
+      left: 0,
+      right: 0,
+      bottom: 70,
+      width: 0,
+      height: 10,
+      x: 0,
+      y: 60,
+      toJSON: () => ({}),
+    }));
+    const innerTwo = document.createElement('li');
+    innerTwo.getBoundingClientRect = jest.fn(() => ({
+      top: 80,
+      left: 0,
+      right: 0,
+      bottom: 90,
+      width: 0,
+      height: 10,
+      x: 0,
+      y: 80,
+      toJSON: () => ({}),
+    }));
+    innerList.appendChild(innerOne);
+    innerList.appendChild(innerTwo);
+    outerTwo.appendChild(innerList);
+
+    const outerThree = document.createElement('li');
+    outerThree.getBoundingClientRect = jest.fn(() => ({
+      top: 100,
+      left: 0,
+      right: 0,
+      bottom: 110,
+      width: 0,
+      height: 10,
+      x: 0,
+      y: 100,
+      toJSON: () => ({}),
+    }));
+
+    list.appendChild(outerOne);
+    list.appendChild(outerTwo);
+    list.appendChild(outerThree);
+
+    document.body.appendChild(wrapper);
+    document.body.appendChild(list);
+
+    repositionGutterDecorations();
+
+    expect(spans[0].style.top).toBe('10px');
+    expect(spans[1].style.top).toBe('30px');
+    expect(spans[2].style.top).toBe('50px');
+    expect(spans[3].style.top).toBe('70px');
+    expect(spans[4].style.top).toBe('90px');
+  });
 });
 
 describe('posToMarkdownLine', () => {
@@ -375,5 +547,51 @@ describe('posToMarkdownLine', () => {
     expect(posToMarkdownLine(editor, 3)).toBe(2);
     expect(posToMarkdownLine(editor, 11)).toBe(3);
     expect(posToMarkdownLine(editor, 20)).toBe(4);
+  });
+
+  it('maps positions inside nested list items to their own markdown lines', () => {
+    getEditorMarkdownForSyncMock.mockReturnValue(
+      '- first\n- second\n  - inner first\n  - inner second\n- third'
+    );
+
+    const editor = createNestedListEditor();
+
+    expect(posToMarkdownLine(editor, 11)).toBe(2);
+    expect(posToMarkdownLine(editor, 20)).toBe(3);
+    expect(posToMarkdownLine(editor, 27)).toBe(4);
+    expect(posToMarkdownLine(editor, 36)).toBe(5);
+  });
+});
+
+describe('list line selection helpers', () => {
+  const getEditorMarkdownForSyncMock = getEditorMarkdownForSync as jest.MockedFunction<
+    typeof getEditorMarkdownForSync
+  >;
+
+  afterEach(() => {
+    getEditorMarkdownForSyncMock.mockReset();
+  });
+
+  it('maps nested list marker lines to the nested list item positions', () => {
+    getEditorMarkdownForSyncMock.mockReturnValue(
+      '- first\n- second\n  - inner first\n  - inner second\n- third'
+    );
+
+    const editor = createNestedListEditor();
+
+    expect(markdownLineToSelectionRange(editor, 2)).toEqual({
+      from: 10,
+      to: 16,
+    });
+    expect(markdownLineToPos(editor, 3)).toBe(19);
+    expect(markdownLineToSelectionRange(editor, 3)).toEqual({
+      from: 19,
+      to: 24,
+    });
+    expect(markdownLineToPos(editor, 4)).toBe(26);
+    expect(markdownLineToSelectionRange(editor, 4)).toEqual({
+      from: 26,
+      to: 31,
+    });
   });
 });

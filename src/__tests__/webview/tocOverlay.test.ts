@@ -9,13 +9,20 @@
  * require a more complete browser environment.
  */
 
-import { computeOutline } from '../../webview/utils/outline';
+jest.mock('../../webview/extensions/lineNumbers', () => ({
+  posToMarkdownLine: jest.fn((_editor: unknown, pos: number) => pos / 10),
+}));
+
+import { posToMarkdownLine } from '../../webview/extensions/lineNumbers';
+import { formatNavigationLabel } from '../../utils/navigationLabel';
+import { buildOutlineFromEditor, computeOutline } from '../../webview/utils/outline';
 
 // Mock types for testing
 interface MockHeading {
   level: number;
   text: string;
   pos: number;
+  line?: number | null;
 }
 
 describe('TOC Overlay', () => {
@@ -140,6 +147,18 @@ describe('TOC Overlay', () => {
       expect(result[1].pos).toBe(137);
       expect(result[2].pos).toBe(256);
     });
+
+    it('should preserve heading line numbers', () => {
+      const headings: MockHeading[] = [
+        { level: 1, text: 'First', pos: 42, line: 25 },
+        { level: 2, text: 'Second', pos: 137, line: 40 },
+      ];
+
+      const result = computeOutline(headings, 1000);
+
+      expect(result[0].line).toBe(25);
+      expect(result[1].line).toBe(40);
+    });
   });
 
   describe('heading level hierarchy', () => {
@@ -206,6 +225,46 @@ describe('TOC Overlay', () => {
 
       expect(result).toHaveLength(100);
     });
+  });
+});
+
+describe('outline line number integration', () => {
+  it('builds heading line numbers from editor positions', () => {
+    const headingNode = {
+      type: { name: 'heading' },
+      attrs: { level: 2 },
+      textContent: 'Section',
+      nodeSize: 12,
+    };
+    const editor = {
+      state: {
+        doc: {
+          content: { size: 400 },
+          descendants: (cb: (node: unknown, pos: number) => void) => {
+            cb(headingNode, 50);
+          },
+        },
+      },
+    };
+
+    const outline = buildOutlineFromEditor(editor as never);
+
+    expect(posToMarkdownLine).toHaveBeenCalledWith(editor, 50);
+    expect(outline).toEqual([
+      expect.objectContaining({
+        level: 2,
+        text: 'Section',
+        pos: 50,
+        line: 5,
+      }),
+    ]);
+  });
+
+  it('formats navigation labels with a line number prefix when enabled', () => {
+    expect(formatNavigationLabel({ text: 'Heading Text', line: 25 }, true)).toBe(
+      '25 - Heading Text'
+    );
+    expect(formatNavigationLabel({ text: 'Heading Text', line: 25 }, false)).toBe('Heading Text');
   });
 });
 

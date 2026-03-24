@@ -3,10 +3,10 @@ import { OutlineViewProvider, OutlineEntry } from '../../features/outlineView';
 describe('OutlineViewProvider', () => {
   // Sample outline: H1 > H2 > H3, H1 > H2b
   const sampleOutline: OutlineEntry[] = [
-    { level: 1, text: 'H1', pos: 0, sectionEnd: 100 },
-    { level: 2, text: 'H2', pos: 10, sectionEnd: 50 },
-    { level: 3, text: 'H3', pos: 20, sectionEnd: 30 },
-    { level: 2, text: 'H2b', pos: 60, sectionEnd: 90 },
+    { level: 1, text: 'H1', pos: 0, sectionEnd: 100, line: 12 },
+    { level: 2, text: 'H2', pos: 10, sectionEnd: 50, line: 18 },
+    { level: 3, text: 'H3', pos: 20, sectionEnd: 30, line: 24 },
+    { level: 2, text: 'H2b', pos: 60, sectionEnd: 90, line: 36 },
   ];
 
   describe('basic tree operations', () => {
@@ -34,7 +34,7 @@ describe('OutlineViewProvider', () => {
 
     it('handles empty heading text gracefully', async () => {
       const provider = new OutlineViewProvider();
-      provider.setOutline([{ level: 1, text: '', pos: 0, sectionEnd: 10 }]);
+      provider.setOutline([{ level: 1, text: '', pos: 0, sectionEnd: 10, line: 1 }]);
 
       const roots = await provider.getChildren();
       expect(roots?.[0]?.label).toMatchObject({
@@ -77,6 +77,27 @@ describe('OutlineViewProvider', () => {
         current = children?.[0];
       }
       expect(current?.description).toBe('H6');
+    });
+
+    it('shows navigation line numbers when enabled', async () => {
+      const provider = new OutlineViewProvider();
+      provider.setShowNavigationLineNumbers(true);
+      provider.setOutline(sampleOutline);
+
+      const roots = await provider.getChildren();
+      expect(roots?.[0]?.label).toMatchObject({
+        label: '12 - H1',
+      });
+    });
+
+    it('keeps plain heading labels when navigation line numbers are disabled', async () => {
+      const provider = new OutlineViewProvider();
+      provider.setOutline(sampleOutline);
+
+      const roots = await provider.getChildren();
+      expect(roots?.[0]?.label).toMatchObject({
+        label: 'H1',
+      });
     });
   });
 

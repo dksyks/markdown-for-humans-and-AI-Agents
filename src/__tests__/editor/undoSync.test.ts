@@ -197,7 +197,7 @@ describe('MarkdownEditorProvider undo/redo safety', () => {
       skipResizeWarning: false,
       imagePath: 'images',
       imagePathBase: 'relativeToDocument',
-      colors: expect.objectContaining({
+      displaySettings: expect.objectContaining({
         h1: '#1560c1',
         bold: '#bc0101',
         labelOpacity: 0.1,

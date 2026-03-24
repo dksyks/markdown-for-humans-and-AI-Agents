@@ -40,7 +40,7 @@ import {
   markdownLineToSelectionRange,
   installGutterResizeObserver,
 } from './extensions/lineNumbers';
-import { createFormattingToolbar, createTableMenu, updateToolbarStates, updateDisplaySettings } from './BubbleMenuView';
+import { createFormattingToolbar, createTableMenu, updateToolbarStates } from './BubbleMenuView';
 import { getEditorMarkdownForSync } from './utils/markdownSerialization';
 import {
   setupImageDragDrop,
@@ -57,6 +57,7 @@ import { buildOutlineFromEditor } from './utils/outline';
 import { scrollToHeading, scrollToPos } from './utils/scrollToHeading';
 import { collectExportContent, getDocumentTitle } from './utils/exportContent';
 import { renderProposalRedlineHtml, renderMarkdownHtml } from './utils/proposalRedline';
+import { updateDisplaySettings } from './displaySettings';
 
 interface ResizeSelectionAnchor {
   pos: number;
@@ -1691,17 +1692,20 @@ const trackSentContent = (content: string) => {
   lastSentTimestamp = Date.now();
 };
 
-/** Apply gutter display settings (heading labels, line numbers) */
-const applyGutterSettings = (colors: Record<string, unknown>) => {
+/** Apply display settings that affect the document gutter and navigation pane. */
+const applyDisplaySettings = (settings: Record<string, unknown>) => {
   const editorEl = document.querySelector('.markdown-editor') as HTMLElement | null;
   if (!editorEl) return;
-  const showHeading = colors.showHeadingGutter !== false; // default true
-  const showLines = colors.showLineNumbers === true; // default false
+  const showHeading = settings.showHeadingGutter !== false; // default true
+  const showLines = settings.showDocumentLineNumbers === true; // default false
   editorEl.classList.toggle('hide-heading-gutter', !showHeading);
   editorEl.classList.toggle('show-line-numbers', showLines);
-  updateDisplaySettings(colors);
-  if (typeof colors.outlinePanelWidth === 'number') {
-    setTocPanelWidth(colors.outlinePanelWidth);
+  updateDisplaySettings(settings);
+  if (typeof settings.outlinePanelWidth === 'number') {
+    setTocPanelWidth(settings.outlinePanelWidth);
+  }
+  if (editor && isTocVisible()) {
+    refreshTocList(editor);
   }
 };
 
@@ -2734,10 +2738,10 @@ window.addEventListener('message', (event: MessageEvent) => {
           (window as any).imagePathBase = message.imagePathBase;
         }
         // Apply color settings if present
-        if (message.colors && typeof message.colors === 'object') {
-          (window as any).md4hColors = message.colors;
-          applyColors({ ...DEFAULT_COLORS, ...(message.colors as object) });
-          applyGutterSettings(message.colors as Record<string, unknown>);
+        if (message.displaySettings && typeof message.displaySettings === 'object') {
+          (window as any).md4hColors = message.displaySettings;
+          applyColors({ ...DEFAULT_COLORS, ...(message.displaySettings as object) });
+          applyDisplaySettings(message.displaySettings as Record<string, unknown>);
         }
         // Set document filename for line-copy feature
         if (typeof message.fileName === 'string') {
@@ -2756,8 +2760,8 @@ window.addEventListener('message', (event: MessageEvent) => {
 
         // Auto-open navigation pane (once per webview lifecycle)
         if (!hasAutoOpenedNav) {
-          const colors = message.colors as Record<string, unknown> | undefined;
-          if (colors?.showNavigationPane) {
+          const displaySettings = message.displaySettings as Record<string, unknown> | undefined;
+          if (displaySettings?.showNavigationPane) {
             const mdContent = (message.content as string) || '';
             const hasHeadings = /^#{1,6} /m.test(mdContent);
             if (hasHeadings) {
@@ -2852,11 +2856,11 @@ window.addEventListener('message', (event: MessageEvent) => {
           (window as any).imagePathBase = message.imagePathBase;
         }
         // Apply color settings if present
-        if (message.colors && typeof message.colors === 'object') {
-          (window as any).md4hColors = message.colors;
-          applyColors({ ...DEFAULT_COLORS, ...(message.colors as object) });
-          applyGutterSettings(message.colors as Record<string, unknown>);
-          updateColorSettingsPanel(message.colors as object);
+        if (message.displaySettings && typeof message.displaySettings === 'object') {
+          (window as any).md4hColors = message.displaySettings;
+          applyColors({ ...DEFAULT_COLORS, ...(message.displaySettings as object) });
+          applyDisplaySettings(message.displaySettings as Record<string, unknown>);
+          updateColorSettingsPanel(message.displaySettings as object);
         }
         break;
       case 'imageResized': {

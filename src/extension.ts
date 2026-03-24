@@ -37,7 +37,23 @@ export function activate(context: vscode.ExtensionContext) {
     showCollapseAll: true,
   });
   outlineViewProvider.setTreeView(outlineTreeView);
+  outlineViewProvider.setShowNavigationLineNumbers(
+    vscode.workspace
+      .getConfiguration()
+      .get<boolean>('markdownForHumans.showNavigationLineNumbers', false)
+  );
   context.subscriptions.push(outlineTreeView);
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('markdownForHumans.showNavigationLineNumbers')) {
+        outlineViewProvider.setShowNavigationLineNumbers(
+          vscode.workspace
+            .getConfiguration()
+            .get<boolean>('markdownForHumans.showNavigationLineNumbers', false)
+        );
+      }
+    })
+  );
 
   // Initialize Word Count feature
   const wordCount = new WordCountFeature();
