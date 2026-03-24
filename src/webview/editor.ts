@@ -205,6 +205,7 @@ let sourceSyncRequestCounter = 0;
 /** Check if source view is currently open (used by toolbar button) */
 (window as any).isSourceVisible = () => isSourceViewOpen;
 let outlineUpdateTimeout: number | null = null;
+let selectionUpdateTimeout: number | null = null;
 let pendingSelectionRevealMessage:
   | {
       type: 'scrollAndSelect' | 'selectProposalSelection' | 'revealCurrentProposalSelection';
@@ -1316,7 +1317,7 @@ const scheduleOutlineUpdate = () => {
       refreshTocList(editor);
     }
     outlineUpdateTimeout = null;
-  }, 250);
+  }, 500);
 };
 
 // Global function for resolving image paths (used by CustomImage extension)
@@ -1438,7 +1439,7 @@ function immediateUpdate() {
  * Debounced update with error handling
  * Prevents sync while images are being saved to avoid race conditions
  */
-function debouncedUpdate(markdown: string) {
+function debouncedUpdate(editorInstance: Editor) {
   if (updateTimeout) {
     clearTimeout(updateTimeout);
   }
@@ -1450,9 +1451,12 @@ function debouncedUpdate(markdown: string) {
         const count = getPendingImageCount();
         console.log(`${BUILD_TAG} Delaying document sync - ${count} image(s) still being saved`);
         // Reschedule the update to check again
-        debouncedUpdate(markdown);
+        debouncedUpdate(editorInstance);
         return;
       }
+
+      // Serialize markdown only after typing pause (not on every keystroke)
+      const markdown = getEditorMarkdownForSync(editorInstance);
 
       // Track content hash to detect and ignore echo updates
       trackSentContent(markdown);
@@ -1631,57 +1635,62 @@ function initializeEditor(initialContent: string) {
           // Track when user last edited
           lastUserEditTime = Date.now();
 
-          const markdown = getEditorMarkdownForSync(editor);
-          debouncedUpdate(markdown);
+          debouncedUpdate(editor);
           scheduleOutlineUpdate();
         } catch (error) {
           console.error(`${BUILD_TAG} Error in onUpdate:`, error);
         }
       },
       onSelectionUpdate: ({ editor }) => {
-        try {
-          const { from, empty } = editor.state.selection;
-          vscode.postMessage({ type: 'selectionChange', pos: from });
-
-          // Record navigation history: always debounce; record when cursor stops for 1s
-          navRecordPosition(from);
-          let selected = empty ? null : getSelectionAsMarkdown(editor);
-          const fullMarkdown = getEditorMarkdownForSync(editor);
-          let context_before: string | null = null;
-          let context_after: string | null = null;
-          if (selected) {
-            const selectionContext = getPlainTextSelectionContext(editor);
-            const resolvedMatch = resolveSelectionMatch(fullMarkdown, selected, selectionContext);
-            if (resolvedMatch) {
-              selected = resolvedMatch.selected;
-              const idx = resolvedMatch.index;
-              context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
-              context_after = fullMarkdown.slice(idx + selected.length, idx + selected.length + 500);
-            }
-          }
-          if (selected && context_before === null && context_after === null) {
-            const idx = fullMarkdown.indexOf(selected);
-            if (idx !== -1) {
-              context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
-              context_after = fullMarkdown.slice(idx + selected.length, idx + selected.length + 500);
-            }
-          }
-          const headings_before = getHeadingsBeforeSelection(editor);
-          vscode.postMessage({ type: 'selectionPush', selected, context_before, context_after, headings_before });
-
-          // Update active heading highlight in navigation pane
-          if (isTocVisible()) {
-            updateActiveHeading(from, editor);
-          }
-
-          // Sync cursor position to source view (if open)
-          // Only sync when MFH has focus (user is interacting with it, not passive update)
-          if (isSourceViewOpen && !isSyncFromSource && document.hasFocus()) {
-            postSourceSync(editor, { reason: 'mfhSelectionUpdate' });
-          }
-        } catch (error) {
-          console.warn(`${BUILD_TAG} Selection update failed:`, error);
+        if (selectionUpdateTimeout) {
+          clearTimeout(selectionUpdateTimeout);
         }
+        selectionUpdateTimeout = window.setTimeout(() => {
+          selectionUpdateTimeout = null;
+          try {
+            const { from, empty } = editor.state.selection;
+            vscode.postMessage({ type: 'selectionChange', pos: from });
+
+            // Record navigation history: always debounce; record when cursor stops for 1s
+            navRecordPosition(from);
+            let selected = empty ? null : getSelectionAsMarkdown(editor);
+            const fullMarkdown = getEditorMarkdownForSync(editor);
+            let context_before: string | null = null;
+            let context_after: string | null = null;
+            if (selected) {
+              const selectionContext = getPlainTextSelectionContext(editor);
+              const resolvedMatch = resolveSelectionMatch(fullMarkdown, selected, selectionContext);
+              if (resolvedMatch) {
+                selected = resolvedMatch.selected;
+                const idx = resolvedMatch.index;
+                context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
+                context_after = fullMarkdown.slice(idx + selected.length, idx + selected.length + 500);
+              }
+            }
+            if (selected && context_before === null && context_after === null) {
+              const idx = fullMarkdown.indexOf(selected);
+              if (idx !== -1) {
+                context_before = fullMarkdown.slice(Math.max(0, idx - 500), idx);
+                context_after = fullMarkdown.slice(idx + selected.length, idx + selected.length + 500);
+              }
+            }
+            const headings_before = getHeadingsBeforeSelection(editor);
+            vscode.postMessage({ type: 'selectionPush', selected, context_before, context_after, headings_before });
+
+            // Update active heading highlight in navigation pane
+            if (isTocVisible()) {
+              updateActiveHeading(from, editor);
+            }
+
+            // Sync cursor position to source view (if open)
+            // Only sync when MFH has focus (user is interacting with it, not passive update)
+            if (isSourceViewOpen && !isSyncFromSource && document.hasFocus()) {
+              postSourceSync(editor, { reason: 'mfhSelectionUpdate' });
+            }
+          } catch (error) {
+            console.warn(`${BUILD_TAG} Selection update failed:`, error);
+          }
+        }, 500);
       },
       onCreate: () => {
         console.log(`${BUILD_TAG} Editor created successfully`);
@@ -1847,8 +1856,14 @@ function initializeEditor(initialContent: string) {
         });
     resizePreservationObserver?.observe(editorRoot ?? editorElement);
 
+    let resizeAnchorTimeout: number | null = null;
     editorInstance.on('selectionUpdate', () => {
-      captureStableResizeAnchor();
+      // Debounce to avoid forcing synchronous layout reflow (coordsAtPos) on every keystroke
+      if (resizeAnchorTimeout) clearTimeout(resizeAnchorTimeout);
+      resizeAnchorTimeout = window.setTimeout(() => {
+        resizeAnchorTimeout = null;
+        captureStableResizeAnchor();
+      }, 500);
     });
     captureStableResizeAnchor();
 
@@ -1891,6 +1906,10 @@ function initializeEditor(initialContent: string) {
     });
 
     const clearPinnedSelection = () => {
+      // Only dispatch a transaction when there is actually a pinned selection to clear.
+      // Previously this dispatched on every keydown, doubling per-keystroke transaction cost.
+      const current = pinnedSelectionPluginKey.getState(editorInstance.state);
+      if (current === null || current === undefined) return;
       editorInstance.view.dispatch(
         editorInstance.state.tr.setMeta(pinnedSelectionPluginKey, null)
       );

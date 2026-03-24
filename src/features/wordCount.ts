@@ -93,6 +93,7 @@ export function isMarkdownDocument(document: vscode.TextDocument): boolean {
 export class WordCountFeature {
   private statusBarItem: vscode.StatusBarItem;
   private disposables: vscode.Disposable[] = [];
+  private updateTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.statusBarItem = vscode.window.createStatusBarItem(
@@ -108,7 +109,7 @@ export class WordCountFeature {
   activate(context: vscode.ExtensionContext): void {
     // Register event listeners
     this.disposables.push(
-      vscode.workspace.onDidChangeTextDocument(() => this.update()),
+      vscode.workspace.onDidChangeTextDocument(() => this.debouncedUpdate()),
       vscode.window.onDidChangeActiveTextEditor(() => this.update()),
       vscode.window.onDidChangeTextEditorSelection(() => this.updateSelection())
     );
@@ -118,6 +119,16 @@ export class WordCountFeature {
 
     // Initial update
     this.update();
+  }
+
+  private debouncedUpdate(): void {
+    if (this.updateTimeout) {
+      clearTimeout(this.updateTimeout);
+    }
+    this.updateTimeout = setTimeout(() => {
+      this.updateTimeout = null;
+      this.update();
+    }, 500);
   }
 
   /**

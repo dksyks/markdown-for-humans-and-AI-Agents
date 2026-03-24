@@ -348,6 +348,9 @@ function showToast(message: string): void {
 /**
  * TipTap extension that displays markdown source line numbers in the editor gutter.
  */
+/** Timeout handle for deferred line number rebuilds */
+let lineNumberRebuildTimeout: ReturnType<typeof setTimeout> | null = null;
+
 export const LineNumbers = Extension.create({
   name: 'lineNumbers',
 
@@ -371,10 +374,25 @@ export const LineNumbers = Extension.create({
             return DecorationSet.empty;
           },
           apply(tr, oldDecorations) {
-            if (!tr.docChanged && !tr.getMeta('lineNumbersRefresh')) {
+            if (tr.getMeta('lineNumbersRefresh')) {
+              return buildDecorations(tr.doc, editor);
+            }
+            if (tr.docChanged) {
+              if (lineNumberRebuildTimeout) {
+                clearTimeout(lineNumberRebuildTimeout);
+              }
+              lineNumberRebuildTimeout = setTimeout(() => {
+                lineNumberRebuildTimeout = null;
+                if (editor?.view) {
+                  editor.view.dispatch(
+                    editor.state.tr.setMeta('lineNumbersRefresh', true)
+                  );
+                }
+              }, 500);
               return oldDecorations;
             }
-            return buildDecorations(tr.doc, editor);
+            // Keep existing decorations until an explicit deferred refresh runs.
+            return oldDecorations;
           },
         },
         props: {
