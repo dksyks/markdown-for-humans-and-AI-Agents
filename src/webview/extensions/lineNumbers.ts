@@ -18,6 +18,19 @@ let documentFilename = '';
 /** Cached total line count for gutter width recalculation */
 let cachedTotalLines = 0;
 
+type MarkdownLineMappingInfo = {
+  pos: number;
+  lineNum: number;
+  topLevelType: string | null;
+  topLevelOffset: number | null;
+  contentLineNum: number | null;
+  strategy: string;
+  childType?: string;
+  childIndex?: number;
+  itemIndex?: number;
+  rowIndex?: number;
+};
+
 /**
  * Recalculate and apply the --gutter-width CSS variable based on which
  * decorations are currently enabled and the document line count.
@@ -331,6 +344,19 @@ function positionGitHubAlertSpans(wrapper: Element, blockEl: Element, spans: HTM
   }
 }
 
+function syncAnchorExtent(wrapper: Element, sibling: Element): void {
+  const wrapperEl = wrapper as HTMLElement;
+  const siblingRect = sibling.getBoundingClientRect();
+  if (!Number.isFinite(siblingRect.height) || siblingRect.height <= 0) {
+    wrapperEl.style.removeProperty('height');
+    wrapperEl.style.removeProperty('margin-bottom');
+    return;
+  }
+
+  wrapperEl.style.height = `${siblingRect.height}px`;
+  wrapperEl.style.marginBottom = `${-siblingRect.height}px`;
+}
+
 /**
  * Show a brief toast notification at the bottom of the screen.
  */
@@ -570,20 +596,202 @@ function findListItemLine(
   return -1;
 }
 
-/**
- * Given a ProseMirror position, return the 1-based markdown source line number.
- * Returns -1 if the position cannot be mapped.
- */
-export function posToMarkdownLine(editor: any, pos: number): number {
+function findSequentialListItemLineForPos(
+  node: any,
+  offset: number,
+  pos: number,
+  firstLineNum: number
+): { lineNum: number; itemIndex: number } | null {
+  let itemIndex = 0;
+  let matched: { lineNum: number; itemIndex: number } | null = null;
+
+  node.forEach((listItem: any, itemOff: number) => {
+    if (matched) return;
+    const itemAbsStart = offset + 1 + itemOff + 1;
+    const itemAbsEnd = offset + 1 + itemOff + listItem.nodeSize - 1;
+    if (pos >= itemAbsStart && pos <= itemAbsEnd) {
+      matched = {
+        lineNum: firstLineNum + itemIndex,
+        itemIndex,
+      };
+      return;
+    }
+    itemIndex++;
+  });
+
+  return matched;
+}
+
+function findSequentialQuoteChildLineForPos(
+  node: any,
+  offset: number,
+  pos: number,
+  firstContentLineNum: number,
+  isGitHubAlert: boolean
+): {
+  lineNum: number;
+  strategy: string;
+  childType?: string;
+  childIndex?: number;
+  itemIndex?: number;
+} | null {
+  let childLineNum = firstContentLineNum;
+  let childIndex = 0;
+  let matched: {
+    lineNum: number;
+    strategy: string;
+    childType?: string;
+    childIndex?: number;
+    itemIndex?: number;
+  } | null = null;
+
+  node.forEach((child: any, childOff: number) => {
+    if (matched) return;
+
+    const childType = child.type?.name ?? 'unknown';
+    const childOffset = offset + 1 + childOff;
+    const childAbsStart = childOffset + 1;
+    const childAbsEnd = childOffset + child.nodeSize - 1;
+
+    if (pos >= childAbsStart && pos <= childAbsEnd) {
+      if (childType === 'bulletList' || childType === 'orderedList' || childType === 'taskList') {
+        const itemMatch = findSequentialListItemLineForPos(child, childOffset, pos, childLineNum);
+        if (itemMatch) {
+          matched = {
+            lineNum: itemMatch.lineNum,
+            strategy: isGitHubAlert ? 'githubAlertChildListItem' : 'blockquoteChildListItem',
+            childType,
+            childIndex,
+            itemIndex: itemMatch.itemIndex,
+          };
+          return;
+        }
+      }
+
+      matched = {
+        lineNum: childLineNum,
+        strategy: isGitHubAlert ? 'githubAlertChild' : 'blockquoteChild',
+        childType,
+        childIndex,
+      };
+      return;
+    }
+
+    childLineNum += countAlertChildLines(child);
+    childIndex++;
+  });
+
+  return matched;
+}
+
+function findNestedMarkdownLineForPos(
+  node: any,
+  offset: number,
+  pos: number,
+  contentLineIndex: number,
+  lines: string[]
+): {
+  lineNum: number;
+  strategy: string;
+  childType?: string;
+  childIndex?: number;
+  itemIndex?: number;
+  rowIndex?: number;
+} | null {
+  if (contentLineIndex < 0 || typeof node?.forEach !== 'function') {
+    return null;
+  }
+
+  const typeName = node.type.name;
+  const lineNum = contentLineIndex + 1;
+
+  if (typeName === 'table') {
+    let rowIndex = 0;
+    let matchedLine: {
+      lineNum: number;
+      strategy: string;
+      rowIndex?: number;
+    } | null = null;
+    node.forEach((row: any, rowOff: number) => {
+      if (matchedLine) return;
+      const rowAbsStart = offset + 1 + rowOff + 1;
+      const rowAbsEnd = offset + 1 + rowOff + row.nodeSize - 1;
+      if (pos >= rowAbsStart && pos <= rowAbsEnd) {
+        matchedLine = {
+          lineNum: rowIndex === 0 ? lineNum : lineNum + rowIndex + 1,
+          strategy: 'tableRow',
+          rowIndex,
+        };
+        return;
+      }
+      rowIndex++;
+    });
+    return matchedLine;
+  }
+
+  if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
+    let itemIndex = 0;
+    let matchedLine: {
+      lineNum: number;
+      strategy: string;
+      itemIndex?: number;
+    } | null = null;
+    node.forEach((listItem: any, itemOff: number) => {
+      if (matchedLine) return;
+      const itemAbsStart = offset + 1 + itemOff + 1;
+      const itemAbsEnd = offset + 1 + itemOff + listItem.nodeSize - 1;
+      if (pos >= itemAbsStart && pos <= itemAbsEnd) {
+        const itemLine = findListItemLine(typeName, itemIndex, lines, contentLineIndex);
+        matchedLine = {
+          lineNum: itemLine >= 0 ? itemLine + 1 : lineNum + itemIndex,
+          strategy: 'topLevelListItem',
+          itemIndex,
+        };
+        return;
+      }
+      itemIndex++;
+    });
+    return matchedLine;
+  }
+
+  if (typeName === 'blockquote') {
+    return findSequentialQuoteChildLineForPos(node, offset, pos, lineNum, false);
+  }
+
+  if (typeName === 'githubAlert') {
+    return findSequentialQuoteChildLineForPos(node, offset, pos, lineNum + 1, true);
+  }
+
+  return null;
+}
+
+function resolveMarkdownLineMapping(editor: any, pos: number): MarkdownLineMappingInfo {
   const markdown = getEditorMarkdownForSync(editor);
-  if (!markdown) return -1;
+  if (!markdown) {
+    return {
+      pos,
+      lineNum: -1,
+      topLevelType: null,
+      topLevelOffset: null,
+      contentLineNum: null,
+      strategy: 'missingMarkdown',
+    };
+  }
+
   const lines = markdown.split('\n');
   const doc = editor.state.doc;
   let lineIndex = 0;
-  let result = -1;
+  let mapping: MarkdownLineMappingInfo = {
+    pos,
+    lineNum: -1,
+    topLevelType: null,
+    topLevelOffset: null,
+    contentLineNum: null,
+    strategy: 'unmapped',
+  };
 
   doc.forEach((node: any, offset: number) => {
-    if (result !== -1) return;
+    if (mapping.lineNum !== -1) return;
 
     const typeName = node.type.name;
     if (typeName === 'paragraph') {
@@ -598,7 +806,20 @@ export function posToMarkdownLine(editor: any, pos: number): number {
     const contentLineIndex = findBlockLine(node, lines, lineIndex);
 
     if (pos >= offset && pos < nodeEnd) {
-      result = contentLineIndex >= 0 ? contentLineIndex + 1 : -1;
+      const nestedMatch = findNestedMarkdownLineForPos(node, offset, pos, contentLineIndex, lines);
+      mapping = {
+        pos,
+        lineNum:
+          nestedMatch?.lineNum ?? (contentLineIndex >= 0 ? contentLineIndex + 1 : -1),
+        topLevelType: typeName,
+        topLevelOffset: offset,
+        contentLineNum: contentLineIndex >= 0 ? contentLineIndex + 1 : null,
+        strategy: nestedMatch?.strategy ?? 'topLevelBlock',
+        childType: nestedMatch?.childType,
+        childIndex: nestedMatch?.childIndex,
+        itemIndex: nestedMatch?.itemIndex,
+        rowIndex: nestedMatch?.rowIndex,
+      };
       return;
     }
 
@@ -607,7 +828,15 @@ export function posToMarkdownLine(editor: any, pos: number): number {
     lineIndex = countFrom + blockLines;
   });
 
-  return result;
+  return mapping;
+}
+
+/**
+ * Given a ProseMirror position, return the 1-based markdown source line number.
+ * Returns -1 if the position cannot be mapped.
+ */
+export function posToMarkdownLine(editor: any, pos: number): number {
+  return resolveMarkdownLineMapping(editor, pos).lineNum;
 }
 
 /**
@@ -840,7 +1069,10 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
 
           // After DOM rendering, measure <tr> positions and align gutter spans
           requestAnimationFrame(() => {
-            const tableEl = wrapper.nextElementSibling?.querySelector('table');
+            const siblingEl = wrapper.nextElementSibling as Element | null;
+            if (!siblingEl) return;
+            syncAnchorExtent(wrapper, siblingEl);
+            const tableEl = siblingEl.querySelector('table');
             if (!tableEl) return;
             const wrapperRect = wrapper.getBoundingClientRect();
             const rows = tableEl.querySelectorAll('tr');
@@ -876,6 +1108,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
           requestAnimationFrame(() => {
             const blockEl = wrapper.nextElementSibling;
             if (!blockEl) return;
+            syncAnchorExtent(wrapper, blockEl);
             positionGitHubAlertSpans(wrapper, blockEl, spans);
           });
 
@@ -913,6 +1146,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
           requestAnimationFrame(() => {
             const blockEl = wrapper.nextElementSibling;
             if (!blockEl) return;
+            syncAnchorExtent(wrapper, blockEl);
             const wrapperRect = wrapper.getBoundingClientRect();
             const children = Array.from(blockEl.querySelectorAll(':scope > *'));
             let spanIdx = 0;
@@ -959,6 +1193,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
           requestAnimationFrame(() => {
             const listEl = wrapper.nextElementSibling;
             if (!listEl) return;
+            syncAnchorExtent(wrapper, listEl);
             const wrapperRect = wrapper.getBoundingClientRect();
             const items = listEl.querySelectorAll(':scope > li');
             items.forEach((li: Element, i: number) => {
@@ -1007,6 +1242,7 @@ export function repositionGutterDecorations(): void {
   anchors.forEach(wrapper => {
     const sibling = wrapper.nextElementSibling;
     if (!sibling) return;
+    syncAnchorExtent(wrapper, sibling);
     const spans = wrapper.querySelectorAll('.line-number-gutter') as NodeListOf<HTMLElement>;
 
     // Determine what kind of sibling this is and get the child elements to align to
