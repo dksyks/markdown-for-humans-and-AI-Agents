@@ -10,6 +10,7 @@ import { WordCountFeature } from './features/wordCount';
 import { getActiveWebviewPanel } from './activeWebview';
 import { outlineViewProvider } from './features/outlineView';
 import { startProposalWatcher } from './features/proposalWatcher';
+import { startPlanWatcher } from './features/planWatcher';
 import { startSelectionRevealWatcher } from './features/selectionRevealWatcher';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -61,6 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Watch for incoming AI proposals (Plan Selection feature)
   context.subscriptions.push(startProposalWatcher(context));
+  context.subscriptions.push(startPlanWatcher(context));
   context.subscriptions.push(startSelectionRevealWatcher());
 
   // Register commands
@@ -178,6 +180,24 @@ export function activate(context: vscode.ExtensionContext) {
       const panel = getActiveWebviewPanel();
       if (panel) {
         panel.webview.postMessage({ type: 'openGotoLine' });
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('markdownForHumans.planOverlay.nextRange', () => {
+      const panel = getActiveWebviewPanel();
+      if (panel) {
+        panel.webview.postMessage({ type: 'planNextRange' });
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('markdownForHumans.planOverlay.previousRange', () => {
+      const panel = getActiveWebviewPanel();
+      if (panel) {
+        panel.webview.postMessage({ type: 'planPreviousRange' });
       }
     })
   );

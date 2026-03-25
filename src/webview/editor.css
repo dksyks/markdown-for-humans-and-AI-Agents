@@ -3275,3 +3275,219 @@ body::-webkit-scrollbar-thumb:active {
   background-color: rgba(255, 255, 255, 0.8);
 }
   */
+
+/* ===================================================================
+   Plan Overlay — sequential_replacement_plan review UI
+   =================================================================== */
+
+.plan-overlay {
+  position: fixed;
+  top: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--vscode-editor-background);
+  border: 2px solid rgba(0, 0, 0, 0.5);
+  box-sizing: border-box;
+  max-height: 520px;
+  min-height: 180px;
+}
+
+/* --- Range column (left) --- */
+
+.plan-range-column-wrap {
+  flex: 0 0 90px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-range-column {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  outline: none;
+  border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, #444));
+  border-radius: 3px;
+  padding: 4px;
+}
+
+.plan-range-row {
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  cursor: pointer;
+  border-radius: 3px;
+  white-space: nowrap;
+  user-select: none;
+  color: var(--vscode-foreground);
+  opacity: 0.7;
+  transition: background 0.1s, opacity 0.1s;
+}
+
+.plan-range-row:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.1));
+  opacity: 1;
+}
+
+.plan-range-row-selected {
+  background: var(--vscode-list-activeSelectionBackground, rgba(0, 120, 212, 0.3));
+  color: var(--vscode-list-activeSelectionForeground, inherit);
+  opacity: 1;
+  font-weight: 600;
+}
+
+.plan-range-row-commented {
+  border-left: 3px solid var(--vscode-charts-green, #4caf50);
+  padding-left: 5px;
+  font-weight: 600;
+}
+
+.plan-range-row-no-comment {
+  border-left: 3px solid var(--vscode-disabledForeground, #888);
+  padding-left: 5px;
+  font-weight: 600;
+}
+
+.plan-range-row-accepted {
+  border-left: 3px solid var(--vscode-charts-green, #4caf50);
+  padding-left: 5px;
+  font-weight: 600;
+}
+
+.plan-range-row-rejected {
+  border-left: 3px solid var(--vscode-charts-red, #f44336);
+  padding-left: 5px;
+  font-weight: 600;
+}
+
+.plan-btn-active {
+  outline: 2px solid var(--vscode-focusBorder, #2980b9);
+  outline-offset: -2px;
+}
+
+/* --- Right side --- */
+
+.plan-right-side {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.plan-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+  color: var(--vscode-foreground);
+  flex-shrink: 0;
+}
+
+/* --- Proposed change pane (read-only) --- */
+
+.plan-proposed-change {
+  flex: 1 1 0;
+  min-height: 120px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--vscode-widget-border, #444);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-panel-border, #444) 10%);
+}
+
+.plan-proposed-editor.markdown-editor {
+  margin: 4px 8px;
+  padding: 0;
+  min-height: 1em;
+  pointer-events: auto;
+  user-select: text;
+}
+
+/* --- Response pane (editable) --- */
+
+.plan-response {
+  flex: 1 1 0;
+  min-height: 90px;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--vscode-focusBorder, #2980b9);
+  border-radius: 3px;
+}
+
+.plan-response-editor.markdown-editor {
+  margin: 4px 8px;
+  padding: 0;
+  min-height: 1em;
+}
+
+.plan-response-toolbar {
+  flex-shrink: 0;
+}
+
+/* --- Buttons --- */
+
+.plan-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.plan-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  cursor: pointer;
+  font-family: var(--vscode-font-family, sans-serif);
+}
+
+.plan-btn-primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.plan-btn-primary:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.plan-btn-secondary {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.plan-btn-secondary:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* --- Validation warning --- */
+
+.plan-validation-warning {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--vscode-inputValidation-warningBackground, #5a5a00);
+  color: var(--vscode-inputValidation-warningForeground, #fff);
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 12px;
+  z-index: 100;
+  white-space: nowrap;
+  animation: plan-warning-fade 5s forwards;
+}
+
+@keyframes plan-warning-fade {
+  0%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}

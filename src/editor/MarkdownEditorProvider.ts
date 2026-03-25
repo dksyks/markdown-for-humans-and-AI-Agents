@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { outlineViewProvider } from '../features/outlineView';
 import {
   getActiveDocument,
@@ -25,6 +26,7 @@ import {
 import { buildResizeBackupLocation, resolveBackupPathWithCollisionDetection } from './imageBackups';
 
 export const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.json');
+export const PLAN_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Plan.json');
 export const SELECTION_REVEAL_TEMP_FILE = path.join(
   os.tmpdir(),
   'MarkdownForHumans-SelectionReveal.json'
@@ -165,6 +167,8 @@ export function getInstanceTempDir(instanceId: string = getEditorHostInstanceId(
 export const SELECTION_TEMP_FILE = getSelectionTempFilePath();
 export const RESPONSE_TEMP_FILE = getResponseTempFilePath();
 export const PROPOSAL_STATE_DIR = getProposalStateDir();
+export const PLAN_RESPONSE_TEMP_FILE = getPlanResponseTempFilePath();
+export const PLAN_STATE_DIR = getPlanStateDir();
 export const SELECTION_REVEAL_RESPONSE_TEMP_FILE = getSelectionRevealResponseTempFilePath();
 
 export function getSelectionTempFilePath(instanceId: string = getEditorHostInstanceId()): string {
@@ -172,7 +176,7 @@ export function getSelectionTempFilePath(instanceId: string = getEditorHostInsta
 }
 
 function encodeSelectionFilePath(documentPath: string): string {
-  return Buffer.from(documentPath, 'utf8').toString('hex');
+  return crypto.createHash('sha256').update(documentPath, 'utf8').digest('hex').slice(0, 32);
 }
 
 export function getSelectionStateFilePathForDocument(
@@ -191,6 +195,14 @@ export function getResponseTempFilePath(instanceId: string = getEditorHostInstan
 
 export function getProposalStateDir(instanceId: string = getEditorHostInstanceId()): string {
   return path.join(getInstanceTempDir(instanceId), 'ProposalState');
+}
+
+export function getPlanResponseTempFilePath(instanceId: string = getEditorHostInstanceId()): string {
+  return path.join(getInstanceTempDir(instanceId), 'PlanResponse.json');
+}
+
+export function getPlanStateDir(instanceId: string = getEditorHostInstanceId()): string {
+  return path.join(getInstanceTempDir(instanceId), 'PlanState');
 }
 
 export function getSelectionRevealResponseTempFilePath(

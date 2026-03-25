@@ -70,8 +70,8 @@ interface ProposalStatePayload {
   message?: string;
   error_type?: string | null;
   error?: string | null;
-  propose_single_replacement_session_id?: string;
-  propose_sequential_replacements_session_id?: string;
+  make_single_replacement_session_id?: string;
+  make_sequential_replacements_session_id?: string;
   original?: string;
   context_before?: string | null;
   context_after?: string | null;
@@ -463,7 +463,7 @@ export class ProposalPanel {
     if (this._proposalQueue.length === 1) {
       return {
         ...basePayload,
-        propose_single_replacement_session_id: this._requestId,
+        make_single_replacement_session_id: this._requestId,
         original: this._proposal.original,
         context_before: this._proposal.context_before,
         context_after: this._proposal.context_after,
@@ -475,7 +475,7 @@ export class ProposalPanel {
 
     return {
       ...basePayload,
-      propose_sequential_replacements_session_id: this._requestId,
+      make_sequential_replacements_session_id: this._requestId,
       results: this._proposalResults.map(result => ({
         status: result.status,
         original: result.original,

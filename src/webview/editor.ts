@@ -75,6 +75,12 @@ import { collectExportContent, getDocumentTitle } from './utils/exportContent';
 import { renderProposalRedlineHtml, renderMarkdownHtml } from './utils/proposalRedline';
 import { updateDisplaySettings } from './displaySettings';
 import { shouldPreserveFocusedElementOnWindowFocus } from './utils/focusRouting';
+import {
+  initializePlanOverlay,
+  destroyPlanOverlay,
+  selectNextRange as planSelectNext,
+  selectPreviousRange as planSelectPrev,
+} from './planOverlay';
 
 interface ResizeSelectionAnchor {
   pos: number;
@@ -3395,6 +3401,28 @@ window.addEventListener('message', (event: MessageEvent) => {
           const requestId = message.requestId as number;
           handleFileSearchResults(results, requestId);
         });
+        break;
+      }
+      case 'planInit': {
+        if (!editor) break;
+        initializePlanOverlay(
+          message as any,
+          editor,
+          vscode,
+          navRecordPosition
+        );
+        break;
+      }
+      case 'planDestroy': {
+        destroyPlanOverlay();
+        break;
+      }
+      case 'planNextRange': {
+        planSelectNext();
+        break;
+      }
+      case 'planPreviousRange': {
+        planSelectPrev();
         break;
       }
       default:

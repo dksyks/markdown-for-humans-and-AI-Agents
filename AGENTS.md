@@ -182,22 +182,27 @@ See [`examples/CLAUDE.md`](examples/CLAUDE.md) for the full tool reference. Summ
 
 - `get_selection` - reads the current editor selection plus `file`, `context_before`, `context_after`, and `headings_before`. **Only call this when the user refers to something they have highlighted.** Do not call it as a routine prerequisite before proposing changes.
 
-- `propose_single_replacement` - proposes up to 3 alternative rewrites for a selection. Pass `selection` (the exact text to replace - no prior `get_selection` call needed), an `options` array (each with `replacement` and optional `justification`), and optional context fields. The extension automatically scrolls the main editor to the target passage when the panel opens. The panel shows a shared redline (driven by the focused option) and per-option Accept buttons. Treat as confirmed only when status is `"applied"`. `selected_option_index` in the response indicates which alternative was accepted. Status `"skipped"` means the user skipped; `"rejected"` means the user actively rejected the proposal as unwanted. If status is `"in_progress"`, resume with `resume_single_replacement` using the returned `session_id`.
+- `make_single_replacement` - proposes up to 3 alternative rewrites for a selection. Pass `selection` (the exact text to replace - no prior `get_selection` call needed), an `options` array (each with `replacement` and optional `justification`), and optional context fields. The extension automatically scrolls the main editor to the target passage when the panel opens. The panel shows a shared redline (driven by the focused option) and per-option Accept buttons. Treat as confirmed only when status is `"applied"`. `selected_option_index` in the response indicates which alternative was accepted. Status `"skipped"` means the user skipped; `"rejected"` means the user actively rejected the proposal as unwanted. If status is `"in_progress"`, resume with `resume_make_single_replacement` using the returned `session_id`.
 
-- `resume_single_replacement` - resumes a single proposal that returned `"in_progress"`. Pass `session_id`.
+- `resume_make_single_replacement` - resumes a single proposal that returned `"in_progress"`. Pass `session_id`.
 
-- `propose_sequential_replacements` - proposes multiple replacements for the same file in one uninterrupted review flow. Pass `file` and an ordered `changes` array of `{ selection, options, context_before, context_after, headings_before }` where `options` is an array of `{ replacement, justification? }` (1-3 per step). Treat each step as confirmed only when its status is `"applied"`. If status is `"in_progress"`, resume with `resume_sequential_replacements`.
+- `make_sequential_replacements` - proposes multiple replacements for the same file in one uninterrupted review flow. Pass `file` and an ordered `changes` array of `{ selection, options, context_before, context_after, headings_before }` where `options` is an array of `{ replacement, justification? }` (1-3 per step). Treat each step as confirmed only when its status is `"applied"`. If status is `"in_progress"`, resume with `resume_make_sequential_replacements`.
 
-- `resume_sequential_replacements` - resumes a sequential review that returned `"in_progress"`. Pass `session_id`.
+- `resume_make_sequential_replacements` - resumes a sequential review that returned `"in_progress"`. Pass `session_id`.
 
 - `scroll_to_selection` - scrolls the WYSIWYG editor to a known passage. Use when the agent has identified text from file context and the user wants to see it highlighted. Do not use as an immediate follow-up to `get_selection`.
 
+- `sequential_replacement_plan` - presents proposed changes with reasoning for user review and commentary without modifying the document. Pass `file` and an ordered `proposed_replacements` array of `{ range: { start, end }, proposed_change }` where `range` is markdown source line numbers (1-based, inclusive) and `proposed_change` is markdown with the proposed change and reasoning. The user reviews each range, provides comments or clicks "No Comment", then submits. Each result has `status` (`"commented"`, `"no_comment"`, `"skipped"`) and `user_comment`. If status is `"in_progress"`, resume with `resume_sequential_replacement_plan`.
+
+- `resume_sequential_replacement_plan` - resumes a plan review that returned `"in_progress"`. Pass `sequential_replacement_plan_session_id`.
+
 Typical patterns:
 
-- Agent knows what to change (most cases): call `propose_single_replacement` or `propose_sequential_replacements` directly with the target text - no `get_selection` needed.
+- Agent knows what to change (most cases): call `make_single_replacement` or `make_sequential_replacements` directly with the target text - no `get_selection` needed.
 - User points at selected text: call `get_selection` to read what they highlighted, then call the appropriate proposal tool.
-- Batch review: call `propose_sequential_replacements` with `file` and an ordered change list.
+- Batch review: call `make_sequential_replacements` with `file` and an ordered change list.
 - Agent-driven reveal (no proposal): call `scroll_to_selection` with the exact text and available context.
+- Agent wants user feedback on proposed changes: call `sequential_replacement_plan` with line ranges and reasoning. User comments are returned per-range.
 
 ---
 

@@ -481,7 +481,7 @@ describe('ProposalPanel', () => {
 
     const payload = JSON.parse(fs.readFileSync(RESPONSE_TEMP_FILE, 'utf8')) as {
       id: string;
-      propose_single_replacement_session_id: string;
+      make_single_replacement_session_id: string;
       status: string;
       message: string;
       review_kind: string;
@@ -494,7 +494,7 @@ describe('ProposalPanel', () => {
       status: 'pending',
       message: 'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".',
       progress: { current: 1, total: 1 },
-      propose_single_replacement_session_id: 'pending-1',
+      make_single_replacement_session_id: 'pending-1',
       original: 'Old text',
       context_before: null,
       context_after: null,

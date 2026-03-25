@@ -10,8 +10,10 @@ const BUILD_TAG = `[MD4H ${__BUILD_TIME__}]`;
 import { Editor } from '@tiptap/core';
 
 export function scrollToPos(editor: Editor, pos: number, noFocus = false, centerInViewport = false) {
-  editor.commands.setTextSelection(pos);
-  if (!noFocus) editor.commands.focus();
+  if (!noFocus) {
+    editor.commands.setTextSelection(pos);
+    editor.commands.focus();
+  }
 
   requestAnimationFrame(() => {
     try {
@@ -25,7 +27,15 @@ export function scrollToPos(editor: Editor, pos: number, noFocus = false, center
 
       const toolbar = document.querySelector('.formatting-toolbar');
       const toolbarHeight = toolbar ? toolbar.getBoundingClientRect().height : 0;
-      const offset = toolbarHeight + 16;
+      const planOverlay = document.querySelector('.plan-overlay') as HTMLElement | null;
+      let offset: number;
+      if (planOverlay) {
+        // Plan overlay is fixed below the toolbar — use its bottom edge as the offset
+        const planRect = planOverlay.getBoundingClientRect();
+        offset = planRect.top + planRect.height + 16;
+      } else {
+        offset = toolbarHeight + 16;
+      }
 
       const scrollContainer = document.documentElement;
       const targetRect = target.getBoundingClientRect();

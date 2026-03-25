@@ -1,7 +1,7 @@
 /**
  * MCP server for Markdown for Humans VS Code extension.
  * Exposes the current editor selection to Claude Code and other MCP clients.
- * Also supports proposing text replacements via the propose_single_replacement tool.
+ * Also supports proposing text replacements via the make_single_replacement tool.
  */
 
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
@@ -12,6 +12,7 @@ const os = require('os');
 const path = require('path');
 
 const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.json');
+const PLAN_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Plan.json');
 const SELECTION_REVEAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-SelectionReveal.json');
 const ACTIVE_INSTANCE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-ActiveInstance.json');
 const INSTANCE_TEMP_DIR_PREFIX = 'MarkdownForHumans-';
@@ -29,9 +30,19 @@ const PROPOSAL_SELECTION_NOT_FOUND_ERROR =
 const PROPOSAL_INTERNAL_ERROR =
   'The file is open in Markdown for Humans, but the proposal could not be completed due to an internal extension error.';
 const PROPOSAL_SESSION_NOT_FOUND_ERROR =
-  'No open Markdown for Humans proposal review matched the provided propose_single_replacement_session_id within 500ms. The review may have been closed, the session id may be wrong, or the extension may be busy.';
+  'No open Markdown for Humans proposal review matched the provided make_single_replacement_session_id within 500ms. The review may have been closed, the session id may be wrong, or the extension may be busy.';
 const PROPOSAL_SEQUENTIAL_SESSION_NOT_FOUND_ERROR =
-  'No open Markdown for Humans sequential proposal review matched the provided propose_sequential_replacements_session_id within 500ms. The review may have been closed, the session id may be wrong, or the extension may be busy.';
+  'No open Markdown for Humans sequential proposal review matched the provided make_sequential_replacements_session_id within 500ms. The review may have been closed, the session id may be wrong, or the extension may be busy.';
+const PLAN_CLAIM_TIMEOUT_MS = 500;
+const PLAN_STARTUP_TIMEOUT_MS = 3000;
+const PLAN_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const PLAN_RESUME_SESSION_LOOKUP_TIMEOUT_MS = 500;
+const PLAN_REQUEST_UNCLAIMED_ERROR =
+  'No instance of the Markdown for Humans extension acknowledged the plan review request within 500ms. The file may not be open in Markdown for Humans, or the extension may be busy.';
+const PLAN_INTERNAL_ERROR =
+  'The file is open in Markdown for Humans, but the plan review could not be completed due to an internal extension error.';
+const PLAN_SESSION_NOT_FOUND_ERROR =
+  'No open Markdown for Humans plan review matched the provided sequential_replacement_plan_session_id within 500ms. The review may have been closed, the session id may be wrong, or the extension may be busy.';
 const SELECTION_REQUEST_UNCLAIMED_ERROR =
   'No instance of the Markdown for Humans extension acknowledged the selection request within 500ms. The file may not be open in Markdown for Humans, or the extension may be busy.';
 const SELECTION_NOT_FOUND_ERROR =
@@ -70,6 +81,18 @@ function getProposalStateDir(instanceId) {
 
 function getProposalStateFilePathForInstance(id, instanceId) {
   return path.join(getProposalStateDir(instanceId), `${id}.json`);
+}
+
+function getPlanStateDir(instanceId) {
+  return path.join(getInstanceTempDir(instanceId), 'PlanState');
+}
+
+function getPlanStateFilePathForInstance(id, instanceId) {
+  return path.join(getPlanStateDir(instanceId), `${id}.json`);
+}
+
+function getPlanResponseTempFilePath(instanceId) {
+  return path.join(getInstanceTempDir(instanceId), 'PlanResponse.json');
 }
 
 function getSelectionRevealResponseTempFilePath(instanceId) {
@@ -263,13 +286,13 @@ server.tool(
 );
 
 server.tool(
-  'propose_single_replacement',
+  'make_single_replacement',
   `Show the user one or more proposed replacements for selected text in the Markdown for Humans editor.
 Opens a popup panel beside the editor. Each option has its own Accept button and optional justification.
 The user can Accept any option (applying it), edit the replacement inline, or Skip All.
 The redline diff updates live as the user edits or moves focus between options.
 The arguments before replacement_options are the same as for scroll_to_selection.
-Returns { status, message, error_type, error, propose_single_replacement_session_id, selection, selection_replacement, selected_option_index, file, context_before, context_after, headings_before } where status is "applied", "accepted_unchanged_but_not_applied", "accepted_changed_but_not_applied", "skipped", "rejected", "in_progress", or "error".
+Returns { status, message, error_type, error, make_single_replacement_session_id, selection, selection_replacement, selected_option_index, file, context_before, context_after, headings_before } where status is "applied", "accepted_unchanged_but_not_applied", "accepted_changed_but_not_applied", "skipped", "rejected", "in_progress", or "error".
 Treat only "applied" as authoritative success.
 Use context_before and context_after to locate the correct occurrence if the text appears multiple times.`,
   {
@@ -436,19 +459,19 @@ Use context_before and context_after to locate the correct occurrence if the tex
 );
 
 server.tool(
-  'resume_single_replacement',
+  'resume_make_single_replacement',
   `Resume a pending single proposed change review in the Markdown for Humans editor.
-Use this after propose_single_replacement returned status "in_progress" and the user later says they are done editing.
-Returns the same fields as propose_single_replacement. This reads the current state immediately: final result, "in_progress", or "error" if the provided propose_single_replacement_session_id does not match any open review.`,
+Use this after make_single_replacement returned status "in_progress" and the user later says they are done editing.
+Returns the same fields as make_single_replacement. This reads the current state immediately: final result, "in_progress", or "error" if the provided make_single_replacement_session_id does not match any open review.`,
   {
-    propose_single_replacement_session_id: z
+    make_single_replacement_session_id: z
       .string()
-      .describe('The propose_single_replacement_session_id returned by propose_single_replacement when status was in_progress'),
+      .describe('The make_single_replacement_session_id returned by make_single_replacement when status was in_progress'),
   },
-  async ({ propose_single_replacement_session_id }) => {
+  async ({ make_single_replacement_session_id }) => {
     try {
       const currentState = await waitForSingleProposalResumeState(
-        propose_single_replacement_session_id,
+        make_single_replacement_session_id,
         PROPOSAL_RESUME_SESSION_LOOKUP_TIMEOUT_MS
       );
 
@@ -461,7 +484,7 @@ Returns the same fields as propose_single_replacement. This reads the current st
                 status: 'error',
                 error_type: 'proposal_session_not_found',
                 error: PROPOSAL_SESSION_NOT_FOUND_ERROR,
-                propose_single_replacement_session_id,
+                make_single_replacement_session_id,
               })
             ),
           }],
@@ -473,7 +496,7 @@ Returns the same fields as propose_single_replacement. This reads the current st
         : {
             ...currentState,
             status: 'in_progress',
-            propose_single_replacement_session_id,
+            make_single_replacement_session_id,
             message: 'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".',
           };
 
@@ -507,7 +530,7 @@ Returns the same fields as propose_single_replacement. This reads the current st
 );
 
 server.tool(
-  'propose_sequential_replacements',
+  'make_sequential_replacements',
   `Show a queued series of proposed replacements for the same markdown file in the Markdown for Humans editor.
 Opens the same review panel and advances through each proposal without returning control to the MCP client between steps.
 Returns one aggregated result after the sequence completes, returns "in_progress", or fails with "error".
@@ -659,19 +682,19 @@ Pass file when available so the extension can target the correct open markdown d
 );
 
 server.tool(
-  'resume_sequential_replacements',
+  'resume_make_sequential_replacements',
   `Resume a pending sequential proposal review session in the Markdown for Humans editor.
-Use this after propose_sequential_replacements returned status "in_progress" and the user later says they are done editing.
-Returns the same fields as propose_sequential_replacements. This reads the current state immediately: final result, "in_progress", or "error" if the provided propose_sequential_replacements_session_id does not match any open review.`,
+Use this after make_sequential_replacements returned status "in_progress" and the user later says they are done editing.
+Returns the same fields as make_sequential_replacements. This reads the current state immediately: final result, "in_progress", or "error" if the provided make_sequential_replacements_session_id does not match any open review.`,
   {
-    propose_sequential_replacements_session_id: z
+    make_sequential_replacements_session_id: z
       .string()
-      .describe('The propose_sequential_replacements_session_id returned by propose_sequential_replacements when status was in_progress'),
+      .describe('The make_sequential_replacements_session_id returned by make_sequential_replacements when status was in_progress'),
   },
-  async ({ propose_sequential_replacements_session_id }) => {
+  async ({ make_sequential_replacements_session_id }) => {
     try {
       const currentState = await waitForSequentialProposalResumeState(
-        propose_sequential_replacements_session_id,
+        make_sequential_replacements_session_id,
         PROPOSAL_RESUME_SESSION_LOOKUP_TIMEOUT_MS
       );
 
@@ -684,7 +707,7 @@ Returns the same fields as propose_sequential_replacements. This reads the curre
                 status: 'error',
                 error_type: 'proposal_sequential_session_not_found',
                 error: PROPOSAL_SEQUENTIAL_SESSION_NOT_FOUND_ERROR,
-                propose_sequential_replacements_session_id,
+                make_sequential_replacements_session_id,
                 results: [],
               })
             ),
@@ -697,7 +720,7 @@ Returns the same fields as propose_sequential_replacements. This reads the curre
         : {
             ...currentState,
             status: 'in_progress',
-            propose_sequential_replacements_session_id,
+            make_sequential_replacements_session_id,
             message: 'The proposal review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".',
           };
 
@@ -865,11 +888,11 @@ function normalizeSingleProposalResult(result, fallback = {}) {
   normalized.context_after = normalized.context_after ?? fallback.context_after ?? null;
   normalized.headings_before = normalized.headings_before ?? fallback.headings_before ?? null;
 
-  normalized.propose_single_replacement_session_id =
-    normalized.propose_single_replacement_session_id ??
+  normalized.make_single_replacement_session_id =
+    normalized.make_single_replacement_session_id ??
     normalized.review_id ??
     normalized.session_id ??
-    fallback.propose_single_replacement_session_id ??
+    fallback.make_single_replacement_session_id ??
     null;
   delete normalized.review_id;
   delete normalized.session_id;
@@ -945,10 +968,10 @@ function normalizeBatchResultStatus(result, fallback = {}) {
     normalized.status = statusMap[normalized.status];
   }
 
-  normalized.propose_sequential_replacements_session_id =
-    normalized.propose_sequential_replacements_session_id ??
+  normalized.make_sequential_replacements_session_id =
+    normalized.make_sequential_replacements_session_id ??
     normalized.session_id ??
-    fallback.propose_sequential_replacements_session_id ??
+    fallback.make_sequential_replacements_session_id ??
     null;
   delete normalized.session_id;
 
@@ -1385,6 +1408,92 @@ function isFinalProposalState(state) {
   return Boolean(state) && state.status !== 'pending' && state.status !== 'ready';
 }
 
+function hasPlanBeenClaimed(planId) {
+  const pendingRequest = readJsonFile(PLAN_TEMP_FILE);
+  if (!pendingRequest) {
+    return true;
+  }
+  return pendingRequest.id !== planId;
+}
+
+function readPlanStateFromAnyInstance(id) {
+  for (const instanceId of listInstanceIds()) {
+    const stateFilePath = getPlanStateFilePathForInstance(id, instanceId);
+    if (!fs.existsSync(stateFilePath)) {
+      continue;
+    }
+    try {
+      return JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
+    } catch {}
+  }
+  return null;
+}
+
+function readPlanState(id) {
+  return readPlanStateFromAnyInstance(id);
+}
+
+function isFinalPlanState(state) {
+  return Boolean(state) && state.status !== 'pending' && state.status !== 'ready';
+}
+
+function findPlanResponseById(id) {
+  for (const instanceId of listInstanceIds()) {
+    const filePath = getPlanResponseTempFilePath(instanceId);
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (data.id === id) {
+        return data;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function normalizePlanResult(result) {
+  if (!result || typeof result !== 'object') return result;
+  const normalized = { ...result };
+  const statusMap = {
+    cancelled: 'skipped',
+    pending: 'in_progress',
+    timeout: 'error',
+  };
+  if (normalized.status in statusMap) {
+    normalized.status = statusMap[normalized.status];
+  }
+  return normalized;
+}
+
+function normalizePlanBatchStatus(result, fallback = {}) {
+  if (!result || typeof result !== 'object') return result;
+  const normalized = { ...result };
+  const statusMap = {
+    cancelled: 'skipped',
+    pending: 'in_progress',
+    timeout: 'error',
+  };
+  if (normalized.status in statusMap) {
+    normalized.status = statusMap[normalized.status];
+  }
+  if (!normalized.file && fallback.file) {
+    normalized.file = fallback.file;
+  }
+  if (Array.isArray(normalized.results)) {
+    normalized.results = normalized.results.map(r => normalizePlanResult(r));
+  }
+
+  if (normalized.error_type === 'plan_session_not_found') {
+    normalized.error = PLAN_SESSION_NOT_FOUND_ERROR;
+  } else if (normalized.error_type === 'plan_request_not_acknowledged') {
+    normalized.error = PLAN_REQUEST_UNCLAIMED_ERROR;
+  } else if (normalized.error_type === 'plan_internal_error' && !normalized.error) {
+    normalized.error = PLAN_INTERNAL_ERROR;
+  }
+
+  return normalized;
+}
+
 async function applyServerFallbackIfNeeded(result, proposal) {
   if (!result || result.status !== 'accept' || !result.replacement) {
     return result;
@@ -1688,7 +1797,7 @@ function waitForProposalStartup(id, timeoutMs) {
   });
 }
 
-function waitForSingleProposalResumeState(propose_single_replacement_session_id, timeoutMs) {
+function waitForSingleProposalResumeState(make_single_replacement_session_id, timeoutMs) {
   return new Promise((resolve) => {
     let watcher;
     let resolved = false;
@@ -1707,7 +1816,7 @@ function waitForSingleProposalResumeState(propose_single_replacement_session_id,
     }, timeoutMs);
 
     const check = () => {
-      const state = readProposalState(propose_single_replacement_session_id);
+      const state = readProposalState(make_single_replacement_session_id);
       if (!state) {
         return;
       }
@@ -1734,7 +1843,7 @@ function waitForSingleProposalResumeState(propose_single_replacement_session_id,
   });
 }
 
-function waitForSequentialProposalResumeState(propose_sequential_replacements_session_id, timeoutMs) {
+function waitForSequentialProposalResumeState(make_sequential_replacements_session_id, timeoutMs) {
   return new Promise((resolve) => {
     let watcher;
     let resolved = false;
@@ -1753,7 +1862,7 @@ function waitForSequentialProposalResumeState(propose_sequential_replacements_se
     }, timeoutMs);
 
     const check = () => {
-      const state = readProposalState(propose_sequential_replacements_session_id);
+      const state = readProposalState(make_sequential_replacements_session_id);
       if (!state) {
         return;
       }
@@ -1779,6 +1888,392 @@ function waitForSequentialProposalResumeState(propose_sequential_replacements_se
     check();
   });
 }
+
+function waitForPlanClaim(planId, timeoutMs) {
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+    let iv;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => {
+      finish(false);
+    }, timeoutMs);
+
+    const check = () => {
+      if (!hasPlanBeenClaimed(planId)) {
+        return;
+      }
+      clearTimeout(deadline);
+      finish(true);
+    };
+
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, 25);
+
+    try {
+      watcher = fs.watch(path.dirname(PLAN_TEMP_FILE), (_event, filename) => {
+        if (!filename || filename.includes('Plan')) {
+          check();
+        }
+      });
+    } catch {
+      // Polling is already active above.
+    }
+
+    check();
+  });
+}
+
+function waitForPlanStartup(id, timeoutMs) {
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+    let iv;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => {
+      finish({ type: 'timeout' });
+    }, timeoutMs);
+
+    const check = () => {
+      const response = findPlanResponseById(id);
+      if (response) {
+        clearTimeout(deadline);
+        finish({ type: 'response', value: response });
+        return;
+      }
+
+      const state = readPlanState(id);
+      if (!state) {
+        return;
+      }
+
+      if (state.status === 'error') {
+        clearTimeout(deadline);
+        finish({ type: 'error', value: state });
+        return;
+      }
+
+      if (state.status === 'ready') {
+        clearTimeout(deadline);
+        finish({ type: 'ready' });
+      }
+    };
+
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, MCP_RESPONSE_POLL_MS);
+
+    try {
+      watcher = fs.watch(os.tmpdir(), (_event, filename) => {
+        if (
+          !filename ||
+          filename.startsWith(INSTANCE_TEMP_DIR_PREFIX) ||
+          filename.includes('Plan')
+        ) {
+          check();
+        }
+      });
+    } catch {
+      // Polling is already active above.
+    }
+
+    check();
+  });
+}
+
+function waitForPlanResponse(id, timeoutMs, timeoutResult) {
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+    let iv;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => {
+      finish(timeoutResult);
+    }, timeoutMs);
+
+    const check = () => {
+      try {
+        const data = findPlanResponseById(id);
+        if (!data) return;
+        clearTimeout(deadline);
+        finish(data);
+      } catch {}
+    };
+
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, MCP_RESPONSE_POLL_MS);
+
+    try {
+      watcher = fs.watch(os.tmpdir(), (_event, filename) => {
+        if (filename && filename.startsWith(INSTANCE_TEMP_DIR_PREFIX)) check();
+      });
+    } catch {
+      // Polling is already active above.
+    }
+
+    check();
+  });
+}
+
+function waitForPlanResumeState(sessionId, timeoutMs) {
+  return new Promise((resolve) => {
+    let watcher;
+    let resolved = false;
+    let iv;
+
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      try { watcher?.close(); } catch {}
+      try { clearInterval(iv); } catch {}
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => {
+      finish(null);
+    }, timeoutMs);
+
+    const check = () => {
+      const state = readPlanState(sessionId);
+      if (!state) {
+        return;
+      }
+      clearTimeout(deadline);
+      finish(state);
+    };
+
+    iv = setInterval(() => {
+      if (resolved) return;
+      check();
+    }, 25);
+
+    try {
+      watcher = fs.watch(os.tmpdir(), (_event, filename) => {
+        if (filename && filename.startsWith(INSTANCE_TEMP_DIR_PREFIX)) {
+          check();
+        }
+      });
+    } catch {
+      // Polling is already active above.
+    }
+
+    check();
+  });
+}
+
+server.tool(
+  'sequential_replacement_plan',
+  `Present a series of proposed changes (with reasoning) for user review and commentary in the Markdown for Humans editor.
+Unlike make_sequential_replacements, this tool does NOT modify the document. It opens an overlay where the user can review each proposed change, provide comments, or skip.
+Returns one aggregated result after the review completes, returns "in_progress", or fails with "error".
+Pass file when available so the extension can target the correct open markdown document.`,
+  {
+    file: z
+      .string()
+      .optional()
+      .describe('Absolute path to the markdown file being reviewed (recommended when available)'),
+    proposed_replacements: z
+      .array(
+        z.object({
+          range: z.object({
+            start: z.number().int().min(1).describe('Start line number (1-based, inclusive)'),
+            end: z.number().int().min(1).describe('End line number (1-based, inclusive). For a single line, use the same value as start.'),
+          }).describe('Markdown source line range (1-based, inclusive).'),
+          proposed_change: z
+            .string()
+            .describe('Markdown string with the proposed change and reasoning. The affected lines will be highlighted in the editor, so there is no need to repeat the current text — focus on what you propose and why.'),
+        })
+      )
+      .min(1)
+      .describe('Ordered list of proposed changes to review.'),
+  },
+  async ({ file, proposed_replacements }) => {
+    try {
+      const id = Date.now().toString();
+      const selectionMetadata = readSelectionMetadata();
+      const routingMetadata = buildBatchRoutingMetadata(selectionMetadata, file ?? null);
+      fs.writeFileSync(
+        PLAN_TEMP_FILE,
+        JSON.stringify({
+          id,
+          ...routingMetadata,
+          proposed_replacements: proposed_replacements.map(r => ({
+            range: r.range,
+            proposed_change: r.proposed_change,
+          })),
+        }),
+        'utf8'
+      );
+
+      const claimed = await waitForPlanClaim(id, PLAN_CLAIM_TIMEOUT_MS);
+      if (!claimed) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizePlanBatchStatus(
+                {
+                  id,
+                  file: routingMetadata.file ?? null,
+                  status: 'error',
+                  error_type: 'plan_request_not_acknowledged',
+                  error: PLAN_REQUEST_UNCLAIMED_ERROR,
+                  results: [],
+                },
+                {
+                  file: routingMetadata.file ?? null,
+                }
+              )
+            ),
+          }],
+        };
+      }
+
+      const startupResult = await waitForPlanStartup(id, PLAN_STARTUP_TIMEOUT_MS);
+      if (startupResult.type === 'response' || startupResult.type === 'error') {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizePlanBatchStatus(startupResult.value, {
+                file: routingMetadata.file ?? null,
+              })
+            ),
+          }],
+        };
+      }
+
+      const result = await waitForPlanResponse(id, PLAN_TIMEOUT_MS, {
+        id,
+        file: routingMetadata.file ?? null,
+        status: 'error',
+        error_type: 'plan_internal_error',
+        error: PLAN_INTERNAL_ERROR,
+        results: [],
+      });
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizePlanBatchStatus(result, {
+              file: routingMetadata.file ?? null,
+            })
+          ),
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizePlanBatchStatus({
+              status: 'error',
+              error_type: 'plan_internal_error',
+              error: String(err),
+              results: [],
+            })
+          ),
+        }],
+      };
+    }
+  }
+);
+
+server.tool(
+  'resume_sequential_replacement_plan',
+  `Resume a pending plan review session in the Markdown for Humans editor.
+Use this after sequential_replacement_plan returned status "in_progress" and the user later says they are done reviewing.
+Returns the same fields as sequential_replacement_plan. This reads the current state immediately: final result, "in_progress", or "error" if the provided sequential_replacement_plan_session_id does not match any open review.`,
+  {
+    sequential_replacement_plan_session_id: z
+      .string()
+      .describe('The sequential_replacement_plan_session_id returned by sequential_replacement_plan when status was in_progress'),
+  },
+  async ({ sequential_replacement_plan_session_id }) => {
+    try {
+      const currentState = await waitForPlanResumeState(
+        sequential_replacement_plan_session_id,
+        PLAN_RESUME_SESSION_LOOKUP_TIMEOUT_MS
+      );
+
+      if (!currentState) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(
+              normalizePlanBatchStatus({
+                status: 'error',
+                error_type: 'plan_session_not_found',
+                error: PLAN_SESSION_NOT_FOUND_ERROR,
+                sequential_replacement_plan_session_id,
+                results: [],
+              })
+            ),
+          }],
+        };
+      }
+
+      const result = isFinalPlanState(currentState)
+        ? currentState
+        : {
+            ...currentState,
+            status: 'in_progress',
+            sequential_replacement_plan_session_id,
+            message: 'The plan review is still open in Markdown for Humans. Finish reviewing there, then in the conversation type "resume".',
+          };
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(normalizePlanBatchStatus(result)),
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            normalizePlanBatchStatus({
+              status: 'error',
+              error_type: 'plan_internal_error',
+              error: String(err),
+              results: [],
+            })
+          ),
+        }],
+      };
+    }
+  }
+);
 
 const transport = new StdioServerTransport();
 server.connect(transport).catch(err => {

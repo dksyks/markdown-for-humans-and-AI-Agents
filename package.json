@@ -129,6 +129,16 @@
         "title": "Go to Line",
         "category": "Markdown for Humans",
         "icon": "$(list-ordered)"
+      },
+      {
+        "command": "markdownForHumans.planOverlay.nextRange",
+        "title": "Plan Review: Next Range",
+        "category": "Markdown for Humans"
+      },
+      {
+        "command": "markdownForHumans.planOverlay.previousRange",
+        "title": "Plan Review: Previous Range",
+        "category": "Markdown for Humans"
       }
     ],
     "keybindings": [
@@ -146,6 +156,16 @@
         "command": "markdownForHumans.openGotoLine",
         "key": "ctrl+alt+g",
         "when": "markdownForHumans.isActive"
+      },
+      {
+        "command": "markdownForHumans.planOverlay.nextRange",
+        "key": "ctrl+alt+]",
+        "when": "markdownForHumans.isActive && markdownForHumans.planOverlayActive"
+      },
+      {
+        "command": "markdownForHumans.planOverlay.previousRange",
+        "key": "ctrl+alt+[",
+        "when": "markdownForHumans.isActive && markdownForHumans.planOverlayActive"
       }
     ],
     "views": {

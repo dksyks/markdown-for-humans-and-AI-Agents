@@ -485,7 +485,10 @@ export function updateToolbarStates() {
  * @param editor - TipTap editor instance
  * @returns HTMLElement containing the toolbar
  */
-export function createFormattingToolbar(editor: Editor): HTMLElement {
+export function createFormattingToolbar(
+  editor: Editor,
+  options?: { filter?: 'formatting-only' }
+): HTMLElement {
   ensureCodiconFont();
 
   const toolbar = document.createElement('div');
@@ -498,7 +501,7 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
   const isMac = navigator.platform.toLowerCase().includes('mac');
   const modKeyLabel = isMac ? 'Cmd' : 'Ctrl';
 
-  const buttons: ToolbarItem[] = [
+  let buttons: ToolbarItem[] = [
     {
       type: 'button',
       label: 'Find',
@@ -1019,6 +1022,22 @@ export function createFormattingToolbar(editor: Editor): HTMLElement {
       ],
     },
   ];
+
+  // When filter is 'formatting-only', keep only Bold through Mermaid (inclusive)
+  if (options?.filter === 'formatting-only') {
+    const boldIdx = buttons.findIndex(
+      b => b.type === 'button' && (b as ToolbarActionButton).className === 'bold'
+    );
+    const mermaidIdx = buttons.findIndex(
+      b => b.type === 'dropdown' && (b as ToolbarDropdown).label === 'Mermaid'
+    );
+    if (boldIdx >= 0 && mermaidIdx >= 0) {
+      buttons = buttons.slice(boldIdx, mermaidIdx + 1);
+      // Remove leading/trailing separators
+      while (buttons.length > 0 && buttons[0].type === 'separator') buttons.shift();
+      while (buttons.length > 0 && buttons[buttons.length - 1].type === 'separator') buttons.pop();
+    }
+  }
 
   const actionButtons: Array<{ config: ToolbarActionButton; element: HTMLButtonElement }> = [];
   const dropdownButtons: Array<{ config: ToolbarDropdown; element: HTMLButtonElement }> = [];

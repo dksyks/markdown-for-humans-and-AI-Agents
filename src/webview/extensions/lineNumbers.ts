@@ -1096,6 +1096,78 @@ export function markdownLineToSelectionRange(
 }
 
 /**
+ * Build a complete map from 1-based markdown line numbers to ProseMirror
+ * selection ranges. Uses the same node-walking and blank-line-skipping
+ * logic as the gutter decoration builder, so it handles all node types
+ * reliably (headings, paragraphs, lists, tables, etc.).
+ */
+export function buildLineToPositionMap(
+  editor: any
+): Map<number, { from: number; to: number }> {
+  const map = new Map<number, { from: number; to: number }>();
+  const markdown = getEditorMarkdownForSync(editor);
+  if (!markdown) return map;
+
+  const lines = markdown.split('\n');
+  const doc = editor.state.doc;
+  let lineIndex = 0;
+
+  doc.forEach((node: any, offset: number) => {
+    const typeName = node.type.name;
+
+    // Skip empty paragraphs — they have no corresponding markdown line
+    if (typeName === 'paragraph') {
+      const text = node.textContent || '';
+      if (text.trim() === '' && (!node.content || node.content.size === 0 ||
+          (node.content.size === 1 && node.content.firstChild?.type?.name === 'hardBreak'))) {
+        return;
+      }
+    }
+
+    // Find the line number using pattern matching, with blank-line-skipping fallback
+    let contentLineIndex = findBlockLine(node, lines, lineIndex);
+    if (contentLineIndex < 0) {
+      contentLineIndex = lineIndex;
+      while (contentLineIndex < lines.length && lines[contentLineIndex].trim() === '') {
+        contentLineIndex++;
+      }
+    }
+
+    const lineNum = contentLineIndex + 1; // 1-based
+    const selFrom = offset + 1;
+    const selTo = Math.max(selFrom, offset + node.nodeSize - 1);
+
+    // For lists, add per-item entries
+    if (isListNodeType(typeName)) {
+      const entries = collectResolvedListItemEntries(node, offset, lines, contentLineIndex);
+      for (const entry of entries) {
+        map.set(entry.lineNum, { from: entry.selFrom, to: entry.selTo });
+      }
+    } else if (typeName === 'table') {
+      // Add per-row entries
+      let ri = 0;
+      node.forEach((row: any, rowOff: number) => {
+        const rl = ri === 0 ? lineNum : lineNum + ri + 1;
+        const rowAbsStart = offset + 1 + rowOff + 1;
+        const rowAbsEnd = offset + 1 + rowOff + row.nodeSize - 1;
+        map.set(rl, { from: rowAbsStart, to: rowAbsEnd });
+        ri++;
+      });
+    } else {
+      // Standard block: map the line number to the block's selection range
+      map.set(lineNum, { from: selFrom, to: selTo });
+    }
+
+    // Advance lineIndex past this block
+    const countFrom = Math.max(lineIndex, contentLineIndex);
+    const blockLines = countBlockLines(node, lines, countFrom);
+    lineIndex = countFrom + blockLines;
+  });
+
+  return map;
+}
+
+/**
  * Build decorations for all top-level blocks.
  */
 function buildDecorations(doc: any, editor: any): DecorationSet {

@@ -16,13 +16,13 @@ Do not treat selection temp metadata as proof that the referenced file is still 
 
 ### When to call `get_active_selection`
 
-**`get_active_selection` is not required before calling the proposal tools.** Call it only when the user refers to something they have highlighted ("this", "here", "what I selected"). When the agent already knows the text to change  -  from reading the file, from conversation context, or from its own analysis  -  pass `selection` directly to `propose_single_replacement` or `propose_sequential_replacements` without calling `get_active_selection` first. The extension will automatically scroll to and highlight the target passage in the editor.
+**`get_active_selection` is not required before calling the proposal tools.** Call it only when the user refers to something they have highlighted ("this", "here", "what I selected"). When the agent already knows the text to change  -  from reading the file, from conversation context, or from its own analysis  -  pass `selection` directly to `make_single_replacement` or `make_sequential_replacements` without calling `get_active_selection` first. The extension will automatically scroll to and highlight the target passage in the editor.
 
 ---
 
 ## get_active_selection
 
-Call this when the user refers to selected text, "this", "here", or similar references suggesting they have something highlighted in the active editor. This reflects the active MFH tab only. Do **not** call this as a routine prerequisite before proposing changes  -  if you already know the text to change, pass it directly to `propose_single_replacement` or `propose_sequential_replacements`.
+Call this when the user refers to selected text, "this", "here", or similar references suggesting they have something highlighted in the active editor. This reflects the active MFH tab only. Do **not** call this as a routine prerequisite before proposing changes  -  if you already know the text to change, pass it directly to `make_single_replacement` or `make_sequential_replacements`.
 
 **Parameters:** none
 
@@ -77,7 +77,7 @@ When `status` is `"error"`, the error text is user-facing. The main cases are:
 
 ---
 
-## propose_single_replacement
+## make_single_replacement
 
 Opens a WYSIWYG popup panel showing the original and up to 3 alternative replacements. The extension automatically scrolls the main editor to the target passage when the panel opens  -  you do not need to call `get_active_selection` or `scroll_to_selection` first. The user reviews each option (which has its own editable pane and Accept button), with the shared redline at top updating to reflect the focused option. Each option may have an optional justification panel.
 
@@ -91,13 +91,13 @@ Opens a WYSIWYG popup panel showing the original and up to 3 alternative replace
   - `selection_replacement` (required): the proposed replacement markdown text
   - `justification` (optional): markdown string explaining the reasoning. When supplied, displayed as a justification panel above that option's editor.
 
-**Returns** `{ status, message, error_type, error, propose_single_replacement_session_id, selection, selection_replacement, selected_option_index, context_before, context_after, headings_before, file }` where status is one of:
+**Returns** `{ status, message, error_type, error, make_single_replacement_session_id, selection, selection_replacement, selected_option_index, context_before, context_after, headings_before, file }` where status is one of:
 - `"applied"`: the change was written to the file  -  treat this as authoritative success
 - `"accepted_unchanged_but_not_applied"`: the user accepted the proposed replacement unchanged, but it was not applied to the file
 - `"accepted_changed_but_not_applied"`: the user changed a proposed replacement and accepted that edited version, but it was not applied to the file
 - `"skipped"`: user declined (Skip This / Skip These)
 - `"rejected"`: user rejected the proposal, indicating no change is wanted (Reject This / Reject These)
-- `"in_progress"`: review panel is still open  -  resume with `resume_single_replacement`
+- `"in_progress"`: review panel is still open  -  resume with `resume_make_single_replacement`
 - `"error"`: workflow failed
 
 `selected_option_index` (0-based) indicates which alternative the user accepted. `selection_replacement` contains the final accepted text (possibly edited by user).
@@ -107,7 +107,7 @@ Treat the edit as successful **only** when status is `"applied"`.
 When status is `"in_progress"`:
 - Tell the user the review is still open in Markdown for Humans
 - Ask them to finish editing there and then type `resume` in the conversation
-- When they return, call `resume_single_replacement` with the returned `propose_single_replacement_session_id`
+- When they return, call `resume_make_single_replacement` with the returned `make_single_replacement_session_id`
 
 When status is not `"applied"` or `"in_progress"`:
 - Tell the user the proposed change was not confirmed as applied
@@ -123,23 +123,23 @@ When `status` is `"error"`:
 
 ---
 
-## resume_single_replacement
+## resume_make_single_replacement
 
-Use after `propose_single_replacement` returned `"in_progress"` and the user says they are done editing.
+Use after `make_single_replacement` returned `"in_progress"` and the user says they are done editing.
 
 **Parameters:**
-- `propose_single_replacement_session_id` (required): the `propose_single_replacement_session_id` from the `in_progress` response
+- `make_single_replacement_session_id` (required): the `make_single_replacement_session_id` from the `in_progress` response
 
-**Returns:** same fields as `propose_single_replacement`
+**Returns:** same fields as `make_single_replacement`
 
 This does not open a new review or wait for a long background process. It checks the current state of the existing review immediately and returns:
 - the final result, if the review has finished
 - `"in_progress"` if the review is still open
-- `"error"` with `error_type: "proposal_session_not_found"` if no open review matches the provided `propose_single_replacement_session_id` within 500ms
+- `"error"` with `error_type: "proposal_session_not_found"` if no open review matches the provided `make_single_replacement_session_id` within 500ms
 
 ---
 
-## propose_sequential_replacements
+## make_sequential_replacements
 
 Proposes multiple replacements for the same file in one uninterrupted review flow. No prior `get_active_selection` call is needed  -  the extension automatically scrolls the main editor to each target passage as its proposal panel opens. The user reviews each proposal in order without returning to the conversation between steps. Each step supports up to 3 alternative options.
 
@@ -154,14 +154,14 @@ Proposes multiple replacements for the same file in one uninterrupted review flo
     - `selection_replacement` (required): the proposed replacement markdown text
     - `justification` (optional): markdown string explaining the reasoning for this option. When supplied, displayed above that option's editor.
 
-**Returns** `{ status, message, error_type, error, propose_sequential_replacements_session_id, file, results }` where:
+**Returns** `{ status, message, error_type, error, make_sequential_replacements_session_id, file, results }` where:
 - `status` is `"completed"`, `"in_progress"`, or `"error"`
-- `propose_sequential_replacements_session_id` is present when status is `"in_progress"`  -  pass it to `resume_sequential_replacements`
-- `results` is an ordered array; each item has the same fields as a `propose_single_replacement` return value (including `selected_option_index`, per-step `"applied"`, `"accepted_unchanged_but_not_applied"`, `"accepted_changed_but_not_applied"`, `"skipped"`, `"rejected"`, etc.). If the user clicks "Skip Remaining", the current and all remaining unreviewed steps are marked `"skipped"` and the overall status is `"completed"`.
+- `make_sequential_replacements_session_id` is present when status is `"in_progress"`  -  pass it to `resume_make_sequential_replacements`
+- `results` is an ordered array; each item has the same fields as a `make_single_replacement` return value (including `selected_option_index`, per-step `"applied"`, `"accepted_unchanged_but_not_applied"`, `"accepted_changed_but_not_applied"`, `"skipped"`, `"rejected"`, etc.). If the user clicks "Skip Remaining", the current and all remaining unreviewed steps are marked `"skipped"` and the overall status is `"completed"`.
 
 Treat a step as successful only when that step's status is `"applied"`.
 
-When status is `"in_progress"`, resume with `resume_sequential_replacements`.
+When status is `"in_progress"`, resume with `resume_make_sequential_replacements`.
 
 When `status` is `"error"`:
 - Inspect `error_type` programmatically
@@ -197,16 +197,80 @@ Example call shape:
 
 ---
 
-## resume_sequential_replacements
+## resume_make_sequential_replacements
 
-Use after `propose_sequential_replacements` returned `"in_progress"` and the user says they are done editing.
+Use after `make_sequential_replacements` returned `"in_progress"` and the user says they are done editing.
 
 **Parameters:**
-- `propose_sequential_replacements_session_id` (required): the `propose_sequential_replacements_session_id` from the `in_progress` response
+- `make_sequential_replacements_session_id` (required): the `make_sequential_replacements_session_id` from the `in_progress` response
 
-**Returns:** same fields as `propose_sequential_replacements`
+**Returns:** same fields as `make_sequential_replacements`
 
 This does not open a new review or wait for a long background process. It checks the current state of the existing review immediately and returns:
 - the final result, if the review has finished
 - `"in_progress"` if the review is still open
-- `"error"` with `error_type: "proposal_sequential_session_not_found"` if no open review matches the provided `propose_sequential_replacements_session_id` within 500ms
+- `"error"` with `error_type: "proposal_sequential_session_not_found"` if no open review matches the provided `make_sequential_replacements_session_id` within 500ms
+
+---
+
+## sequential_replacement_plan
+
+Presents proposed changes with reasoning for user review and commentary in the Markdown for Humans editor. Unlike `make_sequential_replacements`, this tool does NOT modify the document. It opens an overlay where the user can review each proposed change, provide comments, or skip. The user navigates between ranges using arrow keys or Ctrl+Alt+[/], and each navigation pushes onto VS Code's navigation history.
+
+**Parameters:**
+- `file` (optional): absolute path to the markdown file (recommended when available)
+- `proposed_replacements` (required): ordered array of proposed change objects, each with:
+  - `range` (required): `{ start: number, end: number }` — markdown source line range (1-based, inclusive). For a single line, use `{ start: N, end: N }`.
+  - `proposed_change` (required): markdown string with the proposed change and reasoning
+
+**Returns** `{ status, message, error_type, error, sequential_replacement_plan_session_id, file, results }` where:
+- `status` is `"completed"`, `"in_progress"`, or `"error"`
+- `sequential_replacement_plan_session_id` is present when status is `"in_progress"` — pass it to `resume_sequential_replacement_plan`
+- `results` is an ordered array; each item has:
+  - `status`: `"commented"` (user wrote a comment), `"no_comment"` (user explicitly clicked No Comment), or `"skipped"` (user clicked Skip All before addressing this range)
+  - `range`: the original `{ start, end }` range
+  - `proposed_change`: the original proposed change text
+  - `user_comment`: the user's markdown comment (string when `"commented"`, `null` otherwise)
+
+When status is `"in_progress"`, resume with `resume_sequential_replacement_plan`.
+
+When `status` is `"error"`:
+- Inspect `error_type` programmatically
+- Show or summarize the user-facing explanation from `error`
+- The main cases are:
+  - `plan_request_not_acknowledged`
+  - `plan_internal_error`
+  - `plan_session_not_found`
+
+Example call shape:
+```json
+{
+  "file": "C:\\docs\\guide.md",
+  "proposed_replacements": [
+    {
+      "range": { "start": 12, "end": 12 },
+      "proposed_change": "**Suggested:** Simplify this sentence for clarity.\n\nThe current phrasing is overly complex and may confuse readers."
+    },
+    {
+      "range": { "start": 45, "end": 52 },
+      "proposed_change": "**Suggested:** Restructure this section as a bulleted list.\n\nThe paragraph format buries key points."
+    }
+  ]
+}
+```
+
+---
+
+## resume_sequential_replacement_plan
+
+Use after `sequential_replacement_plan` returned `"in_progress"` and the user says they are done reviewing.
+
+**Parameters:**
+- `sequential_replacement_plan_session_id` (required): the `sequential_replacement_plan_session_id` from the `in_progress` response
+
+**Returns:** same fields as `sequential_replacement_plan`
+
+This does not open a new review or wait for a long background process. It checks the current state of the existing review immediately and returns:
+- the final result, if the review has finished
+- `"in_progress"` if the review is still open
+- `"error"` with `error_type: "plan_session_not_found"` if no open review matches the provided `sequential_replacement_plan_session_id` within 500ms
