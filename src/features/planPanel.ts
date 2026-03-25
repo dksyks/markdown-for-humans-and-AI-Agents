@@ -44,7 +44,7 @@ export interface PlanRequest {
 }
 
 export interface PlanResult {
-  status: 'commented' | 'no_comment' | 'skipped' | 'accepted' | 'rejected';
+  status: 'commented' | 'no_response' | 'skipped' | 'accepted' | 'rejected';
   range: PlanRange;
   proposed_change: string;
   user_comment: string | null;

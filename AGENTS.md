@@ -192,7 +192,13 @@ See [`examples/CLAUDE.md`](examples/CLAUDE.md) for the full tool reference. Summ
 
 - `scroll_to_selection` - scrolls the WYSIWYG editor to a known passage. Use when the agent has identified text from file context and the user wants to see it highlighted. Do not use as an immediate follow-up to `get_selection`.
 
-- `sequential_replacement_plan` - presents proposed changes with reasoning for user review and commentary without modifying the document. Pass `file` and an ordered `proposed_replacements` array of `{ range: { start, end }, proposed_change }` where `range` is markdown source line numbers (1-based, inclusive) and `proposed_change` is markdown with the proposed change and reasoning. The user reviews each range, provides comments or clicks "No Comment", then submits. Each result has `status` (`"commented"`, `"no_comment"`, `"skipped"`) and `user_comment`. If status is `"in_progress"`, resume with `resume_sequential_replacement_plan`.
+- `sequential_replacement_plan` - presents proposed changes with reasoning for user review and commentary without modifying the document. Pass `file` and an ordered `proposed_replacements` array of `{ range: { start, end }, proposed_change }` where `range` is markdown source line numbers (1-based, inclusive) and `proposed_change` is markdown with the proposed change and reasoning. The user reviews each range using Accept, Reject, No Response buttons or by typing comments, then submits. Each result has `status` and `user_comment`:
+  - `"accepted"` — user clicked Accept (may include typed comment in `user_comment`)
+  - `"rejected"` — user clicked Reject (may include typed comment in `user_comment`)
+  - `"commented"` — user typed a comment without clicking Accept or Reject (`user_comment` contains the text)
+  - `"no_response"` — user explicitly clicked No Response (`user_comment` is null)
+  - `"skipped"` — user clicked Skip Remaining before addressing this range (`user_comment` is null)
+  If status is `"in_progress"`, resume with `resume_sequential_replacement_plan`.
 
 - `resume_sequential_replacement_plan` - resumes a plan review that returned `"in_progress"`. Pass `sequential_replacement_plan_session_id`.
 

@@ -37,7 +37,7 @@ interface PlanInitData {
 }
 
 interface PlanRowState {
-  status: 'pending' | 'commented' | 'no_comment' | 'accepted' | 'rejected';
+  status: 'pending' | 'commented' | 'no_response' | 'accepted' | 'rejected';
   user_comment: string | null;
 }
 
@@ -359,7 +359,7 @@ function selectRow(index: number): void {
   // Update status indicators
   rows?.forEach((row, i) => {
     row.classList.toggle('plan-range-row-commented', rowStates[i]?.status === 'commented');
-    row.classList.toggle('plan-range-row-no-comment', rowStates[i]?.status === 'no_comment');
+    row.classList.toggle('plan-range-row-no-comment', rowStates[i]?.status === 'no_response');
     row.classList.toggle('plan-range-row-accepted', rowStates[i]?.status === 'accepted');
     row.classList.toggle('plan-range-row-rejected', rowStates[i]?.status === 'rejected');
   });
@@ -457,14 +457,14 @@ function scrollToRange(range: PlanRange): void {
 function updateActionButtonHighlights(status: string): void {
   acceptBtnEl?.classList.toggle('plan-btn-active', status === 'accepted');
   rejectBtnEl?.classList.toggle('plan-btn-active', status === 'rejected');
-  noResponseBtnEl?.classList.toggle('plan-btn-active', status === 'no_comment');
+  noResponseBtnEl?.classList.toggle('plan-btn-active', status === 'no_response');
 }
 
 function updateRowStatusIndicators(): void {
   const rows = overlayEl?.querySelectorAll('.plan-range-row');
   rows?.forEach((row, i) => {
     row.classList.toggle('plan-range-row-commented', rowStates[i]?.status === 'commented');
-    row.classList.toggle('plan-range-row-no-comment', rowStates[i]?.status === 'no_comment');
+    row.classList.toggle('plan-range-row-no-comment', rowStates[i]?.status === 'no_response');
     row.classList.toggle('plan-range-row-accepted', rowStates[i]?.status === 'accepted');
     row.classList.toggle('plan-range-row-rejected', rowStates[i]?.status === 'rejected');
   });
@@ -494,9 +494,9 @@ function handleAcceptReject(action: 'accepted' | 'rejected'): void {
 function handleNoComment(): void {
   if (!currentData) return;
 
-  // Mark current row as no_comment
+  // Mark current row as no_response
   if (rowStates[selectedIndex]) {
-    rowStates[selectedIndex].status = 'no_comment';
+    rowStates[selectedIndex].status = 'no_response';
     rowStates[selectedIndex].user_comment = null;
   }
 
@@ -527,7 +527,7 @@ function handleSkipAll(): void {
   // Preserve reviewed rows, mark pending as skipped
   const results = currentData.proposed_replacements.map((r, i) => ({
     status: rowStates[i]?.status === 'pending' ? 'skipped' as const :
-            rowStates[i]?.status as 'commented' | 'no_comment' | 'accepted' | 'rejected',
+            rowStates[i]?.status as 'commented' | 'no_response' | 'accepted' | 'rejected',
     range: r.range,
     proposed_change: r.proposed_change,
     user_comment: rowStates[i]?.user_comment ?? null,
@@ -570,7 +570,7 @@ function handleSubmit(): void {
 
   // All rows have been addressed — submit
   const results = currentData.proposed_replacements.map((r, i) => ({
-    status: rowStates[i].status as 'commented' | 'no_comment' | 'accepted' | 'rejected',
+    status: rowStates[i].status as 'commented' | 'no_response' | 'accepted' | 'rejected',
     range: r.range,
     proposed_change: r.proposed_change,
     user_comment: rowStates[i].user_comment,

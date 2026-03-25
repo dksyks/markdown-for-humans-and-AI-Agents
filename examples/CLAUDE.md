@@ -227,10 +227,15 @@ Presents proposed changes with reasoning for user review and commentary in the M
 - `status` is `"completed"`, `"in_progress"`, or `"error"`
 - `sequential_replacement_plan_session_id` is present when status is `"in_progress"` — pass it to `resume_sequential_replacement_plan`
 - `results` is an ordered array; each item has:
-  - `status`: `"commented"` (user wrote a comment), `"no_comment"` (user explicitly clicked No Comment), or `"skipped"` (user clicked Skip All before addressing this range)
+  - `status`: one of:
+    - `"accepted"` — user clicked Accept (may include typed comment in `user_comment`)
+    - `"rejected"` — user clicked Reject (may include typed comment in `user_comment`)
+    - `"commented"` — user typed a comment without clicking Accept or Reject (`user_comment` contains the text)
+    - `"no_response"` — user explicitly clicked No Response (`user_comment` is null)
+    - `"skipped"` — user clicked Skip Remaining before addressing this range (`user_comment` is null)
   - `range`: the original `{ start, end }` range
   - `proposed_change`: the original proposed change text
-  - `user_comment`: the user's markdown comment (string when `"commented"`, `null` otherwise)
+  - `user_comment`: the user's markdown comment (string when status is `"accepted"`, `"rejected"`, or `"commented"` and user typed text; `null` otherwise)
 
 When status is `"in_progress"`, resume with `resume_sequential_replacement_plan`.
 
