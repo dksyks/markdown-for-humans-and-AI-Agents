@@ -4166,7 +4166,7 @@ function initializeProposalMode() {
       proposedEditors.push(editor);
 
       // Attach toolbar to this option's mount
-      const toolbar = createFormattingToolbar(editor);
+      const toolbar = createFormattingToolbar(editor, { filter: 'formatting-only' });
       mountEl.appendChild(toolbar);
       toolbar.addEventListener('mousedown', e => {
         e.preventDefault();
