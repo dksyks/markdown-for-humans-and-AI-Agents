@@ -872,6 +872,7 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
 
   const replaceBtn = document.createElement('button');
   replaceBtn.className = 'search-overlay-btn search-overlay-replace-btn';
+  replaceBtn.type = 'button';
   replaceBtn.textContent = 'Replace';
   replaceBtn.title = 'Replace current match (Enter)';
   replaceBtn.setAttribute('aria-label', 'Replace');
@@ -882,7 +883,8 @@ export function createSearchOverlay(editor: Editor): HTMLElement {
 
   const replaceAllBtn = document.createElement('button');
   replaceAllBtn.className = 'search-overlay-btn search-overlay-replace-btn';
-  replaceAllBtn.textContent = 'All';
+  replaceAllBtn.type = 'button';
+  replaceAllBtn.textContent = 'Replace All';
   replaceAllBtn.title = 'Replace all matches (Ctrl+Shift+H)';
   replaceAllBtn.setAttribute('aria-label', 'Replace all');
   replaceAllBtn.onclick = e => {

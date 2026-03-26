@@ -48,6 +48,7 @@ describe('BubbleMenuView', () => {
   });
 
   const createMockEditor = () => {
+    const selection = { from: 0, to: 0 };
     const chain = jest.fn(() => ({
       focus: jest.fn().mockReturnThis(),
       toggleBold: jest.fn().mockReturnThis(),
@@ -76,12 +77,14 @@ describe('BubbleMenuView', () => {
       chain,
       commands: {
         focus: jest.fn(),
+        insertContent: jest.fn(() => true),
+        setTextSelection: jest.fn(() => true),
       },
       isActive: jest.fn().mockReturnValue(false),
       on: jest.fn(), // Event listener registration
       off: jest.fn(), // Event listener removal
       state: {
-        selection: { from: 0, to: 0 },
+        selection,
         doc: { textBetween: jest.fn().mockReturnValue('') },
       },
       view: {
@@ -106,6 +109,53 @@ describe('BubbleMenuView', () => {
       // Check for essential buttons
       const buttons = toolbar.querySelectorAll('button');
       expect(buttons.length).toBeGreaterThan(0);
+    });
+
+    it('places the caret inside a newly inserted GitHub alert', () => {
+      const editor = createMockEditor() as unknown as {
+        state: { selection: { from: number; to: number } };
+        commands: {
+          focus: jest.Mock;
+          insertContent: jest.Mock;
+          setTextSelection: jest.Mock;
+        };
+      } & Editor;
+      editor.state.selection.from = 11;
+      editor.state.selection.to = 11;
+      editor.commands.insertContent.mockImplementation(() => {
+        editor.state.selection.from = 15;
+        editor.state.selection.to = 15;
+        return true;
+      });
+
+      const toolbar = createFormattingToolbar(editor);
+      document.body.appendChild(toolbar);
+      window.dispatchEvent(new CustomEvent('editorFocusChange', { detail: { focused: true } }));
+
+      const alertButton = toolbar.querySelector('button[title="Insert GitHub alert"]') as HTMLButtonElement;
+      expect(alertButton).toBeTruthy();
+
+      alertButton.click();
+
+      const alertMenu = Array.from(document.body.querySelectorAll('.toolbar-dropdown-menu')).find(menu =>
+        menu.textContent?.includes('Comment (editor only)')
+      ) as HTMLDivElement | undefined;
+      expect(alertMenu).toBeTruthy();
+
+      const noteItem = Array.from(alertMenu?.querySelectorAll('.toolbar-dropdown-item') ?? []).find(item =>
+        item.textContent?.includes('Note')
+      ) as HTMLButtonElement | undefined;
+      expect(noteItem).toBeTruthy();
+
+      noteItem?.click();
+
+      expect(editor.commands.insertContent).toHaveBeenCalledWith({
+        type: 'githubAlert',
+        attrs: { alertType: 'NOTE' },
+        content: [{ type: 'paragraph' }],
+      });
+      expect(editor.commands.setTextSelection).toHaveBeenCalledWith(13);
+      expect(editor.commands.focus).toHaveBeenCalled();
     });
 
     it('registers selection update listener', () => {

@@ -204,4 +204,47 @@ describe('MarkdownEditorProvider undo/redo safety', () => {
       }),
     });
   });
+
+  it('should skip webview update when the source only trims trailing whitespace', () => {
+    const provider = new MarkdownEditorProvider({} as unknown as vscode.ExtensionContext);
+    const document = createDocument('# Heading');
+    const webview = { postMessage: jest.fn() };
+
+    (provider as unknown as { lastWebviewContent: Map<string, string> }).lastWebviewContent.set(
+      document.uri.toString(),
+      '# Heading '
+    );
+
+    (
+      provider as unknown as {
+        updateWebview: (doc: vscode.TextDocument, wv: { postMessage: jest.Mock }) => void;
+      }
+    ).updateWebview(document as unknown as vscode.TextDocument, webview);
+
+    expect(webview.postMessage).not.toHaveBeenCalled();
+    expect(
+      (provider as unknown as { lastWebviewContent: Map<string, string> }).lastWebviewContent.get(
+        document.uri.toString()
+      )
+    ).toBe('# Heading');
+  });
+
+  it('should still send a webview update when non-trailing content changes', () => {
+    const provider = new MarkdownEditorProvider({} as unknown as vscode.ExtensionContext);
+    const document = createDocument('# Changed heading');
+    const webview = { postMessage: jest.fn() };
+
+    (provider as unknown as { lastWebviewContent: Map<string, string> }).lastWebviewContent.set(
+      document.uri.toString(),
+      '# Heading '
+    );
+
+    (
+      provider as unknown as {
+        updateWebview: (doc: vscode.TextDocument, wv: { postMessage: jest.Mock }) => void;
+      }
+    ).updateWebview(document as unknown as vscode.TextDocument, webview);
+
+    expect(webview.postMessage).toHaveBeenCalledTimes(1);
+  });
 });

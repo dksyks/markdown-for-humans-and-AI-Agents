@@ -55,6 +55,8 @@ let currentData: PlanInitData | null = null;
 let rowStates: PlanRowState[] = [];
 let selectedIndex = 0;
 let pendingTimer: number | null = null;
+let validationWarningTimer: number | null = null;
+let validationWarningRegionEl: HTMLElement | null = null;
 let vscodeApi: { postMessage: (msg: any) => void } | null = null;
 
 // Navigation history references (set by initializePlanOverlay)
@@ -100,6 +102,10 @@ export function destroyPlanOverlay(): void {
     clearTimeout(pendingTimer);
     pendingTimer = null;
   }
+  if (validationWarningTimer !== null) {
+    clearTimeout(validationWarningTimer);
+    validationWarningTimer = null;
+  }
 
   proposedChangeEditor?.destroy();
   proposedChangeEditor = null;
@@ -115,6 +121,7 @@ export function destroyPlanOverlay(): void {
   currentData = null;
   rowStates = [];
   selectedIndex = 0;
+  validationWarningRegionEl = null;
   vscodeApi = null;
   navRecordFn = null;
 }
@@ -242,6 +249,11 @@ function buildOverlay(): void {
   // --- Buttons ---
   const buttonBar = document.createElement('div');
   buttonBar.className = 'plan-buttons';
+
+  validationWarningRegionEl = document.createElement('div');
+  validationWarningRegionEl.className = 'plan-validation-region';
+  validationWarningRegionEl.setAttribute('aria-live', 'polite');
+  buttonBar.appendChild(validationWarningRegionEl);
 
   const acceptBtn = document.createElement('button');
   acceptBtn.className = 'plan-btn plan-btn-secondary';
@@ -474,6 +486,7 @@ function updateRowStatusIndicators(): void {
 
 function handleAcceptReject(action: 'accepted' | 'rejected'): void {
   if (!currentData) return;
+  clearValidationWarning();
 
   // Save any typed comment first
   saveCurrentResponse();
@@ -493,6 +506,7 @@ function handleAcceptReject(action: 'accepted' | 'rejected'): void {
 
 function handleNoComment(): void {
   if (!currentData) return;
+  clearValidationWarning();
 
   // Mark current row as no_response
   if (rowStates[selectedIndex]) {
@@ -520,6 +534,7 @@ function handleNoComment(): void {
 
 function handleSkipAll(): void {
   if (!currentData) return;
+  clearValidationWarning();
 
   // Save current response first
   saveCurrentResponse();
@@ -544,6 +559,7 @@ function handleSkipAll(): void {
 
 function handleSubmit(): void {
   if (!currentData) return;
+  clearValidationWarning();
 
   // Save current response first
   saveCurrentResponse();
@@ -586,14 +602,30 @@ function handleSubmit(): void {
 }
 
 function showValidationWarning(message: string): void {
-  // Remove any existing warning
-  document.querySelectorAll('.plan-validation-warning').forEach(el => el.remove());
+  clearValidationWarning();
+
+  if (!validationWarningRegionEl) {
+    return;
+  }
 
   const toast = document.createElement('div');
   toast.className = 'plan-validation-warning';
   toast.textContent = message;
+  toast.setAttribute('role', 'alert');
+  toast.setAttribute('aria-atomic', 'true');
 
-  overlayEl?.appendChild(toast);
+  validationWarningRegionEl.replaceChildren(toast);
 
-  setTimeout(() => toast.remove(), 5000);
+  validationWarningTimer = window.setTimeout(() => {
+    clearValidationWarning();
+  }, 5000);
+}
+
+function clearValidationWarning(): void {
+  if (validationWarningTimer !== null) {
+    clearTimeout(validationWarningTimer);
+    validationWarningTimer = null;
+  }
+
+  validationWarningRegionEl?.replaceChildren();
 }

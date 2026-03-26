@@ -1972,6 +1972,14 @@ function debouncedUpdate(editorInstance: Editor) {
         return;
       }
 
+      // A blank paragraph under the active caret is a transient editing state
+      // that markdown cannot round-trip faithfully. Wait until the user types
+      // into it or leaves it before syncing.
+      if (selectionIsInEmptyParagraph(editorInstance)) {
+        debouncedUpdate(editorInstance);
+        return;
+      }
+
       // Serialize markdown only after typing pause (not on every keystroke)
       const markdown = getEditorMarkdownForSync(editorInstance);
 
@@ -1986,6 +1994,31 @@ function debouncedUpdate(editorInstance: Editor) {
       console.error(`${BUILD_TAG} Error sending update:`, error);
     }
   }, 500);
+}
+
+function selectionIsInEmptyParagraph(editorInstance: Editor): boolean {
+  const selection = editorInstance.state?.selection as {
+    empty?: boolean;
+    $from?: { parent?: { type?: { name?: string }; textContent?: string; content?: { size?: number; firstChild?: { type?: { name?: string } } } } };
+  } | null;
+
+  if (!selection?.empty) {
+    return false;
+  }
+
+  const parent = selection.$from?.parent;
+  if (parent?.type?.name !== 'paragraph') {
+    return false;
+  }
+
+  const text = parent.textContent || '';
+  if (text.trim() !== '') {
+    return false;
+  }
+
+  const contentSize = parent.content?.size ?? 0;
+  const firstChildType = parent.content?.firstChild?.type?.name;
+  return contentSize === 0 || (contentSize === 1 && firstChildType === 'hardBreak');
 }
 
 // TODO: Re-implement code block language badges feature
@@ -3472,13 +3505,16 @@ function updateEditorContent(markdown: string) {
 
     // Save cursor position
     const { from, to } = editor.state.selection;
+    const collapsedSelectionRestore = captureCollapsedSelectionRestore(editor, from, to);
 
     // Set content
     editor.commands.setContent(markdown, { contentType: 'markdown' });
 
     // Restore cursor position
     try {
-      editor.commands.setTextSelection({ from, to });
+      if (!restoreCollapsedSelection(editor, collapsedSelectionRestore)) {
+        editor.commands.setTextSelection({ from, to });
+      }
     } catch {
       console.warn(`${BUILD_TAG} Could not restore exact cursor position, using safe position`);
       // If exact position fails, move to end of document
@@ -3499,6 +3535,58 @@ function updateEditorContent(markdown: string) {
   } finally {
     isUpdating = false;
   }
+}
+
+type CollapsedSelectionRestore = {
+  line: number;
+  offsetWithinLine: number;
+  atLineEnd: boolean;
+} | null;
+
+function captureCollapsedSelectionRestore(
+  editorInstance: Editor,
+  from: number,
+  to: number
+): CollapsedSelectionRestore {
+  if (from !== to) {
+    return null;
+  }
+
+  const line = posToMarkdownLine(editorInstance, from);
+  if (!Number.isFinite(line) || line < 1) {
+    return null;
+  }
+
+  const lineRange = markdownLineToSelectionRange(editorInstance, line);
+  if (!lineRange) {
+    return null;
+  }
+
+  return {
+    line,
+    offsetWithinLine: Math.max(0, from - lineRange.from),
+    atLineEnd: from >= lineRange.to,
+  };
+}
+
+function restoreCollapsedSelection(
+  editorInstance: Editor,
+  restore: CollapsedSelectionRestore
+): boolean {
+  if (!restore) {
+    return false;
+  }
+
+  const lineRange = markdownLineToSelectionRange(editorInstance, restore.line);
+  if (!lineRange) {
+    return false;
+  }
+
+  const targetPos = restore.atLineEnd
+    ? lineRange.to
+    : Math.min(lineRange.from + restore.offsetWithinLine, lineRange.to);
+  editorInstance.commands.setTextSelection(targetPos);
+  return true;
 }
 
 // Initialize when DOM is ready and content is available
@@ -3746,6 +3834,9 @@ export const __testing = {
   },
   updateEditorContentForTests(markdown: string) {
     return updateEditorContent(markdown);
+  },
+  selectionIsInEmptyParagraphForTests(editorInstance: unknown) {
+    return selectionIsInEmptyParagraph(editorInstance as Editor);
   },
   trackSentContentForTests(content: string) {
     trackSentContent(content);
@@ -4312,5 +4403,3 @@ function initializeProposalMode() {
   // Signal ready to extension host
   vscode.postMessage({ type: 'proposalReady' });
 }
-
-

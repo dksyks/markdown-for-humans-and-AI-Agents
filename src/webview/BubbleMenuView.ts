@@ -79,6 +79,19 @@ function setCodeBlockNormalized(editor: Editor, language: string): void {
     .run();
 }
 
+function insertGitHubAlert(editor: Editor, alertType: string): void {
+  editor.commands.focus();
+  editor.commands.insertContent({
+    type: 'githubAlert',
+    attrs: { alertType },
+    content: [{ type: 'paragraph' }],
+  });
+
+  // TipTap places the caret after the inserted alert block by default.
+  editor.commands.setTextSelection(Math.max(1, editor.state.selection.from - 2));
+  editor.commands.focus();
+}
+
 // Track editor focus state
 let isEditorFocused = false;
 let focusChangeListener: ((e: Event) => void) | null = null;
@@ -752,53 +765,27 @@ export function createFormattingToolbar(
         {
           label: ' Note',
           icon: { name: 'info', fallback: 'ℹ' },
-          action: () => {
-            editor
-              .chain()
-              .focus()
-              .insertContent(`> [!NOTE]\n> `, { contentType: 'markdown' })
-              .run();
-          },
+          action: () => insertGitHubAlert(editor, 'NOTE'),
         },
         {
           label: ' Tip',
           icon: { name: 'lightbulb', fallback: '💡' },
-          action: () => {
-            editor.chain().focus().insertContent(`> [!TIP]\n> `, { contentType: 'markdown' }).run();
-          },
+          action: () => insertGitHubAlert(editor, 'TIP'),
         },
         {
           label: ' Important',
           icon: { name: 'megaphone', fallback: '📢' },
-          action: () => {
-            editor
-              .chain()
-              .focus()
-              .insertContent(`> [!IMPORTANT]\n> `, { contentType: 'markdown' })
-              .run();
-          },
+          action: () => insertGitHubAlert(editor, 'IMPORTANT'),
         },
         {
           label: ' Warning',
           icon: { name: 'warning', fallback: '⚠' },
-          action: () => {
-            editor
-              .chain()
-              .focus()
-              .insertContent(`> [!WARNING]\n> `, { contentType: 'markdown' })
-              .run();
-          },
+          action: () => insertGitHubAlert(editor, 'WARNING'),
         },
         {
           label: ' Caution',
           icon: { name: 'error', fallback: '🛑' },
-          action: () => {
-            editor
-              .chain()
-              .focus()
-              .insertContent(`> [!CAUTION]\n> `, { contentType: 'markdown' })
-              .run();
-          },
+          action: () => insertGitHubAlert(editor, 'CAUTION'),
         },
         {
           label: '──────────────────',
@@ -808,13 +795,7 @@ export function createFormattingToolbar(
         {
           label: ' Comment (editor only)',
           icon: { name: 'comment', fallback: '💬' },
-          action: () => {
-            editor
-              .chain()
-              .focus()
-              .insertContent(`> [!COMMENT]\n> `, { contentType: 'markdown' })
-              .run();
-          },
+          action: () => insertGitHubAlert(editor, 'COMMENT'),
         },
       ],
     },

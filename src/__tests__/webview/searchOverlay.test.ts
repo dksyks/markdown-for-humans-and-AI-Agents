@@ -472,6 +472,18 @@ describe('Search Overlay UI behaviors', () => {
 
     document.removeEventListener('keydown', docEscapeHandler);
   });
+
+  it('shows right-side replace actions with Replace and Replace All buttons when replace is opened', () => {
+    showSearchOverlay(editor as unknown as Editor, true);
+
+    const replaceActions = document.querySelector('.search-overlay-replace-actions') as HTMLElement | null;
+    const replaceButtons = Array.from(
+      document.querySelectorAll('.search-overlay-replace-btn')
+    ).map(button => (button as HTMLButtonElement).textContent);
+
+    expect(replaceActions).toBeTruthy();
+    expect(replaceButtons).toEqual(['Replace', 'Replace All']);
+  });
 });
 
 describe('Search Overlay UI behavior (future tests)', () => {

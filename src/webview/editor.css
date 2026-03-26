@@ -845,11 +845,15 @@
   .line-number-table-anchor {
     position: relative;
     height: 0;
+    width: 0;
+    margin: 0;
+    padding: 0;
     overflow: visible;
     pointer-events: none;
   }
   .line-number-table-anchor .line-number-gutter {
     pointer-events: auto;
+    line-height: 1;
   }
   
   /* Table resize handle */
@@ -2461,6 +2465,11 @@
     gap: 4px;
   }
 
+  .search-overlay-replace-actions {
+    justify-self: end;
+    justify-content: flex-end;
+  }
+
   .search-overlay-replace-counter {
     font-size: 12px;
     color: var(--md-muted);
@@ -2494,17 +2503,19 @@
     flex-shrink: 0;
   }
   
-  .search-overlay-input {
+  .search-overlay-input,
+  .search-overlay-replace-input {
     flex: 1;
     background: transparent;
-  border: none;
-  color: var(--vscode-input-foreground);
-  font-size: 13px;
-  outline: none;
+    border: none;
+    color: var(--vscode-input-foreground);
+    font-size: 13px;
+    outline: none;
     min-width: 150px;
   }
   
-  .search-overlay-input::placeholder {
+  .search-overlay-input::placeholder,
+  .search-overlay-replace-input::placeholder {
     color: var(--vscode-input-placeholderForeground);
   }
   
@@ -2616,6 +2627,18 @@
   .search-overlay-btn:hover {
     background-color: var(--md-hover-bg);
     opacity: 1;
+  }
+
+  .search-overlay-replace-btn {
+    background: var(--vscode-button-secondaryBackground, transparent);
+    border: 1px solid var(--vscode-button-border, var(--vscode-button-secondaryBorder, #888));
+    justify-content: center;
+    min-height: 28px;
+    padding: 4px 10px;
+  }
+
+  .search-overlay-replace-btn:hover {
+    background-color: var(--vscode-button-secondaryHoverBackground, var(--md-hover-bg));
   }
   
   .search-overlay-btn:active {
@@ -3438,8 +3461,12 @@ body::-webkit-scrollbar-thumb:active {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
+  align-items: center;
   flex-shrink: 0;
-  padding-top: 2px;
+  padding: 2px 0;
+  position: relative;
+  min-height: 36px;
+  overflow: visible;
 }
 
 .plan-btn {
@@ -3471,19 +3498,35 @@ body::-webkit-scrollbar-thumb:active {
 
 /* --- Validation warning --- */
 
-.plan-validation-warning {
+.plan-validation-region {
   position: absolute;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--vscode-inputValidation-warningBackground, #5a5a00);
-  color: var(--vscode-inputValidation-warningForeground, #fff);
-  border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
-  padding: 6px 16px;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.plan-validation-warning {
+  display: inline-block;
+  background: var(
+    --vscode-inputValidation-warningBackground,
+    color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 22%, var(--vscode-editor-background) 78%)
+  );
+  color: var(--vscode-editor-foreground, #1f1f1f);
+  border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground, #cca700));
+  padding: 6px 10px;
   border-radius: 4px;
   font-size: 12px;
-  z-index: 100;
-  white-space: nowrap;
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-word;
+  max-width: 100%;
+  pointer-events: none;
   animation: plan-warning-fade 5s forwards;
 }
 

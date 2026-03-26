@@ -38,6 +38,23 @@ type ResolvedListItemEntry = {
   depth: number;
 };
 
+type LineNumberRefreshMode = 'visible' | 'chunk' | 'full';
+
+type TopLevelBlockInfo = {
+  node: any;
+  offset: number;
+  typeName: string;
+  headingLevel: number | null;
+  contentLineIndex: number;
+  lineNum: number;
+  blockLines: number;
+  shouldSkipDecoration: boolean;
+  domIndex: number;
+};
+
+const LINE_NUMBER_VISIBLE_BUFFER_PX = 320;
+const LINE_NUMBER_BACKGROUND_CHUNK_SIZE = 80;
+
 /**
  * Recalculate and apply the --gutter-width CSS variable based on which
  * decorations are currently enabled and the document line count.
@@ -353,15 +370,9 @@ function positionGitHubAlertSpans(wrapper: Element, blockEl: Element, spans: HTM
 
 function syncAnchorExtent(wrapper: Element, sibling: Element): void {
   const wrapperEl = wrapper as HTMLElement;
-  const siblingRect = sibling.getBoundingClientRect();
-  if (!Number.isFinite(siblingRect.height) || siblingRect.height <= 0) {
-    wrapperEl.style.removeProperty('height');
-    wrapperEl.style.removeProperty('margin-bottom');
-    return;
-  }
-
-  wrapperEl.style.height = `${siblingRect.height}px`;
-  wrapperEl.style.marginBottom = `${-siblingRect.height}px`;
+  void sibling;
+  wrapperEl.style.removeProperty('height');
+  wrapperEl.style.removeProperty('margin-bottom');
 }
 
 /**
@@ -383,6 +394,393 @@ function showToast(message: string): void {
  */
 /** Timeout handle for deferred line number rebuilds */
 let lineNumberRebuildTimeout: ReturnType<typeof setTimeout> | null = null;
+let lineNumberBackgroundFillTimeout: ReturnType<typeof setTimeout> | null = null;
+let gutterRepositionFrame: number | null = null;
+let pendingLineNumberRefreshCutoff: number | null = null;
+let lineNumberBuildCount = 0;
+let lastLineNumberBuildStats: {
+  cutoffOffset: number | null;
+  refreshMode: LineNumberRefreshMode;
+  rebuiltBlocks: number;
+  totalBlocks: number;
+  preservedDecorations: number;
+} = {
+  cutoffOffset: null,
+  refreshMode: 'full',
+  rebuiltBlocks: 0,
+  totalBlocks: 0,
+  preservedDecorations: 0,
+};
+
+function cancelPendingBackgroundLineNumberFill(): void {
+  if (lineNumberBackgroundFillTimeout) {
+    clearTimeout(lineNumberBackgroundFillTimeout);
+    lineNumberBackgroundFillTimeout = null;
+  }
+}
+
+function dispatchLineNumbersRefresh(
+  editor: any,
+  options?: {
+    cutoffOffset?: number | null;
+    refreshMode?: LineNumberRefreshMode;
+    chunkStartIndex?: number;
+  }
+): void {
+  if (!editor?.view) {
+    return;
+  }
+
+  const refreshMode = options?.refreshMode ?? 'visible';
+  const tr = editor.state.tr
+    .setMeta('lineNumbersRefresh', true)
+    .setMeta('lineNumbersRefreshMode', refreshMode)
+    .setMeta('addToHistory', false);
+
+  if (typeof options?.cutoffOffset === 'number') {
+    tr.setMeta('lineNumbersRefreshCutoff', options.cutoffOffset);
+  }
+
+  if (refreshMode === 'chunk' && typeof options?.chunkStartIndex === 'number') {
+    tr.setMeta('lineNumbersRefreshChunkStart', options.chunkStartIndex);
+  }
+
+  editor.view.dispatch(tr);
+}
+
+function scheduleBackgroundLineNumberChunk(
+  editor: any,
+  cutoffOffset: number | undefined,
+  chunkStartIndex: number
+): void {
+  cancelPendingBackgroundLineNumberFill();
+  lineNumberBackgroundFillTimeout = setTimeout(() => {
+    lineNumberBackgroundFillTimeout = null;
+    dispatchLineNumbersRefresh(editor, {
+      cutoffOffset,
+      refreshMode: 'chunk',
+      chunkStartIndex,
+    });
+  }, 16);
+}
+
+function contentAffectsLineNumberMapping(content: any): boolean {
+  let affectsMapping = false;
+
+  const visitNode = (node: any): void => {
+    if (!node || affectsMapping) {
+      return;
+    }
+
+    if (node.isText) {
+      if (typeof node.text === 'string' && node.text.includes('\n')) {
+        affectsMapping = true;
+      }
+      return;
+    }
+
+    if (node.type?.name === 'hardBreak' || node.isBlock) {
+      affectsMapping = true;
+      return;
+    }
+
+    if (typeof node.forEach === 'function') {
+      node.forEach((child: any) => visitNode(child));
+      return;
+    }
+
+    if (node.content && typeof node.content.forEach === 'function') {
+      node.content.forEach((child: any) => visitNode(child));
+    }
+  };
+
+  if (content && typeof content.forEach === 'function') {
+    content.forEach((child: any) => visitNode(child));
+  }
+
+  return affectsMapping;
+}
+
+function changedRangeAffectsLineNumberMapping(doc: any, from: number, to: number): boolean {
+  if (from >= to) {
+    return false;
+  }
+
+  try {
+    return contentAffectsLineNumberMapping(doc.slice(from, to).content);
+  } catch {
+    return true;
+  }
+}
+
+function transactionAffectsLineNumberMapping(tr: any, oldState: any): boolean {
+  if (!tr.docChanged || !oldState?.doc) {
+    return false;
+  }
+
+  for (const step of tr.steps) {
+    if (contentAffectsLineNumberMapping(step?.slice?.content)) {
+      return true;
+    }
+
+    const stepMap = step?.getMap?.();
+    if (!stepMap || typeof stepMap.forEach !== 'function') {
+      return true;
+    }
+
+    let affectsMapping = false;
+    stepMap.forEach((oldStart: number, oldEnd: number, _newStart: number, _newEnd: number) => {
+      if (affectsMapping) {
+        return;
+      }
+
+      if (changedRangeAffectsLineNumberMapping(oldState.doc, oldStart, oldEnd)) {
+        affectsMapping = true;
+      }
+    });
+
+    if (affectsMapping) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function mapPendingRefreshCutoff(tr: any): void {
+  if (pendingLineNumberRefreshCutoff === null) {
+    return;
+  }
+
+  pendingLineNumberRefreshCutoff = tr.mapping.map(pendingLineNumberRefreshCutoff, -1);
+}
+
+function findRefreshCutoffOffset(doc: any, pos: number): number {
+  const maxPos = Math.max(0, doc.content.size);
+  const boundedPos = Math.min(Math.max(0, pos), maxPos);
+
+  let previousOffset = 0;
+  let firstOffset: number | null = null;
+  let result: number | null = null;
+
+  doc.forEach((node: any, offset: number) => {
+    if (result !== null) {
+      return;
+    }
+
+    if (firstOffset === null) {
+      firstOffset = offset;
+      previousOffset = offset;
+    }
+
+    const end = offset + node.nodeSize;
+    if (boundedPos <= end) {
+      result = offset > (firstOffset ?? 0) ? previousOffset : offset;
+      return;
+    }
+
+    previousOffset = offset;
+  });
+
+  return result ?? previousOffset ?? firstOffset ?? 0;
+}
+
+function getTransactionRefreshCutoffOffset(tr: any): number {
+  let cutoff: number | null = null;
+
+  for (const step of tr.steps) {
+    const stepMap = step?.getMap?.();
+    if (!stepMap || typeof stepMap.forEach !== 'function') {
+      return 0;
+    }
+
+    stepMap.forEach((_oldStart: number, _oldEnd: number, newStart: number) => {
+      const nextCutoff = findRefreshCutoffOffset(tr.doc, newStart);
+      cutoff = cutoff === null ? nextCutoff : Math.min(cutoff, nextCutoff);
+    });
+  }
+
+  return cutoff ?? 0;
+}
+
+function scheduleGutterReposition(): void {
+  if (gutterRepositionFrame !== null) {
+    cancelAnimationFrame(gutterRepositionFrame);
+  }
+
+  gutterRepositionFrame = window.requestAnimationFrame(() => {
+    gutterRepositionFrame = null;
+    repositionGutterDecorations();
+  });
+}
+
+function shouldSkipLineNumberDecoration(node: any): boolean {
+  if (node.type?.name !== 'paragraph') {
+    return false;
+  }
+
+  const text = node.textContent || '';
+  return (
+    text.trim() === '' &&
+    (!node.content ||
+      node.content.size === 0 ||
+      (node.content.size === 1 && node.content.firstChild?.type?.name === 'hardBreak'))
+  );
+}
+
+function collectTopLevelBlockInfos(doc: any, lines: string[]): TopLevelBlockInfo[] {
+  const blockInfos: TopLevelBlockInfo[] = [];
+  let lineIndex = 0;
+  let domIndex = 0;
+
+  doc.forEach((node: any, offset: number) => {
+    const typeName = node.type.name;
+    const headingLevel = typeName === 'heading' ? node.attrs?.level : null;
+    const shouldSkipDecoration = shouldSkipLineNumberDecoration(node);
+
+    let contentLineIndex = findBlockLine(node, lines, lineIndex);
+    if (contentLineIndex < 0) {
+      contentLineIndex = lineIndex;
+      while (contentLineIndex < lines.length && lines[contentLineIndex].trim() === '') {
+        contentLineIndex++;
+      }
+    }
+
+    const lineNum = contentLineIndex + 1;
+    const countFrom = Math.max(lineIndex, contentLineIndex);
+    const blockLines = countBlockLines(node, lines, countFrom);
+
+    blockInfos.push({
+      node,
+      offset,
+      typeName,
+      headingLevel,
+      contentLineIndex,
+      lineNum,
+      blockLines,
+      shouldSkipDecoration,
+      domIndex,
+    });
+
+    lineIndex = countFrom + blockLines;
+    domIndex++;
+  });
+
+  return blockInfos;
+}
+
+function getVisibleBlockRange(
+  editor: any,
+  totalTopLevelBlocks: number
+): { startIndex: number; endIndex: number } | null {
+  const editorDom = editor?.view?.dom as HTMLElement | null;
+  if (!editorDom) {
+    return null;
+  }
+
+  const blockElements = Array.from(editorDom.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement && !child.classList.contains('line-number-table-anchor')
+  );
+
+  if (!blockElements.length) {
+    return null;
+  }
+
+  const visibleTop = -LINE_NUMBER_VISIBLE_BUFFER_PX;
+  const visibleBottom = window.innerHeight + LINE_NUMBER_VISIBLE_BUFFER_PX;
+  const blockCount = Math.min(totalTopLevelBlocks, blockElements.length);
+  let startIndex = -1;
+  let endIndex = -1;
+
+  for (let i = 0; i < blockCount; i++) {
+    const rect = blockElements[i].getBoundingClientRect();
+    if (rect.bottom >= visibleTop && rect.top <= visibleBottom) {
+      if (startIndex < 0) {
+        startIndex = i;
+      }
+      endIndex = i;
+    }
+  }
+
+  if (startIndex < 0 || endIndex < 0) {
+    return null;
+  }
+
+  return {
+    startIndex: Math.max(0, startIndex - 2),
+    endIndex: Math.min(totalTopLevelBlocks - 1, endIndex + 2),
+  };
+}
+
+function selectBlocksToBuild(
+  editor: any,
+  blockInfos: TopLevelBlockInfo[],
+  refreshMode: LineNumberRefreshMode,
+  cutoffOffset?: number,
+  chunkStartIndex = 0
+): {
+  selectedInfos: TopLevelBlockInfo[];
+  totalDecoratedBlocks: number;
+  nextChunkStartIndex: number | null;
+} {
+  const decoratedInfos = blockInfos.filter(info => !info.shouldSkipDecoration);
+  const eligibleInfos =
+    typeof cutoffOffset === 'number'
+      ? decoratedInfos.filter(info => info.offset >= cutoffOffset)
+      : decoratedInfos;
+
+  if (refreshMode === 'full' || eligibleInfos.length === 0) {
+    return {
+      selectedInfos: eligibleInfos,
+      totalDecoratedBlocks: decoratedInfos.length,
+      nextChunkStartIndex: null,
+    };
+  }
+
+  if (refreshMode === 'chunk') {
+    const selectedInfos = eligibleInfos.slice(
+      chunkStartIndex,
+      chunkStartIndex + LINE_NUMBER_BACKGROUND_CHUNK_SIZE
+    );
+    const nextChunkStart =
+      chunkStartIndex + selectedInfos.length < eligibleInfos.length
+        ? chunkStartIndex + selectedInfos.length
+        : null;
+
+    return {
+      selectedInfos,
+      totalDecoratedBlocks: decoratedInfos.length,
+      nextChunkStartIndex: nextChunkStart,
+    };
+  }
+
+  const visibleRange = getVisibleBlockRange(editor, blockInfos.length);
+  if (!visibleRange) {
+    return {
+      selectedInfos: eligibleInfos,
+      totalDecoratedBlocks: decoratedInfos.length,
+      nextChunkStartIndex: null,
+    };
+  }
+
+  const selectedVisibleInfos = eligibleInfos.filter(
+    info =>
+      info.domIndex >= visibleRange.startIndex &&
+      info.domIndex <= visibleRange.endIndex
+  );
+
+  const selectedInfos =
+    selectedVisibleInfos.length > 0
+      ? selectedVisibleInfos
+      : eligibleInfos.slice(0, LINE_NUMBER_BACKGROUND_CHUNK_SIZE);
+
+  return {
+    selectedInfos,
+    totalDecoratedBlocks: decoratedInfos.length,
+    nextChunkStartIndex: selectedInfos.length < eligibleInfos.length ? 0 : null,
+  };
+}
 
 export const LineNumbers = Extension.create({
   name: 'lineNumbers',
@@ -398,31 +796,61 @@ export const LineNumbers = Extension.create({
             // Don't build on init — markdown serializer isn't ready yet.
             // Schedule a deferred refresh once the editor is fully loaded.
             setTimeout(() => {
-              if (editor?.view) {
-                editor.view.dispatch(
-                  editor.state.tr.setMeta('lineNumbersRefresh', true)
-                );
-              }
+              dispatchLineNumbersRefresh(editor, {
+                cutoffOffset: pendingLineNumberRefreshCutoff,
+                refreshMode: 'visible',
+              });
+              pendingLineNumberRefreshCutoff = null;
             }, 200);
             return DecorationSet.empty;
           },
-          apply(tr, oldDecorations) {
+          apply(tr, oldDecorations, oldState) {
             if (tr.getMeta('lineNumbersRefresh')) {
-              return buildDecorations(tr.doc, editor);
+              const refreshCutoffMeta = tr.getMeta('lineNumbersRefreshCutoff');
+              const refreshCutoff =
+                typeof refreshCutoffMeta === 'number' && refreshCutoffMeta > 0
+                  ? refreshCutoffMeta
+                  : undefined;
+              const refreshModeMeta = tr.getMeta('lineNumbersRefreshMode');
+              const refreshMode: LineNumberRefreshMode =
+                refreshModeMeta === 'chunk' || refreshModeMeta === 'full'
+                  ? refreshModeMeta
+                  : 'visible';
+              const chunkStartMeta = tr.getMeta('lineNumbersRefreshChunkStart');
+              const chunkStartIndex =
+                typeof chunkStartMeta === 'number' && chunkStartMeta >= 0 ? chunkStartMeta : 0;
+              return buildDecorations(tr.doc, editor, oldDecorations, {
+                cutoffOffset: refreshCutoff,
+                refreshMode,
+                chunkStartIndex,
+              });
             }
             if (tr.docChanged) {
-              if (lineNumberRebuildTimeout) {
-                clearTimeout(lineNumberRebuildTimeout);
-              }
-              lineNumberRebuildTimeout = setTimeout(() => {
-                lineNumberRebuildTimeout = null;
-                if (editor?.view) {
-                  editor.view.dispatch(
-                    editor.state.tr.setMeta('lineNumbersRefresh', true)
-                  );
+              cancelPendingBackgroundLineNumberFill();
+              mapPendingRefreshCutoff(tr);
+
+              if (transactionAffectsLineNumberMapping(tr, oldState)) {
+                const transactionCutoff = getTransactionRefreshCutoffOffset(tr);
+                pendingLineNumberRefreshCutoff =
+                  pendingLineNumberRefreshCutoff === null
+                    ? transactionCutoff
+                    : Math.min(pendingLineNumberRefreshCutoff, transactionCutoff);
+
+                if (lineNumberRebuildTimeout) {
+                  clearTimeout(lineNumberRebuildTimeout);
                 }
-              }, 500);
-              return oldDecorations;
+                lineNumberRebuildTimeout = setTimeout(() => {
+                  lineNumberRebuildTimeout = null;
+                  dispatchLineNumbersRefresh(editor, {
+                    cutoffOffset: pendingLineNumberRefreshCutoff,
+                    refreshMode: 'visible',
+                  });
+                  pendingLineNumberRefreshCutoff = null;
+                }, 500);
+              }
+
+              scheduleGutterReposition();
+              return oldDecorations.map(tr.mapping, tr.doc);
             }
             // Keep existing decorations until an explicit deferred refresh runs.
             return oldDecorations;
@@ -983,6 +1411,45 @@ export function posToMarkdownLine(editor: any, pos: number): number {
   return resolveMarkdownLineMapping(editor, pos).lineNum;
 }
 
+function findNearestInlineSelectionPos(doc: any, pos: number): number {
+  const maxPos = Math.max(1, doc.nodeSize - 2);
+  const boundedPos = Math.min(Math.max(1, pos), maxPos);
+
+  try {
+    if (doc.resolve(boundedPos).parent.inlineContent) {
+      return boundedPos;
+    }
+  } catch {
+    return boundedPos;
+  }
+
+  for (let delta = 1; delta <= maxPos; delta++) {
+    const forward = boundedPos + delta;
+    if (forward <= maxPos) {
+      try {
+        if (doc.resolve(forward).parent.inlineContent) {
+          return forward;
+        }
+      } catch {
+        // Ignore invalid probe positions
+      }
+    }
+
+    const backward = boundedPos - delta;
+    if (backward >= 1) {
+      try {
+        if (doc.resolve(backward).parent.inlineContent) {
+          return backward;
+        }
+      } catch {
+        // Ignore invalid probe positions
+      }
+    }
+  }
+
+  return boundedPos;
+}
+
 /**
  * Given a 1-based markdown line number, return the ProseMirror position
  * of the block that contains that line. Returns -1 if not found.
@@ -1170,7 +1637,16 @@ export function buildLineToPositionMap(
 /**
  * Build decorations for all top-level blocks.
  */
-function buildDecorations(doc: any, editor: any): DecorationSet {
+function buildDecorations(
+  doc: any,
+  editor: any,
+  oldDecorations?: DecorationSet,
+  options?: {
+    cutoffOffset?: number;
+    refreshMode?: LineNumberRefreshMode;
+    chunkStartIndex?: number;
+  }
+): DecorationSet {
   try {
     const markdown = getEditorMarkdownForSync(editor);
 
@@ -1178,27 +1654,35 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
     if (!markdown || markdown.length === 0) {
 
       setTimeout(() => {
-        if (editor?.view) {
-          editor.view.dispatch(
-            editor.state.tr.setMeta('lineNumbersRefresh', true)
-          );
-        }
+        dispatchLineNumbersRefresh(editor, { refreshMode: 'visible' });
       }, 300);
-      return DecorationSet.empty;
+      return oldDecorations ?? DecorationSet.empty;
     }
 
     const lines = markdown.split('\n');
     const totalLines = lines.length;
+    const refreshMode = options?.refreshMode ?? 'full';
+    const cutoffOffset = options?.cutoffOffset;
 
     // Set CSS variable for dynamic gutter width based on line count and active decorations
     updateGutterWidth(totalLines);
 
-    const decorations: Decoration[] = [];
-    let lineIndex = 0;
+    const blockInfos = collectTopLevelBlockInfos(doc, lines);
+    const {
+      selectedInfos,
+      totalDecoratedBlocks,
+      nextChunkStartIndex,
+    } = selectBlocksToBuild(
+      editor,
+      blockInfos,
+      refreshMode,
+      cutoffOffset,
+      options?.chunkStartIndex ?? 0
+    );
 
-    doc.forEach((node: any, offset: number) => {
-      const typeName = node.type.name;
-      const headingLevel = typeName === 'heading' ? node.attrs?.level : null;
+    const decorations: Decoration[] = [];
+
+    selectedInfos.forEach(({ node, offset, typeName, headingLevel, contentLineIndex, lineNum }) => {
 
       // Skip empty paragraphs — they are stripped from serialized markdown
       // by stripEmptyDocParagraphsFromJson, so they have no corresponding line
@@ -1210,24 +1694,15 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
         }
       }
 
-      // Find the line number using pattern matching
-      let contentLineIndex = findBlockLine(node, lines, lineIndex);
-      if (contentLineIndex < 0) {
-        // Fallback: skip blanks from current position
-        contentLineIndex = lineIndex;
-        while (contentLineIndex < lines.length && lines[contentLineIndex].trim() === '') {
-          contentLineIndex++;
-        }
-      }
 
-      const lineNum = contentLineIndex + 1; // 1-based
+      // Find the line number using pattern matching
 
       // Helper: build a gutter span for a given line number
       const createGutterSpan = (
         ln: number,
         hLevel: number | null,
         selFrom: number,
-        selTo: number
+        _selTo: number
       ): HTMLElement => {
         const span = document.createElement('span');
         span.className = 'line-number-gutter';
@@ -1265,7 +1740,20 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
           }
 
           try {
-            editor.commands.setTextSelection({ from: selFrom, to: selTo });
+            const freshSelection = markdownLineToSelectionRange(editor, ln);
+            const canUseFreshSelection = Boolean(
+              freshSelection &&
+              editor.state.doc.resolve(freshSelection.from).parent.inlineContent &&
+              editor.state.doc.resolve(Math.max(freshSelection.to - 1, freshSelection.from)).parent.inlineContent
+            );
+            if (canUseFreshSelection && freshSelection) {
+              editor.commands.setTextSelection(freshSelection);
+            } else {
+              const freshPos = markdownLineToPos(editor, ln);
+              editor.commands.setTextSelection(
+                findNearestInlineSelectionPos(editor.state.doc, freshPos > 0 ? freshPos : selFrom)
+              );
+            }
             editor.commands.focus();
           } catch {
             // Ignore selection errors
@@ -1332,7 +1820,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
           });
 
           return wrapper;
-        }, { side: -1, key: `ln-table-${offset}` });
+        }, { side: -1, key: `ln-table-${offset}`, blockStartDelta: 0 });
 
         decorations.push(widget);
       } else if (typeName === 'githubAlert') {
@@ -1359,7 +1847,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
           });
 
           return wrapper;
-        }, { side: -1, key: `ln-alert-${offset}` });
+        }, { side: -1, key: `ln-alert-${offset}`, blockStartDelta: 0 });
 
         decorations.push(widget);
       } else if (typeName === 'blockquote') {
@@ -1411,7 +1899,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
           });
 
           return wrapper;
-        }, { side: -1, key: `ln-alert-${offset}` });
+        }, { side: -1, key: `ln-alert-${offset}`, blockStartDelta: 0 });
 
         decorations.push(widget);
       } else if (typeName === 'bulletList' || typeName === 'orderedList' || typeName === 'taskList') {
@@ -1452,7 +1940,7 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
           });
 
           return wrapper;
-        }, { side: -1, key: `ln-list-${offset}` });
+        }, { side: -1, key: `ln-list-${offset}`, blockStartDelta: 0 });
 
         decorations.push(widget);
       } else {
@@ -1461,23 +1949,93 @@ function buildDecorations(doc: any, editor: any): DecorationSet {
         const selTo = offset + node.nodeSize - 1;
         const widget = Decoration.widget(offset + 1, () => {
           return createGutterSpan(lineNum, headingLevel, selFrom, selTo);
-        }, { side: -1, key: `ln-${offset}` });
+        }, { side: -1, key: `ln-${offset}`, blockStartDelta: 1 });
 
         decorations.push(widget);
       }
 
-      // Advance lineIndex past this block.
-      // Start counting from contentLineIndex to correctly skip all block lines.
-      const countFrom = Math.max(lineIndex, contentLineIndex);
-      const blockLines = countBlockLines(node, lines, countFrom);
-      lineIndex = countFrom + blockLines;
     });
 
-    return DecorationSet.create(doc, decorations);
+    const selectedOffsets = new Set(selectedInfos.map(info => info.offset));
+    let preservedDecorations = 0;
+    if (oldDecorations) {
+      const preservedPrefix = oldDecorations.find().filter(decoration => {
+        const blockStartDelta =
+          typeof decoration.spec?.blockStartDelta === 'number' ? decoration.spec.blockStartDelta : 0;
+        const currentBlockStart = decoration.from - blockStartDelta;
+        return !selectedOffsets.has(currentBlockStart);
+      });
+      preservedDecorations = preservedPrefix.length;
+      const decorationSet = DecorationSet.create(doc, preservedPrefix.concat(decorations));
+      lineNumberBuildCount++;
+      lastLineNumberBuildStats = {
+        cutoffOffset: cutoffOffset ?? null,
+        refreshMode,
+        rebuiltBlocks: decorations.length,
+        totalBlocks: totalDecoratedBlocks,
+        preservedDecorations,
+      };
+      if (nextChunkStartIndex !== null) {
+        scheduleBackgroundLineNumberChunk(editor, cutoffOffset, nextChunkStartIndex);
+      }
+      return decorationSet;
+    }
+
+    const decorationSet = DecorationSet.create(doc, decorations);
+    lineNumberBuildCount++;
+    lastLineNumberBuildStats = {
+      cutoffOffset: cutoffOffset ?? null,
+      refreshMode,
+      rebuiltBlocks: decorations.length,
+      totalBlocks: totalDecoratedBlocks,
+      preservedDecorations: 0,
+    };
+    if (nextChunkStartIndex !== null) {
+      scheduleBackgroundLineNumberChunk(editor, cutoffOffset, nextChunkStartIndex);
+    }
+    return decorationSet;
   } catch {
     return DecorationSet.empty;
   }
 }
+
+export const __testing = {
+  getLineNumberBuildCount(): number {
+    return lineNumberBuildCount;
+  },
+  getLastLineNumberBuildStats(): {
+    cutoffOffset: number | null;
+    refreshMode: LineNumberRefreshMode;
+    rebuiltBlocks: number;
+    totalBlocks: number;
+    preservedDecorations: number;
+  } {
+    return { ...lastLineNumberBuildStats };
+  },
+  isLineNumberRefreshScheduled(): boolean {
+    return lineNumberRebuildTimeout !== null;
+  },
+  resetLineNumberPluginState(): void {
+    if (lineNumberRebuildTimeout) {
+      clearTimeout(lineNumberRebuildTimeout);
+      lineNumberRebuildTimeout = null;
+    }
+    cancelPendingBackgroundLineNumberFill();
+    if (gutterRepositionFrame !== null) {
+      cancelAnimationFrame(gutterRepositionFrame);
+      gutterRepositionFrame = null;
+    }
+    pendingLineNumberRefreshCutoff = null;
+    lineNumberBuildCount = 0;
+    lastLineNumberBuildStats = {
+      cutoffOffset: null,
+      refreshMode: 'full',
+      rebuiltBlocks: 0,
+      totalBlocks: 0,
+      preservedDecorations: 0,
+    };
+  },
+};
 
 /**
  * Reposition all absolutely-positioned gutter spans inside .line-number-table-anchor

@@ -75,11 +75,27 @@ jest.mock('./../../webview/utils/copyMarkdown', () => ({ copySelectionAsMarkdown
 jest.mock('./../../webview/utils/outline', () => ({ buildOutlineFromEditor: jest.fn(() => []) }));
 jest.mock('./../../webview/utils/scrollToHeading', () => ({ scrollToHeading: jest.fn() }));
 
+const posToMarkdownLineMock: jest.Mock<any, any> = jest.fn(() => 1);
+const markdownLineToSelectionRangeMock: jest.Mock<any, any> = jest.fn(
+  (editor: any) => editor?.state?.doc?.lineRange ?? null
+);
+
+jest.mock('./../../webview/extensions/lineNumbers', () => ({
+  LineNumbers: {},
+  setDocumentFilename: jest.fn(),
+  posToMarkdownLine: (editor: unknown, pos: unknown) => posToMarkdownLineMock(editor, pos),
+  markdownLineToPos: jest.fn(() => 1),
+  markdownLineToSelectionRange: (editor: unknown, line: unknown) =>
+    markdownLineToSelectionRangeMock(editor, line),
+  installGutterResizeObserver: jest.fn(),
+}));
+
 type TestingModule = {
   resetSyncState: () => void;
   setMockEditor: (editor: unknown) => void;
   trackSentContentForTests: (content: string) => void;
   updateEditorContentForTests: (content: string) => void;
+  selectionIsInEmptyParagraphForTests: (editor: unknown) => boolean;
 };
 
 describe('webview undo/redo guards', () => {
@@ -118,6 +134,10 @@ describe('webview undo/redo guards', () => {
   beforeEach(async () => {
     await setupModule();
     testing.resetSyncState();
+    posToMarkdownLineMock.mockClear();
+    posToMarkdownLineMock.mockReturnValue(1);
+    markdownLineToSelectionRangeMock.mockClear();
+    markdownLineToSelectionRangeMock.mockImplementation((editor: any) => editor?.state?.doc?.lineRange ?? null);
   });
 
   afterAll(() => {
@@ -159,7 +179,7 @@ describe('webview undo/redo guards', () => {
   it('applies update when content changes', () => {
     const mockEditor = {
       getMarkdown: jest.fn().mockReturnValue('old'),
-      state: { selection: { from: 2, to: 4 }, doc: { content: { size: 5 } } },
+      state: { selection: { from: 2, to: 4 }, doc: { content: { size: 5 }, lineRange: null } },
       commands: { setContent: jest.fn(), setTextSelection: jest.fn() },
     };
 
@@ -172,5 +192,49 @@ describe('webview undo/redo guards', () => {
       contentType: 'markdown',
     });
     expect(mockEditor.commands.setTextSelection).toHaveBeenCalledWith({ from: 2, to: 4 });
+  });
+
+  it('clamps a collapsed caret to the end of the same line when that line is trimmed', () => {
+    const mockEditor = {
+      getMarkdown: jest.fn().mockReturnValue('Heading '),
+      state: {
+        selection: { from: 5, to: 5 },
+        doc: { content: { size: 8 }, lineRange: { from: 1, to: 5 } },
+      },
+      commands: {
+        setContent: jest.fn(() => {
+          mockEditor.state.doc = { content: { size: 7 }, lineRange: { from: 1, to: 4 } };
+        }),
+        setTextSelection: jest.fn(),
+      },
+    };
+
+    testing.setMockEditor(mockEditor);
+
+    testing.updateEditorContentForTests('Heading');
+
+    expect(mockEditor.commands.setContent).toHaveBeenCalledWith('Heading', {
+      contentType: 'markdown',
+    });
+    expect(mockEditor.commands.setTextSelection).toHaveBeenCalledWith(4);
+  });
+
+  it('treats a collapsed caret in an empty paragraph as a deferred-sync state', () => {
+    const mockEditor = {
+      state: {
+        selection: {
+          empty: true,
+          $from: {
+            parent: {
+              type: { name: 'paragraph' },
+              textContent: '',
+              content: { size: 0, firstChild: undefined },
+            },
+          },
+        },
+      },
+    };
+
+    expect(testing.selectionIsInEmptyParagraphForTests(mockEditor as never)).toBe(true);
   });
 });

@@ -255,7 +255,7 @@ describe('repositionGutterDecorations', () => {
     document.createRange = originalCreateRange;
   });
 
-  it('extends list anchors to the full list height so later gutter labels remain clickable', () => {
+  it('keeps list anchors layout-neutral while still positioning later gutter labels', () => {
     const wrapper = document.createElement('div');
     wrapper.className = 'line-number-table-anchor';
     Object.defineProperty(wrapper, 'nextElementSibling', {
@@ -318,8 +318,8 @@ describe('repositionGutterDecorations', () => {
     expect(spans[0].style.top).toBe('10px');
     expect(spans[1].style.top).toBe('30px');
     expect(spans[2].style.top).toBe('50px');
-    expect(wrapper.style.height).toBe('80px');
-    expect(wrapper.style.marginBottom).toBe('-80px');
+    expect(wrapper.style.height).toBe('');
+    expect(wrapper.style.marginBottom).toBe('');
   });
 
   it('positions nested list gutter labels against inner list items in source order', () => {

@@ -83,6 +83,44 @@ interface SyncSourceSelectionMessage {
   reason?: string | null;
 }
 
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n/g, '\n');
+}
+
+function isOnlyTrailingWhitespaceTrim(previousContent: string, currentContent: string): boolean {
+  const previousLines = normalizeLineEndings(previousContent).split('\n');
+  const currentLines = normalizeLineEndings(currentContent).split('\n');
+
+  if (previousLines.length !== currentLines.length) {
+    return false;
+  }
+
+  let sawTrim = false;
+
+  for (let i = 0; i < previousLines.length; i++) {
+    const previousMatch = /^(.*?)([ \t]*)$/.exec(previousLines[i]);
+    const currentMatch = /^(.*?)([ \t]*)$/.exec(currentLines[i]);
+    const previousCore = previousMatch?.[1] ?? previousLines[i];
+    const currentCore = currentMatch?.[1] ?? currentLines[i];
+    const previousTrailing = previousMatch?.[2] ?? '';
+    const currentTrailing = currentMatch?.[2] ?? '';
+
+    if (previousCore !== currentCore) {
+      return false;
+    }
+
+    if (currentTrailing.length > previousTrailing.length) {
+      return false;
+    }
+
+    if (currentTrailing.length < previousTrailing.length) {
+      sawTrim = true;
+    }
+  }
+
+  return sawTrim;
+}
+
 function getInclusiveSourceSelectionEndLine(selection: vscode.Selection): number {
   if (selection.isEmpty) {
     return selection.end.line;
@@ -1450,6 +1488,17 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     // Skip update if content matches what we already sent from the webview
     const lastSentContent = this.lastWebviewContent.get(docUri);
     if (lastSentContent !== undefined && lastSentContent === currentContent) {
+      return;
+    }
+
+    // When VS Code trims trailing whitespace on save, do not echo that back into
+    // MFH as a whole-document reset. That reflows the editor, flickers the gutter,
+    // and pollutes undo history for a semantically insignificant change.
+    if (
+      lastSentContent !== undefined &&
+      isOnlyTrailingWhitespaceTrim(lastSentContent, currentContent)
+    ) {
+      this.lastWebviewContent.set(docUri, currentContent);
       return;
     }
 
