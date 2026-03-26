@@ -35,6 +35,10 @@ export const ACTIVE_INSTANCE_TEMP_FILE = path.join(
   os.tmpdir(),
   'MarkdownForHumans-ActiveInstance.json'
 );
+export const FOCUSED_INSTANCE_TEMP_FILE = path.join(
+  os.tmpdir(),
+  'MarkdownForHumans-FocusedInstance.json'
+);
 export const INSTANCE_TEMP_DIR_PREFIX = 'MarkdownForHumans-';
 
 interface SourceViewportAnchor {
@@ -337,10 +341,10 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-function writeActiveInstanceMetadata(filePath: string | null): void {
+function writeInstanceMetadata(metadataFilePath: string, filePath: string | null): void {
   try {
     fs.writeFileSync(
-      ACTIVE_INSTANCE_TEMP_FILE,
+      metadataFilePath,
       JSON.stringify(
         {
           instance_id: getEditorHostInstanceId(),
@@ -354,8 +358,35 @@ function writeActiveInstanceMetadata(filePath: string | null): void {
       'utf8'
     );
   } catch (err) {
-    console.warn(`${BUILD_TAG} Failed to write active instance temp file:`, err);
+    console.warn(`${BUILD_TAG} Failed to write instance temp file (${metadataFilePath}):`, err);
   }
+}
+
+function writeActiveInstanceMetadata(filePath: string | null): void {
+  writeInstanceMetadata(ACTIVE_INSTANCE_TEMP_FILE, filePath);
+}
+
+function readInstanceMetadata(
+  metadataFilePath: string
+): { instance_id?: string; pid?: number; file?: string | null } | null {
+  try {
+    if (!fs.existsSync(metadataFilePath)) {
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(metadataFilePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+export function updateFocusedInstanceMetadataForCurrentWindow(): void {
+  if (!vscode.window.state.focused) {
+    return;
+  }
+
+  const activeDocument = getActiveDocument();
+  const filePath = activeDocument ? getDocumentPathLike(activeDocument) : null;
+  writeInstanceMetadata(FOCUSED_INSTANCE_TEMP_FILE, filePath);
 }
 
 export function cleanupStaleMcpMetadataOnActivate(): void {
@@ -375,6 +406,15 @@ export function cleanupStaleMcpMetadataOnActivate(): void {
       }
     }
   } catch {}
+
+  const focusedInstanceMetadata = readInstanceMetadata(FOCUSED_INSTANCE_TEMP_FILE);
+  if (
+    focusedInstanceMetadata?.pid &&
+    Number.isFinite(focusedInstanceMetadata.pid) &&
+    !isPidAlive(focusedInstanceMetadata.pid)
+  ) {
+    clearFileIfExistsWithDebug(FOCUSED_INSTANCE_TEMP_FILE, 'stale focused instance');
+  }
 
   ensureInstanceTempDir();
   writeActiveInstanceMetadata(null);

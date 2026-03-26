@@ -62,10 +62,12 @@ export const window = {
   createWebviewPanel: jest.fn(),
   activeTextEditor: undefined as unknown,
   visibleTextEditors: [] as unknown[],
+  state: { focused: true },
   showErrorMessage: jest.fn(),
   showInformationMessage: jest.fn(),
   showWarningMessage: jest.fn(),
   onDidChangeActiveTextEditor: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidChangeWindowState: jest.fn(() => ({ dispose: jest.fn() })),
   onDidChangeTextEditorSelection: jest.fn(() => ({ dispose: jest.fn() })),
   onDidChangeTextEditorVisibleRanges: jest.fn(() => ({ dispose: jest.fn() })),
   onDidChangeVisibleTextEditors: jest.fn(() => ({ dispose: jest.fn() })),
@@ -211,6 +213,7 @@ export function resetAllMocks() {
   mockStatusBarItem.command = undefined;
   window.activeTextEditor = undefined;
   window.visibleTextEditors = [];
+  window.state.focused = true;
 }
 
 // Default export for module mock

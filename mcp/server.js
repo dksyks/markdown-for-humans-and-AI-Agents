@@ -7,6 +7,7 @@
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = require('zod');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -15,6 +16,7 @@ const PROPOSAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Proposal.js
 const PLAN_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-Plan.json');
 const SELECTION_REVEAL_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-SelectionReveal.json');
 const ACTIVE_INSTANCE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-ActiveInstance.json');
+const FOCUSED_INSTANCE_TEMP_FILE = path.join(os.tmpdir(), 'MarkdownForHumans-FocusedInstance.json');
 const INSTANCE_TEMP_DIR_PREFIX = 'MarkdownForHumans-';
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const PROPOSAL_CLAIM_TIMEOUT_MS = 500;
@@ -61,14 +63,25 @@ function getSelectionTempFilePath(instanceId) {
 }
 
 function encodeSelectionFilePath(filePath) {
+  return crypto.createHash('sha256').update(filePath, 'utf8').digest('hex').slice(0, 32);
+}
+
+function encodeLegacySelectionFilePath(filePath) {
   return Buffer.from(filePath, 'utf8').toString('hex');
 }
 
-function getSelectionStateFilePathForDocument(filePath, instanceId) {
-  return path.join(
-    getInstanceTempDir(instanceId),
-    `Selection-${encodeSelectionFilePath(filePath)}.json`
+function getSelectionStateFilePathCandidatesForDocument(filePath, instanceId) {
+  const encodings = [
+    encodeSelectionFilePath(filePath),
+    encodeLegacySelectionFilePath(filePath),
+  ];
+  return [...new Set(encodings)].map(encodedPath =>
+    path.join(getInstanceTempDir(instanceId), `Selection-${encodedPath}.json`)
   );
+}
+
+function getSelectionStateFilePathForDocument(filePath, instanceId) {
+  return getSelectionStateFilePathCandidatesForDocument(filePath, instanceId)[0];
 }
 
 function getResponseTempFilePath(instanceId) {
@@ -118,6 +131,31 @@ function readActiveInstanceMetadata() {
   return readJsonFile(ACTIVE_INSTANCE_TEMP_FILE);
 }
 
+function readFocusedInstanceMetadata() {
+  return readJsonFile(FOCUSED_INSTANCE_TEMP_FILE);
+}
+
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function isUsableInstanceMetadata(metadata) {
+  if (!metadata?.instance_id) {
+    return false;
+  }
+
+  if (typeof metadata.pid === 'number' && Number.isFinite(metadata.pid) && !isPidAlive(metadata.pid)) {
+    return false;
+  }
+
+  return true;
+}
+
 function listInstanceIds() {
   try {
     return fs.readdirSync(os.tmpdir(), { withFileTypes: true })
@@ -128,18 +166,69 @@ function listInstanceIds() {
   }
 }
 
-function readSelectionForActiveInstance() {
-  const active = readActiveInstanceMetadata();
-  if (!active?.instance_id) {
+function readSelectionForInstance(instanceId) {
+  if (!instanceId) {
     return null;
   }
 
-  const selectionPath = getSelectionTempFilePath(active.instance_id);
+  const selectionPath = getSelectionTempFilePath(instanceId);
   if (!fs.existsSync(selectionPath)) {
     return null;
   }
 
   return JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
+}
+
+function readSelectionForActiveInstance() {
+  const active = readActiveInstanceMetadata();
+  if (!isUsableInstanceMetadata(active)) {
+    return null;
+  }
+
+  return readSelectionForInstance(active.instance_id);
+}
+
+function readSelectionForFocusedInstance() {
+  const focused = readFocusedInstanceMetadata();
+  if (!isUsableInstanceMetadata(focused)) {
+    return null;
+  }
+
+  return readSelectionForInstance(focused.instance_id);
+}
+
+function readSelectionStateForFileInInstance(filePath, instanceId) {
+  if (!filePath || !instanceId) {
+    return null;
+  }
+
+  for (const selectionPath of getSelectionStateFilePathCandidatesForDocument(filePath, instanceId)) {
+    if (!fs.existsSync(selectionPath)) {
+      continue;
+    }
+
+    try {
+      const data = JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
+      if (data?.file === filePath) {
+        return data;
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+function getFocusedInstanceSelectionStateForFile(filePath) {
+  if (!filePath) {
+    return null;
+  }
+
+  const focused = readFocusedInstanceMetadata();
+  if (!isUsableInstanceMetadata(focused)) {
+    return null;
+  }
+
+  return readSelectionStateForFileInInstance(filePath, focused.instance_id);
 }
 
 function readSelectionsForFile(filePath) {
@@ -149,17 +238,10 @@ function readSelectionsForFile(filePath) {
 
   const results = [];
   for (const instanceId of listInstanceIds()) {
-    const selectionPath = getSelectionStateFilePathForDocument(filePath, instanceId);
-    if (!fs.existsSync(selectionPath)) {
-      continue;
+    const data = readSelectionStateForFileInInstance(filePath, instanceId);
+    if (data) {
+      results.push(data);
     }
-
-    try {
-      const data = JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
-      if (data?.file === filePath) {
-        results.push(data);
-      }
-    } catch {}
   }
 
   return results;
@@ -225,7 +307,7 @@ server.tool(
   {},
   async () => {
     try {
-      const data = normalizeSelectionResult(readSelectionForActiveInstance());
+      const data = normalizeSelectionResult(readSelectionMetadata());
       if (!data) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ selection: null, error: 'No active selection data available. Open a markdown file in the Markdown for Humans editor first.' }) }],
@@ -268,7 +350,7 @@ server.tool(
   {},
   async () => {
     try {
-      const data = normalizeSelectionResult(readSelectionForActiveInstance());
+      const data = normalizeSelectionResult(readSelectionMetadata());
       if (!data) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ selection: null, error: 'No active selection data available. Open a markdown file in the Markdown for Humans editor first.' }) }],
@@ -313,16 +395,20 @@ Use context_before and context_after to locate the correct occurrence if the tex
     try {
       const id = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
-      const routingMetadata = proposalMatchesSelection(selectionMetadata, {
-        selection,
-        context_before: context_before ?? null,
-        context_after: context_after ?? null,
-      })
-        ? {
-            file: selectionMetadata.file ?? file ?? null,
-            source_instance_id: selectionMetadata.instance_id ?? null,
-          }
-        : { file: file ?? null };
+      const routingMetadata = file
+        ? buildFocusedScopedRoutingMetadata(file, 'source_instance_id') ?? { file }
+        : (
+          proposalMatchesSelection(selectionMetadata, {
+            selection,
+            context_before: context_before ?? null,
+            context_after: context_after ?? null,
+          })
+            ? {
+                file: selectionMetadata.file ?? null,
+                source_instance_id: selectionMetadata.instance_id ?? null,
+              }
+            : { file: null }
+        );
       const cappedOptions = replacement_options.slice(0, 3).map(o => ({
         replacement: o.selection_replacement,
         justification: o.justification ?? null,
@@ -789,11 +875,13 @@ Returns { status, file, error } where status is "revealed" or "error".`,
     try {
       const selectionRequestId = Date.now().toString();
       const selectionMetadata = readSelectionMetadata();
-      const routingMetadata = buildSelectionRoutingMetadata(selectionMetadata, {
-        selection,
-        context_before: context_before ?? null,
-        context_after: context_after ?? null,
-      }, file ?? null);
+      const routingMetadata = file
+        ? buildFocusedSelectionRoutingMetadata(file) ?? { file }
+        : buildSelectionRoutingMetadata(selectionMetadata, {
+          selection,
+          context_before: context_before ?? null,
+          context_after: context_after ?? null,
+        }, null);
 
       fs.writeFileSync(
         SELECTION_REVEAL_TEMP_FILE,
@@ -1154,7 +1242,7 @@ function normalizeForMatching(markdown) {
 
 function readSelectionMetadata() {
   try {
-    return readSelectionForActiveInstance();
+    return readSelectionForFocusedInstance() ?? readSelectionForActiveInstance();
   } catch {
     return null;
   }
@@ -1186,6 +1274,39 @@ function buildSelectionRoutingMetadata(selectionMetadata, selection, file) {
     };
   }
   return { file: file ?? null };
+}
+
+function buildFocusedSelectionRoutingMetadata(file) {
+  if (!file) {
+    return null;
+  }
+
+  const selectionState = getFocusedInstanceSelectionStateForFile(file);
+  if (!selectionState?.instance_id) {
+    return null;
+  }
+
+  return {
+    file,
+    instance_id: selectionState.instance_id,
+    source_instance_id: selectionState.instance_id,
+  };
+}
+
+function buildFocusedScopedRoutingMetadata(file, fieldName) {
+  if (!file) {
+    return null;
+  }
+
+  const selectionState = getFocusedInstanceSelectionStateForFile(file);
+  if (!selectionState?.instance_id) {
+    return null;
+  }
+
+  return {
+    file,
+    [fieldName]: selectionState.instance_id,
+  };
 }
 
 function normalizeSelectionRevealResult(result, fallbackFile) {
@@ -1230,12 +1351,7 @@ function normalizeSelectionRevealResult(result, fallbackFile) {
 
 function buildBatchRoutingMetadata(selectionMetadata, file) {
   if (file) {
-    return {
-      file,
-      ...(selectionMetadata?.file === file
-        ? { source_instance_id: selectionMetadata.instance_id ?? null }
-        : {}),
-    };
+    return buildFocusedScopedRoutingMetadata(file, 'source_instance_id') ?? { file };
   }
 
   if (!selectionMetadata?.file) {
@@ -2275,8 +2391,28 @@ Returns the same fields as sequential_replacement_plan. This reads the current s
   }
 );
 
-const transport = new StdioServerTransport();
-server.connect(transport).catch(err => {
-  console.error('[MD4H MCP] Failed to start:', err);
-  process.exit(1);
-});
+module.exports = {
+  server,
+  __testing: {
+    ACTIVE_INSTANCE_TEMP_FILE,
+    FOCUSED_INSTANCE_TEMP_FILE,
+    encodeSelectionFilePath,
+    getSelectionStateFilePathForDocument,
+    readSelectionsForFile,
+    readSelectionMetadata,
+    readFocusedInstanceMetadata,
+    readSelectionForFocusedInstance,
+    readSelectionStateForFileInInstance,
+    getFocusedInstanceSelectionStateForFile,
+    buildFocusedSelectionRoutingMetadata,
+    buildFocusedScopedRoutingMetadata,
+  },
+};
+
+if (require.main === module) {
+  const transport = new StdioServerTransport();
+  server.connect(transport).catch(err => {
+    console.error('[MD4H MCP] Failed to start:', err);
+    process.exit(1);
+  });
+}

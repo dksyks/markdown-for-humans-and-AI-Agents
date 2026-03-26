@@ -5,7 +5,11 @@
  */
 
 import * as vscode from 'vscode';
-import { cleanupStaleMcpMetadataOnActivate, MarkdownEditorProvider } from './editor/MarkdownEditorProvider';
+import {
+  cleanupStaleMcpMetadataOnActivate,
+  MarkdownEditorProvider,
+  updateFocusedInstanceMetadataForCurrentWindow,
+} from './editor/MarkdownEditorProvider';
 import { WordCountFeature } from './features/wordCount';
 import { getActiveWebviewPanel } from './activeWebview';
 import { outlineViewProvider } from './features/outlineView';
@@ -19,6 +23,18 @@ export function activate(context: vscode.ExtensionContext) {
   // Register the custom editor provider
   const { disposable, provider } = MarkdownEditorProvider.register(context);
   context.subscriptions.push(disposable);
+
+  if (vscode.window.state.focused) {
+    updateFocusedInstanceMetadataForCurrentWindow();
+  }
+
+  context.subscriptions.push(
+    vscode.window.onDidChangeWindowState(state => {
+      if (state.focused) {
+        updateFocusedInstanceMetadataForCurrentWindow();
+      }
+    })
+  );
 
   // Clear active context when switching to non-markdown-for-humans editors
   context.subscriptions.push(
